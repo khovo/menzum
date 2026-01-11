@@ -1,10 +1,10 @@
 from flask import Flask, request, jsonify
-from telethon import TelegramClient, events, Button
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import asyncio
 import logging
 import traceback
+import aiohttp # ለ API ጥሪ
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
@@ -13,14 +13,14 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # --- Environment Variables ---
-API_ID = os.environ.get("API_ID")
-API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URL = os.environ.get("MONGO_URL")
 
+# Telegram API URL
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
 # --- Helper: Run Async Code in Sync Flask ---
 def run_async(coro):
-    """ይህ ፈንክሽን Async ኮድን በግዳጅ Sync አድርጎ ያሰራል"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -28,87 +28,87 @@ def run_async(coro):
     finally:
         loop.close()
 
-# --- Async Logic (Main Bot Function) ---
+# --- Direct API Helpers ---
+async def send_message(chat_id, text, reply_markup=None):
+    async with aiohttp.ClientSession() as session:
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        async with session.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload) as resp:
+            return await resp.json()
+
+async def answer_inline_query(query_id, results):
+    async with aiohttp.ClientSession() as session:
+        payload = {"inline_query_id": query_id, "results": results}
+        async with session.post(f"{TELEGRAM_API_URL}/answerInlineQuery", json=payload) as resp:
+            return await resp.json()
+
+# --- Main Logic ---
 async def process_telegram_update(data):
-    # 1. Client Setup
-    client = TelegramClient(None, int(API_ID), API_HASH)
-    
-    # 2. Database Setup
+    # Database Connection
     db_client = AsyncIOMotorClient(MONGO_URL)
     db = db_client["MenzumaDB"]["files"]
 
-    # 3. Connect & Login
-    await client.start(bot_token=BOT_TOKEN)
+    try:
+        # 1. Handle /start Command
+        if "message" in data:
+            message = data["message"]
+            chat_id = message.get("chat", {}).get("id")
+            text = message.get("text", "")
 
-    # --- BOT EVENTS DEFINITION ---
-    
-    # Event: Start Command
-    @client.on(events.NewMessage(pattern='/start'))
-    async def start(event):
-        welcome_text = (
-            "**🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ!**\n\n"
-            "መንዙማዎችን ለመስማት `@Almadihbot` ብለው ይጻፉ።"
-        )
-        buttons = [
-            [Button.switch_inline("🔍 መንዙማ ይፈልጉ", query="", same_peer=True)],
-            [Button.url("Join Channel 📢", "https://t.me/Al_madih")]
-        ]
-        await event.reply(welcome_text, buttons=buttons)
+            if text == "/start":
+                welcome_text = (
+                    "**🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ!**\n\n"
+                    "መንዙማዎችን ለመስማት `@Almadihbot` ብለው ይጻፉ።"
+                )
+                # Inline Keyboard (Buttons)
+                keyboard = {
+                    "inline_keyboard": [
+                        [{"text": "🔍 መንዙማ ይፈልጉ", "switch_inline_query_current_chat": ""}],
+                        [{"text": "Join Channel 📢", "url": "https://t.me/Al_madih"}]
+                    ]
+                }
+                await send_message(chat_id, welcome_text, reply_markup=keyboard)
 
-    # Event: Inline Search
-    @client.on(events.InlineQuery)
-    async def inline_handler(event):
-        query = event.text.strip()
-        search_criteria = {"display_name": {"$regex": query, "$options": "i"}} if query else {}
-        
-        try:
-            # 50 ውጤቶችን አምጣ
+        # 2. Handle Inline Query (Search)
+        elif "inline_query" in data:
+            inline_query = data["inline_query"]
+            query_id = inline_query["id"]
+            query = inline_query.get("query", "").strip()
+
+            # Search in DB
+            search_criteria = {"display_name": {"$regex": query, "$options": "i"}} if query else {}
             cursor = db.find(search_criteria).sort("_id", -1).limit(50)
-            results = []
             
+            results = []
             async for doc in cursor:
                 if 'file_id' in doc:
-                    results.append(
-                        event.builder.document(
-                            file=doc['file_id'],
-                            title=doc.get("display_name", "Audio"),
-                            description="@Almadihbot",
-                            text=f"{doc.get('display_name')}\n\n@Almadihbot" 
-                        )
-                    )
+                    results.append({
+                        "type": "audio",
+                        "id": str(doc["_id"]),
+                        "audio_file_id": doc["file_id"],
+                        "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
+                    })
             
-            if results:
-                await event.answer(results)
-            else:
-                await event.answer([], switch_pm="ምንም አልተገኘም", switch_pm_param="start")
-        except Exception as e:
-            logger.error(f"Inline Error: {e}")
+            # ምንም ካልተገኘ (ባዶ ዝርዝር ይላክ)
+            await answer_inline_query(query_id, results)
 
-    # 4. Process the Update
-    try:
-        # Convert JSON to Telethon Update
-        update = await client.get_updates_as_event_loop(data)
-        # Dispatch to handlers
-        await client.dispatch(update)
     except Exception as e:
-        logger.error(f"Dispatch Error: {e}")
-    finally:
-        await client.disconnect()
+        logger.error(f"Logic Error: {e}")
 
-# --- FLASK ROUTE (SYNC) ---
+# --- FLASK ROUTE ---
 @app.route('/', methods=['GET', 'POST'])
 def telegram_webhook():
     if request.method == 'POST':
         try:
             data = request.get_json()
-            # Async ስራውን ለ run_async እንሰጠዋለን
             run_async(process_telegram_update(data))
             return 'ok'
         except Exception as e:
             logger.error(f"Webhook Error: {traceback.format_exc()}")
             return 'error', 500
             
-    return 'Al-Madih Bot is Running! (Final Fix) 🚀'
+    return 'Al-Madih Bot is Running! (Direct API Mode) 🚀'
 
 # Local Run
 if __name__ == '__main__':
