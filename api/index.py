@@ -7,90 +7,42 @@ import logging
 import traceback
 
 # Logging Setup
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# --- 1. Environment Variables መኖራቸውን ማረጋገጥ ---
-# ከሌሉ ኮዱ እንዳይበላሽ በ try/except እንይዛቸዋለን
-try:
-    API_ID = os.environ.get("API_ID")
-    if API_ID:
-        API_ID = int(API_ID)
-    else:
-        logger.warning("API_ID is missing!")
-        
-    API_HASH = os.environ.get("API_HASH")
-    BOT_TOKEN = os.environ.get("BOT_TOKEN")
-    MONGO_URL = os.environ.get("MONGO_URL")
-except Exception as e:
-    logger.error(f"Env Var Error: {e}")
+# --- Environment Variables ---
+API_ID = os.environ.get("API_ID")
+API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+MONGO_URL = os.environ.get("MONGO_URL")
 
-# --- 2. Database & Client Setup (Global) ---
-# እዚህ ጋር global loop እና client መፍጠር አደገኛ ሊሆን ይችላል፣ 
-# ስለዚህ ጥንቃቄ በተሞላበት መንገድ እንፈጥራለን።
+# --- Helper: Run Async Code in Sync Flask ---
+def run_async(coro):
+    """ይህ ፈንክሽን Async ኮድን በግዳጅ Sync አድርጎ ያሰራል"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
-client = None
-db = None
-
-try:
-    if API_ID and API_HASH:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        # Session file እንዳይጠይቅ (None) እንጠቀማለን
-        client = TelegramClient(None, API_ID, API_HASH, loop=loop)
+# --- Async Logic (Main Bot Function) ---
+async def process_telegram_update(data):
+    # 1. Client Setup
+    client = TelegramClient(None, int(API_ID), API_HASH)
     
-    if MONGO_URL:
-        db_client = AsyncIOMotorClient(MONGO_URL)
-        db = db_client["MenzumaDB"]["files"]
-except Exception as e:
-    logger.error(f"Initialization Error: {e}")
+    # 2. Database Setup
+    db_client = AsyncIOMotorClient(MONGO_URL)
+    db = db_client["MenzumaDB"]["files"]
 
-# --- Helper to Start Client ---
-async def start_bot():
-    global client
-    if client and not client.is_connected():
-        await client.start(bot_token=BOT_TOKEN)
+    # 3. Connect & Login
+    await client.start(bot_token=BOT_TOKEN)
 
-# --- 3. WEBHOOK ROUTE ---
-@app.route('/', methods=['GET', 'POST'])
-async def telegram_webhook():
-    # ስህተት ካለ በቀጥታ ስክሪኑ ላይ እንዲያሳይ (Debugging)
-    global client, db
+    # --- BOT EVENTS DEFINITION ---
     
-    # መጀመሪያ Environment Variables መሞላታቸውን እንፈትሽ
-    if not API_ID or not API_HASH or not BOT_TOKEN or not MONGO_URL:
-        return jsonify({
-            "status": "error",
-            "message": "Missing Environment Variables!",
-            "details": {
-                "API_ID": "OK" if API_ID else "MISSING",
-                "API_HASH": "OK" if API_HASH else "MISSING",
-                "BOT_TOKEN": "OK" if BOT_TOKEN else "MISSING",
-                "MONGO_URL": "OK" if MONGO_URL else "MISSING"
-            }
-        }), 500
-
-    if request.method == 'POST':
-        try:
-            await start_bot()
-            data = request.get_json()
-            # Updateውን ወደ Telethon Event ቀይሮ መላክ
-            update = await client.get_updates_as_event_loop(data)
-            await client.dispatch(update)
-            return 'ok'
-        except Exception as e:
-            logger.error(f"Webhook Error: {traceback.format_exc()}")
-            return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
-            
-    # GET Request (Browser ላይ ሲከፈት)
-    return f"Al-Madih Bot is Running! Status: {'Connected' if client else 'Client Error'}"
-
-# --- 4. BOT LOGIC (Logic) ---
-
-# Logic የሚሰራው client ከተፈጠረ ብቻ ነው
-if client:
+    # Event: Start Command
     @client.on(events.NewMessage(pattern='/start'))
     async def start(event):
         welcome_text = (
@@ -103,17 +55,17 @@ if client:
         ]
         await event.reply(welcome_text, buttons=buttons)
 
+    # Event: Inline Search
     @client.on(events.InlineQuery)
     async def inline_handler(event):
-        if not db:
-            return # DB ከሌለ ዝም ይበል
-
         query = event.text.strip()
         search_criteria = {"display_name": {"$regex": query, "$options": "i"}} if query else {}
         
         try:
+            # 50 ውጤቶችን አምጣ
             cursor = db.find(search_criteria).sort("_id", -1).limit(50)
             results = []
+            
             async for doc in cursor:
                 if 'file_id' in doc:
                     results.append(
@@ -132,6 +84,33 @@ if client:
         except Exception as e:
             logger.error(f"Inline Error: {e}")
 
+    # 4. Process the Update
+    try:
+        # Convert JSON to Telethon Update
+        update = await client.get_updates_as_event_loop(data)
+        # Dispatch to handlers
+        await client.dispatch(update)
+    except Exception as e:
+        logger.error(f"Dispatch Error: {e}")
+    finally:
+        await client.disconnect()
+
+# --- FLASK ROUTE (SYNC) ---
+# እዚህ ጋር async የለም! (def ብቻ ነው)
+@app.route('/', methods=['GET', 'POST'])
+def telegram_webhook():
+    if request.method == 'POST':
+        try:
+            data = request.get_json()
+            # Async ስራውን ለ run_async እንሰጠዋለን
+            run_async(process_telegram_update(data))
+            return 'ok'
+        except Exception as e:
+            logger.error(f"Webhook Error: {traceback.format_exc()}")
+            return 'error', 500
+            
+    return 'Al-Madih Bot is Running! (Sync Mode Fix) 🚀'
+
 # Local Run
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True)v
