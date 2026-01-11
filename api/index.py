@@ -8,15 +8,15 @@ from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# Logging
+# Logging Setup
 logging.basicConfig(level=logging.INFO)
 
-# Dispatcher እዚህ ይፈጠራል
+# Dispatcher Setup
 dp = Dispatcher(storage=MemoryStorage())
 
 # --- Helper Function: Database Connection ---
 def get_db_collection():
-    """እያንዳንዱ function የራሱን connection እንዲፈጥር እናደርጋለን"""
+    """Returns database client and collection."""
     mongo_url = os.environ.get("MONGO_URL")
     if not mongo_url:
         return None, None
@@ -24,7 +24,7 @@ def get_db_collection():
     db = client["MenzumaDB"]
     return client, db["files"]
 
-# --- Handlers (ተግባራት) ---
+# --- Handlers ---
 
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
@@ -36,7 +36,7 @@ async def start_handler(message: types.Message):
 
 @dp.message(F.audio | F.voice)
 async def save_file(message: types.Message):
-    # 1. ለእዚህ ጥሪ ብቻ የሚሆን Database connection መክፈት
+    # 1. Open DB connection for this request
     client, files_collection = get_db_collection()
     if not client:
         return
@@ -45,7 +45,7 @@ async def save_file(message: types.Message):
         file_id = message.audio.file_id if message.audio else message.voice.file_id
         file_name = message.caption if message.caption else (message.audio.file_name if message.audio else "Unknown")
         
-        # ስም ማጣራት (Cleaning)
+        # Cleaning
         clean_name = file_name.strip()
         
         data = {
@@ -54,7 +54,7 @@ async def save_file(message: types.Message):
             "display_name": clean_name
         }
         
-        # Database ላይ መጫን
+        # Save to DB
         await files_collection.update_one(
             {"file_name": clean_name.lower()}, 
             {"$set": data}, 
@@ -66,12 +66,12 @@ async def save_file(message: types.Message):
     except Exception as e:
         logging.error(f"DB Error: {e}")
     finally:
-        # በጣም ወሳኙ ፓርት: ስራውን ሲጨርስ Connection መዝጋት
+        # Close connection
         client.close()
 
 @dp.message(F.text)
 async def search_handler(message: types.Message):
-    # 1. ለእዚህ ጥሪ ብቻ የሚሆን Database connection መክፈት
+    # 1. Open DB connection for this request
     client, files_collection = get_db_collection()
     if not client:
         return
@@ -91,7 +91,7 @@ async def search_handler(message: types.Message):
     except Exception as e:
         logging.error(f"Search Error: {e}")
     finally:
-        # Connection መዝጋት
+        # Close connection
         if client:
             client.close()
 
@@ -106,7 +106,10 @@ class handler(BaseHTTPRequestHandler):
         async def feed_update():
             bot = Bot(token=BOT_TOKEN)
             try:
+                # Convert bytes to dict then to Update object
                 update_dict = json.loads(post_data.decode('utf-8'))
+                # Aiogram expects an Update object, not a dict directly in feed_update usually,
+                # but let's try passing the object constructed from dict
                 update = types.Update(**update_dict)
                 await dp.feed_update(bot=bot, update=update)
             except Exception as e:
@@ -129,15 +132,3 @@ class handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Bot is Running (Aiogram Mode)!")
-```
-
-### 2. ቀጣይ ማድረግ ያለብህ (ግዴታ ነው!)
-
-ይህ ኮድ `aiogram` ስለሚጠቀም፣ **`requirements.txt`** ፋይልህን የግድ ማስተካከል አለብህ። ከዚህ በፊት የነበረውን አጥፋና በዚህ ተካው፡
-
-**`requirements.txt` (አዲስ):**
-```text
-aiogram
-motor
-dnspython
-pymongo
