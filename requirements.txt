@@ -1,6 +1,4 @@
-flask
+aiogram
 motor
 dnspython
 pymongo
-asyncio
-aiohttp
