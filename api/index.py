@@ -4,7 +4,7 @@ import os
 import asyncio
 import logging
 import traceback
-import aiohttp # ለ API ጥሪ
+import aiohttp 
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
@@ -15,9 +15,6 @@ app = Flask(__name__)
 # --- Environment Variables ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URL = os.environ.get("MONGO_URL")
-
-# Telegram API URL
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # --- Helper: Run Async Code in Sync Flask ---
 def run_async(coro):
@@ -30,22 +27,46 @@ def run_async(coro):
 
 # --- Direct API Helpers ---
 async def send_message(chat_id, text, reply_markup=None):
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN is missing!")
+        return
+        
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     async with aiohttp.ClientSession() as session:
         payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
         if reply_markup:
             payload["reply_markup"] = reply_markup
-        async with session.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload) as resp:
-            return await resp.json()
+            
+        try:
+            async with session.post(url, json=payload) as resp:
+                result = await resp.json()
+                if not result.get("ok"):
+                    logger.error(f"Telegram Send Error: {result}")
+                else:
+                    logger.info(f"Message sent to {chat_id}")
+                return result
+        except Exception as e:
+            logger.error(f"Network Error: {e}")
 
 async def answer_inline_query(query_id, results):
+    if not BOT_TOKEN: return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
+    
     async with aiohttp.ClientSession() as session:
         payload = {"inline_query_id": query_id, "results": results}
-        async with session.post(f"{TELEGRAM_API_URL}/answerInlineQuery", json=payload) as resp:
-            return await resp.json()
+        try:
+            async with session.post(url, json=payload) as resp:
+                return await resp.json()
+        except Exception as e:
+            logger.error(f"Inline Answer Error: {e}")
 
 # --- Main Logic ---
 async def process_telegram_update(data):
     # Database Connection
+    if not MONGO_URL:
+        logger.error("MONGO_URL is missing!")
+        return
+
     db_client = AsyncIOMotorClient(MONGO_URL)
     db = db_client["MenzumaDB"]["files"]
 
@@ -55,13 +76,15 @@ async def process_telegram_update(data):
             message = data["message"]
             chat_id = message.get("chat", {}).get("id")
             text = message.get("text", "")
+            
+            logger.info(f"Received Message: {text}")
 
             if text == "/start":
+                # Telegram Markdown ይጠቀማል (*bold* እንጂ **bold** አይደለም)
                 welcome_text = (
-                    "**🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ!**\n\n"
+                    "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ!*\n\n"
                     "መንዙማዎችን ለመስማት `@Almadihbot` ብለው ይጻፉ።"
                 )
-                # Inline Keyboard (Buttons)
                 keyboard = {
                     "inline_keyboard": [
                         [{"text": "🔍 መንዙማ ይፈልጉ", "switch_inline_query_current_chat": ""}],
@@ -75,6 +98,8 @@ async def process_telegram_update(data):
             inline_query = data["inline_query"]
             query_id = inline_query["id"]
             query = inline_query.get("query", "").strip()
+            
+            logger.info(f"Searching for: {query}")
 
             # Search in DB
             search_criteria = {"display_name": {"$regex": query, "$options": "i"}} if query else {}
@@ -90,7 +115,6 @@ async def process_telegram_update(data):
                         "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
                     })
             
-            # ምንም ካልተገኘ (ባዶ ዝርዝር ይላክ)
             await answer_inline_query(query_id, results)
 
     except Exception as e:
