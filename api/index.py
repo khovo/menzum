@@ -1,139 +1,143 @@
-from flask import Flask, request, jsonify
-from motor.motor_asyncio import AsyncIOMotorClient
 import os
-import asyncio
 import logging
-import traceback
-import aiohttp 
+import json
+import asyncio
+from http.server import BaseHTTPRequestHandler
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.fsm.storage.memory import MemoryStorage
+from motor.motor_asyncio import AsyncIOMotorClient
 
-# Logging Setup
+# Logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+# Dispatcher እዚህ ይፈጠራል
+dp = Dispatcher(storage=MemoryStorage())
 
-# --- Environment Variables ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-MONGO_URL = os.environ.get("MONGO_URL")
+# --- Helper Function: Database Connection ---
+def get_db_collection():
+    """እያንዳንዱ function የራሱን connection እንዲፈጥር እናደርጋለን"""
+    mongo_url = os.environ.get("MONGO_URL")
+    if not mongo_url:
+        return None, None
+    client = AsyncIOMotorClient(mongo_url)
+    db = client["MenzumaDB"]
+    return client, db["files"]
 
-# --- Helper: Run Async Code in Sync Flask ---
-def run_async(coro):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+# --- Handlers (ተግባራት) ---
 
-# --- Direct API Helpers ---
-async def send_message(chat_id, text, reply_markup=None):
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN is missing!")
+@dp.message(Command("start"))
+async def start_handler(message: types.Message):
+    await message.answer(
+        f"ሰላም {message.from_user.full_name}! 👋\n\n"
+        "ይህ የመንዙማ ባንክ (Al-Madih) ነው።\n"
+        "🔍 የሚፈልጉትን መንዙማ ስም ይጻፉ።"
+    )
+
+@dp.message(F.audio | F.voice)
+async def save_file(message: types.Message):
+    # 1. ለእዚህ ጥሪ ብቻ የሚሆን Database connection መክፈት
+    client, files_collection = get_db_collection()
+    if not client:
         return
+
+    try:
+        file_id = message.audio.file_id if message.audio else message.voice.file_id
+        file_name = message.caption if message.caption else (message.audio.file_name if message.audio else "Unknown")
         
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    async with aiohttp.ClientSession() as session:
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-            
-        try:
-            async with session.post(url, json=payload) as resp:
-                result = await resp.json()
-                if not result.get("ok"):
-                    logger.error(f"Telegram Send Error: {result}")
-                else:
-                    logger.info(f"Message sent to {chat_id}")
-                return result
-        except Exception as e:
-            logger.error(f"Network Error: {e}")
+        # ስም ማጣራት (Cleaning)
+        clean_name = file_name.strip()
+        
+        data = {
+            "file_id": file_id,
+            "file_name": clean_name.lower(),
+            "display_name": clean_name
+        }
+        
+        # Database ላይ መጫን
+        await files_collection.update_one(
+            {"file_name": clean_name.lower()}, 
+            {"$set": data}, 
+            upsert=True
+        )
+        
+        await message.reply(f"✅ ተቀብያለሁ! **{clean_name}** ተመዝግቧል።")
+        
+    except Exception as e:
+        logging.error(f"DB Error: {e}")
+    finally:
+        # በጣም ወሳኙ ፓርት: ስራውን ሲጨርስ Connection መዝጋት
+        client.close()
 
-async def answer_inline_query(query_id, results):
-    if not BOT_TOKEN: return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
-    
-    async with aiohttp.ClientSession() as session:
-        payload = {"inline_query_id": query_id, "results": results}
-        try:
-            async with session.post(url, json=payload) as resp:
-                return await resp.json()
-        except Exception as e:
-            logger.error(f"Inline Answer Error: {e}")
-
-# --- Main Logic ---
-async def process_telegram_update(data):
-    # Database Connection
-    if not MONGO_URL:
-        logger.error("MONGO_URL is missing!")
+@dp.message(F.text)
+async def search_handler(message: types.Message):
+    # 1. ለእዚህ ጥሪ ብቻ የሚሆን Database connection መክፈት
+    client, files_collection = get_db_collection()
+    if not client:
         return
 
-    db_client = AsyncIOMotorClient(MONGO_URL)
-    db = db_client["MenzumaDB"]["files"]
-
     try:
-        # 1. Handle /start Command
-        if "message" in data:
-            message = data["message"]
-            chat_id = message.get("chat", {}).get("id")
-            text = message.get("text", "")
-            
-            logger.info(f"Received Message: {text}")
-
-            if text == "/start":
-                # Telegram Markdown ይጠቀማል (*bold* እንጂ **bold** አይደለም)
-                welcome_text = (
-                    "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ!*\n\n"
-                    "መንዙማዎችን ለመስማት `@Almadihbot` ብለው ይጻፉ።"
-                )
-                keyboard = {
-                    "inline_keyboard": [
-                        [{"text": "🔍 መንዙማ ይፈልጉ", "switch_inline_query_current_chat": ""}],
-                        [{"text": "Join Channel 📢", "url": "https://t.me/Al_madih"}]
-                    ]
-                }
-                await send_message(chat_id, welcome_text, reply_markup=keyboard)
-
-        # 2. Handle Inline Query (Search)
-        elif "inline_query" in data:
-            inline_query = data["inline_query"]
-            query_id = inline_query["id"]
-            query = inline_query.get("query", "").strip()
-            
-            logger.info(f"Searching for: {query}")
-
-            # Search in DB
-            search_criteria = {"display_name": {"$regex": query, "$options": "i"}} if query else {}
-            cursor = db.find(search_criteria).sort("_id", -1).limit(50)
-            
-            results = []
-            async for doc in cursor:
-                if 'file_id' in doc:
-                    results.append({
-                        "type": "audio",
-                        "id": str(doc["_id"]),
-                        "audio_file_id": doc["file_id"],
-                        "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
-                    })
-            
-            await answer_inline_query(query_id, results)
-
+        search_text = message.text.lower().strip()
+        # Regex search
+        found_file = await files_collection.find_one({"file_name": {"$regex": search_text, "$options": "i"}})
+        
+        if found_file:
+            await message.answer_audio(
+                found_file["file_id"], 
+                caption=f"🎧 **{found_file['display_name']}**\n\n@Almadihbot"
+            )
+        else:
+            await message.reply("😔 ይቅርታ፣ አልተገኘም።")
     except Exception as e:
-        logger.error(f"Logic Error: {e}")
+        logging.error(f"Search Error: {e}")
+    finally:
+        # Connection መዝጋት
+        if client:
+            client.close()
 
-# --- FLASK ROUTE ---
-@app.route('/', methods=['GET', 'POST'])
-def telegram_webhook():
-    if request.method == 'POST':
+# --- Vercel Webhook Handler ---
+class handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        BOT_TOKEN = os.environ.get("BOT_TOKEN")
+        
+        content_length = int(self.headers['Content-Length'])
+        post_data = self.rfile.read(content_length)
+
+        async def feed_update():
+            bot = Bot(token=BOT_TOKEN)
+            try:
+                update_dict = json.loads(post_data.decode('utf-8'))
+                update = types.Update(**update_dict)
+                await dp.feed_update(bot=bot, update=update)
+            except Exception as e:
+                logging.error(f"Process Error: {e}")
+            finally:
+                await bot.session.close()
+
         try:
-            data = request.get_json()
-            run_async(process_telegram_update(data))
-            return 'ok'
+            asyncio.run(feed_update())
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
         except Exception as e:
-            logger.error(f"Webhook Error: {traceback.format_exc()}")
-            return 'error', 500
-            
-    return 'Al-Madih Bot is Running! (Direct API Mode) 🚀'
+            logging.error(f"Server Error: {e}")
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(str(e).encode())
 
-# Local Run
-if __name__ == '__main__':
-    app.run(debug=True)
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is Running (Aiogram Mode)!")
+```
+
+### 2. ቀጣይ ማድረግ ያለብህ (ግዴታ ነው!)
+
+ይህ ኮድ `aiogram` ስለሚጠቀም፣ **`requirements.txt`** ፋይልህን የግድ ማስተካከል አለብህ። ከዚህ በፊት የነበረውን አጥፋና በዚህ ተካው፡
+
+**`requirements.txt` (አዲስ):**
+```text
+aiogram
+motor
+dnspython
+pymongo
