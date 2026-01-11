@@ -96,7 +96,6 @@ async def process_telegram_update(data):
         await client.disconnect()
 
 # --- FLASK ROUTE (SYNC) ---
-# እዚህ ጋር async የለም! (def ብቻ ነው)
 @app.route('/', methods=['GET', 'POST'])
 def telegram_webhook():
     if request.method == 'POST':
@@ -109,8 +108,8 @@ def telegram_webhook():
             logger.error(f"Webhook Error: {traceback.format_exc()}")
             return 'error', 500
             
-    return 'Al-Madih Bot is Running! (Sync Mode Fix) 🚀'
+    return 'Al-Madih Bot is Running! (Final Fix) 🚀'
 
 # Local Run
 if __name__ == '__main__':
-    app.run(debug=True)v
+    app.run(debug=True)
