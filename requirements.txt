@@ -1,6 +1,6 @@
 flask
-telethon
 motor
 dnspython
 pymongo
 asyncio
+aiohttp
