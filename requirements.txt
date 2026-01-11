@@ -1,3 +1,6 @@
-aiogram
+flask
+telethon
 motor
 dnspython
+pymongo
+asyncio
