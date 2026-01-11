@@ -1,123 +1,85 @@
-import os
-import logging
-import json
-import asyncio
-from http.server import BaseHTTPRequestHandler
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.fsm.storage.memory import MemoryStorage
+from flask import Flask, request, jsonify
+from telethon import TelegramClient, events, Button
+from telethon.tl.types import InputWebDocument
 from motor.motor_asyncio import AsyncIOMotorClient
+import os
+import asyncio
+import logging
 
-# Logging
+# Logging ማብራት
 logging.basicConfig(level=logging.INFO)
 
-# Dispatcher እዚህ ይፈጠራል
-dp = Dispatcher(storage=MemoryStorage())
+app = Flask(__name__)
 
-# --- Helper Function: Database Connection ---
-def get_db_collection():
-    """እያንዳንዱ function የራሱን connection እንዲፈጥር እናደርጋለን"""
-    mongo_url = os.environ.get("MONGO_URL")
-    client = AsyncIOMotorClient(mongo_url)
-    db = client["MenzumaDB"]
-    return client, db["files"]
+# --- ቅንብሮች (Vercel Environment Variables) ---
+API_ID = int(os.environ.get("API_ID", 0))
+API_HASH = os.environ.get("API_HASH", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+MONGO_URL = os.environ.get("MONGO_URL", "")
 
-# --- Handlers (ተግባራት) ---
+# --- Database & Client Setup ---
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
-@dp.message(Command("start"))
-async def start_handler(message: types.Message):
-    await message.answer(
-        f"ሰላም {message.from_user.full_name}! 👋\n\n"
-        "ይህ የመንዙማ ባንክ ነው።\n"
-        "🔍 የሚፈልጉትን መንዙማ ስም ይጻፉ።"
-    )
+# Vercel ላይ Session እንዳይፈጥር (Stateless)
+client = TelegramClient(None, API_ID, API_HASH, loop=loop)
+db_client = AsyncIOMotorClient(MONGO_URL)
+db = db_client["MenzumaDB"]["files"]
 
-@dp.message(F.audio | F.voice)
-async def save_file(message: types.Message):
-    # 1. ለእዚህ ጥሪ ብቻ የሚሆን Database connection መክፈት
-    client, files_collection = get_db_collection()
-    
-    try:
-        file_id = message.audio.file_id if message.audio else message.voice.file_id
-        file_name = message.caption if message.caption else (message.audio.file_name if message.audio else "Unknown")
-        
-        # ስም ማጣራት (Cleaning)
-        clean_name = file_name.strip()
-        
-        data = {
-            "file_id": file_id,
-            "file_name": clean_name.lower(),
-            "display_name": clean_name
-        }
-        
-        # Database ላይ መጫን
-        await files_collection.update_one(
-            {"file_name": clean_name.lower()}, 
-            {"$set": data}, 
-            upsert=True
-        )
-        
-        await message.reply(f"✅ ተቀብያለሁ! **{clean_name}** ተመዝግቧል።")
-        
-    except Exception as e:
-        logging.error(f"DB Error: {e}")
-    finally:
-        # በጣም ወሳኙ ፓርት: ስራውን ሲጨርስ Connection መዝጋት
-        client.close()
+async def ensure_connected():
+    if not client.is_connected():
+        await client.start(bot_token=BOT_TOKEN)
 
-@dp.message(F.text)
-async def search_handler(message: types.Message):
-    # 1. ለእዚህ ጥሪ ብቻ የሚሆን Database connection መክፈት
-    client, files_collection = get_db_collection()
-    
-    try:
-        search_text = message.text.lower().strip()
-        found_file = await files_collection.find_one({"file_name": {"$regex": search_text}})
-        
-        if found_file:
-            await message.answer_audio(
-                found_file["file_id"], 
-                caption=f"🎧 **{found_file['display_name']}**\n\nከ @MenzumaBoxBot የተላከ"
-            )
-        else:
-            await message.reply("😔 ይቅርታ፣ አልተገኘም።")
-    except Exception as e:
-        logging.error(f"Search Error: {e}")
-    finally:
-        # Connection መዝጋት
-        client.close()
-
-# --- Vercel Webhook Handler ---
-class handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        BOT_TOKEN = os.environ.get("BOT_TOKEN")
-        
-        content_length = int(self.headers['Content-Length'])
-        post_data = self.rfile.read(content_length)
-
-        async def feed_update():
-            bot = Bot(token=BOT_TOKEN)
-            try:
-                update_dict = json.loads(post_data.decode('utf-8'))
-                update = types.Update(**update_dict)
-                await dp.feed_update(bot=bot, update=update)
-            except Exception as e:
-                logging.error(f"Process Error: {e}")
-            finally:
-                await bot.session.close()
-
+# --- Vercel Webhook Route ---
+@app.route('/', methods=['GET', 'POST'])
+async def handler():
+    if request.method == 'POST':
         try:
-            asyncio.run(feed_update())
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
+            await ensure_connected()
+            data = request.get_json()
+            update = await client.get_updates_as_event_loop(data)
+            await client.dispatch(update)
+            return 'ok'
         except Exception as e:
-            logging.error(f"Server Error: {e}")
-            self.send_response(500)
-            self.end_headers()
-            self.wfile.write(str(e).encode())
+            logging.error(f"Error: {e}")
+            return 'error', 500
+    return 'Al-Madih Bot is Running on Vercel! 🚀'
 
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is Running (Stateless Mode)!")
+# --- ቦቱ ምን ይስራ? (LOGIC) ---
+
+@client.on(events.NewMessage(pattern='/start'))
+async def start(event):
+    welcome_text = (
+        "**🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ!**\n\n"
+        "መንዙማዎችን ለመስማት `@Almadihbot` ብለው ይጻፉ።"
+    )
+    buttons = [
+        [Button.switch_inline("🔍 መንዙማ ይፈልጉ", query="", same_peer=True)],
+        [Button.url("Join Channel 📢", "https://t.me/Al_madih")]
+    ]
+    await event.reply(welcome_text, buttons=buttons)
+
+@client.on(events.InlineQuery)
+async def inline_handler(event):
+    query = event.text.strip()
+    search_criteria = {"display_name": {"$regex": query, "$options": "i"}} if query else {}
+    
+    # 50 ውጤት ብቻ
+    cursor = db.find(search_criteria).sort("_id", -1).limit(50)
+    
+    results = []
+    async for doc in cursor:
+        if 'file_id' in doc:
+            results.append(
+                event.builder.document(
+                    file=doc['file_id'],
+                    title=doc.get("display_name", "Audio"),
+                    description="@Almadihbot",
+                    text=f"{doc.get('display_name')}\n\n@Almadihbot" 
+                )
+            )
+    
+    if results:
+        await event.answer(results)
+    else:
+        await event.answer([], switch_pm="ምንም አልተገኘም", switch_pm_param="start")
