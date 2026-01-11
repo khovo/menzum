@@ -65,6 +65,7 @@ async def save_file(message: types.Message):
         
     except Exception as e:
         logging.error(f"DB Error: {e}")
+        await message.reply(f"⚠️ Save Error: {str(e)}")
     finally:
         # Close connection
         client.close()
@@ -74,6 +75,7 @@ async def search_handler(message: types.Message):
     # 1. Open DB connection for this request
     client, files_collection = get_db_collection()
     if not client:
+        await message.reply("⚠️ Database connection failed.")
         return
 
     try:
@@ -82,14 +84,22 @@ async def search_handler(message: types.Message):
         found_file = await files_collection.find_one({"file_name": {"$regex": search_text, "$options": "i"}})
         
         if found_file:
-            await message.answer_audio(
-                found_file["file_id"], 
-                caption=f"🎧 **{found_file['display_name']}**\n\n@Almadihbot"
-            )
+            # እዚህ ጋር ነው ለውጡ: File IDን በግልፅ ወደ String ቀይረን እንሞክር
+            file_id = str(found_file["file_id"])
+            try:
+                await message.answer_audio(
+                    audio=file_id, 
+                    caption=f"🎧 **{found_file['display_name']}**\n\n@Almadihbot"
+                )
+            except Exception as send_err:
+                # መላክ ካልቻለ ምክንያቱን ይናገር
+                logging.error(f"Sending Error: {send_err}")
+                await message.reply(f"⚠️ ፋይሉ ተገኝቷል ግን መላክ አልተቻለም።\nError: {str(send_err)}")
         else:
             await message.reply("😔 ይቅርታ፣ አልተገኘም።")
     except Exception as e:
         logging.error(f"Search Error: {e}")
+        await message.reply(f"⚠️ System Error: {str(e)}")
     finally:
         # Close connection
         if client:
@@ -108,8 +118,6 @@ class handler(BaseHTTPRequestHandler):
             try:
                 # Convert bytes to dict then to Update object
                 update_dict = json.loads(post_data.decode('utf-8'))
-                # Aiogram expects an Update object, not a dict directly in feed_update usually,
-                # but let's try passing the object constructed from dict
                 update = types.Update(**update_dict)
                 await dp.feed_update(bot=bot, update=update)
             except Exception as e:
