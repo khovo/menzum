@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
-# --- ቅንብሮች (Vercel Environment Variables) ---
+# --- ቅንብሮች ---
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -21,7 +21,6 @@ MONGO_URL = os.environ.get("MONGO_URL", "")
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
-# Vercel ላይ Session እንዳይፈጥር (Stateless)
 client = TelegramClient(None, API_ID, API_HASH, loop=loop)
 db_client = AsyncIOMotorClient(MONGO_URL)
 db = db_client["MenzumaDB"]["files"]
@@ -30,9 +29,10 @@ async def ensure_connected():
     if not client.is_connected():
         await client.start(bot_token=BOT_TOKEN)
 
-# --- Vercel Webhook Route ---
+# --- WEBHOOK ROUTE (ስሙ ተቀይሯል) ---
+# እዚህ ጋር ነው ችግሩ የነበረው፣ አሁን 'telegram_webhook' አልነው
 @app.route('/', methods=['GET', 'POST'])
-async def handler():
+async def telegram_webhook():
     if request.method == 'POST':
         try:
             await ensure_connected()
@@ -64,7 +64,6 @@ async def inline_handler(event):
     query = event.text.strip()
     search_criteria = {"display_name": {"$regex": query, "$options": "i"}} if query else {}
     
-    # 50 ውጤት ብቻ
     cursor = db.find(search_criteria).sort("_id", -1).limit(50)
     
     results = []
@@ -83,3 +82,7 @@ async def inline_handler(event):
         await event.answer(results)
     else:
         await event.answer([], switch_pm="ምንም አልተገኘም", switch_pm_param="start")
+
+# Local Test
+if __name__ == '__main__':
+    app.run(debug=True)
