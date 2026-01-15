@@ -1,142 +1,182 @@
-import os
-import logging
-import json
-import asyncio
-from http.server import BaseHTTPRequestHandler
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.fsm.storage.memory import MemoryStorage
+from flask import Flask, request, jsonify
 from motor.motor_asyncio import AsyncIOMotorClient
+import os
+import asyncio
+import logging
+import traceback
+import aiohttp 
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Dispatcher Setup
-dp = Dispatcher(storage=MemoryStorage())
+app = Flask(__name__)
 
-# --- Helper Function: Database Connection ---
-def get_db_collection():
-    """Returns database client and collection."""
-    mongo_url = os.environ.get("MONGO_URL")
-    if not mongo_url:
-        return None, None
-    client = AsyncIOMotorClient(mongo_url)
-    db = client["MenzumaDB"]
-    return client, db["files"]
+# --- Environment Variables ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+MONGO_URL = os.environ.get("MONGO_URL")
 
-# --- Handlers ---
+# የግዴታ የምናስገባበት ቻናል (Username without @)
+FORCE_CHANNEL_USERNAME = "Al_madih" 
+FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
-@dp.message(Command("start"))
-async def start_handler(message: types.Message):
-    await message.answer(
-        f"ሰላም {message.from_user.full_name}! 👋\n\n"
-        "ይህ የመንዙማ ባንክ (Al-Madih) ነው።\n"
-        "🔍 የሚፈልጉትን መንዙማ ስም ይጻፉ።"
-    )
-
-@dp.message(F.audio | F.voice)
-async def save_file(message: types.Message):
-    # 1. Open DB connection for this request
-    client, files_collection = get_db_collection()
-    if not client:
-        return
-
+# --- Helper: Run Async Code in Sync Flask ---
+def run_async(coro):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        file_id = message.audio.file_id if message.audio else message.voice.file_id
-        file_name = message.caption if message.caption else (message.audio.file_name if message.audio else "Unknown")
-        
-        # Cleaning
-        clean_name = file_name.strip()
-        
-        data = {
-            "file_id": file_id,
-            "file_name": clean_name.lower(),
-            "display_name": clean_name
-        }
-        
-        # Save to DB
-        await files_collection.update_one(
-            {"file_name": clean_name.lower()}, 
-            {"$set": data}, 
-            upsert=True
-        )
-        
-        await message.reply(f"✅ ተቀብያለሁ! **{clean_name}** ተመዝግቧል።")
-        
-    except Exception as e:
-        logging.error(f"DB Error: {e}")
-        await message.reply(f"⚠️ Save Error: {str(e)}")
+        return loop.run_until_complete(coro)
     finally:
-        # Close connection
-        client.close()
+        loop.close()
 
-@dp.message(F.text)
-async def search_handler(message: types.Message):
-    # 1. Open DB connection for this request
-    client, files_collection = get_db_collection()
-    if not client:
-        await message.reply("⚠️ Database connection failed.")
-        return
-
-    try:
-        search_text = message.text.lower().strip()
-        # Regex search
-        found_file = await files_collection.find_one({"file_name": {"$regex": search_text, "$options": "i"}})
-        
-        if found_file:
-            # እዚህ ጋር ነው ለውጡ: File IDን በግልፅ ወደ String ቀይረን እንሞክር
-            file_id = str(found_file["file_id"])
-            try:
-                await message.answer_audio(
-                    audio=file_id, 
-                    caption=f"🎧 **{found_file['display_name']}**\n\n@Almadihbot"
-                )
-            except Exception as send_err:
-                # መላክ ካልቻለ ምክንያቱን ይናገር
-                logging.error(f"Sending Error: {send_err}")
-                await message.reply(f"⚠️ ፋይሉ ተገኝቷል ግን መላክ አልተቻለም።\nError: {str(send_err)}")
-        else:
-            await message.reply("😔 ይቅርታ፣ አልተገኘም።")
-    except Exception as e:
-        logging.error(f"Search Error: {e}")
-        await message.reply(f"⚠️ System Error: {str(e)}")
-    finally:
-        # Close connection
-        if client:
-            client.close()
-
-# --- Vercel Webhook Handler ---
-class handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        BOT_TOKEN = os.environ.get("BOT_TOKEN")
-        
-        content_length = int(self.headers['Content-Length'])
-        post_data = self.rfile.read(content_length)
-
-        async def feed_update():
-            bot = Bot(token=BOT_TOKEN)
-            try:
-                # Convert bytes to dict then to Update object
-                update_dict = json.loads(post_data.decode('utf-8'))
-                update = types.Update(**update_dict)
-                await dp.feed_update(bot=bot, update=update)
-            except Exception as e:
-                logging.error(f"Process Error: {e}")
-            finally:
-                await bot.session.close()
-
+# --- Direct API Helpers ---
+async def send_message(chat_id, text, reply_markup=None):
+    if not BOT_TOKEN: return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    async with aiohttp.ClientSession() as session:
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+        if reply_markup: payload["reply_markup"] = reply_markup
         try:
-            asyncio.run(feed_update())
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
+            async with session.post(url, json=payload) as resp:
+                return await resp.json()
         except Exception as e:
-            logging.error(f"Server Error: {e}")
-            self.send_response(500)
-            self.end_headers()
-            self.wfile.write(str(e).encode())
+            logger.error(f"Send Error: {e}")
 
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is Running (Aiogram Mode)!")
+# ሰውየው ቻናሉ ውስጥ መኖሩን ማረጋገጥ
+async def check_membership(user_id):
+    if not BOT_TOKEN: return True # Token ከሌለ ዝም ብሎ ይለፍ
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
+    params = {"chat_id": f"@{FORCE_CHANNEL_USERNAME}", "user_id": user_id}
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, params=params) as resp:
+                result = await resp.json()
+                if not result.get("ok"):
+                    # ቦቱ አድሚን ካልሆነ ወይም ቻናሉ ካልተገኘ ዝም ብሎ ያለፋል (Error እንዳይሆን)
+                    logger.warning(f"Membership Check Fail: {result}")
+                    return True 
+                
+                status = result["result"]["status"]
+                # አባል ከሆነ (creator, administrator, member)
+                if status in ["creator", "administrator", "member"]:
+                    return True
+                return False
+        except Exception as e:
+            logger.error(f"Check Member Error: {e}")
+            return True # Error ካለ እንዳይዘጋባቸው ዝም ብሎ ያስለፍ
+
+async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None):
+    if not BOT_TOKEN: return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
+    
+    payload = {"inline_query_id": query_id, "results": results, "cache_time": 10}
+    if switch_pm_text and switch_pm_param:
+        payload["switch_pm_text"] = switch_pm_text
+        payload["switch_pm_parameter"] = switch_pm_param
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, json=payload) as resp:
+                return await resp.json()
+        except Exception:
+            pass
+
+# --- Main Logic ---
+async def process_telegram_update(data):
+    if not MONGO_URL: return
+
+    db_client = AsyncIOMotorClient(MONGO_URL)
+    db = db_client["MenzumaDB"]["files"]
+
+    try:
+        # 1. Handle Messages (/start)
+        if "message" in data:
+            message = data["message"]
+            chat_id = message.get("chat", {}).get("id")
+            user_id = message.get("from", {}).get("id")
+            text = message.get("text", "")
+
+            # Force Subscribe Check
+            is_member = await check_membership(user_id)
+            
+            if not is_member:
+                # አባል ካልሆነ ማስጠንቀቂያ
+                text = (
+                    "**⚠️ ይቅርታ! ቦቱን ለመጠቀም መጀመሪያ ቻናላችንን መቀላቀል አለብዎት።**\n\n"
+                    "Please join our channel to use this bot."
+                )
+                keyboard = {
+                    "inline_keyboard": [
+                        [{"text": "Join Channel 📢", "url": FORCE_CHANNEL_URL}],
+                        [{"text": "Try Again 🔄", "url": f"https://t.me/Almadihbot?start=start"}]
+                    ]
+                }
+                await send_message(chat_id, text, reply_markup=keyboard)
+                return
+
+            if text == "/start":
+                welcome_text = (
+                    "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
+                    "በዚህ ቦት ከ 1,200 በላይ መንዙማዎችን እና ነሺዳዎችን ማግኘት ይችላሉ።\n\n"
+                    "👇 **ከታች ያለውን ቁልፍ በመጫን ይፈልጉ:**"
+                )
+                keyboard = {
+                    "inline_keyboard": [
+                        [{"text": "🔍 መንዙማ ይፈልጉ (Search)", "switch_inline_query_current_chat": ""}],
+                        [{"text": "ቻናላችን / Our Channel", "url": FORCE_CHANNEL_URL}]
+                    ]
+                }
+                await send_message(chat_id, welcome_text, reply_markup=keyboard)
+
+        # 2. Handle Inline Query (Search)
+        elif "inline_query" in data:
+            inline_query = data["inline_query"]
+            query_id = inline_query["id"]
+            user_id = inline_query.get("from", {}).get("id")
+            query = inline_query.get("query", "").strip()
+
+            # Inline ላይም አባል መሆኑን ማረጋገጥ (Optional - ግን ጠቃሚ ነው)
+            is_member = await check_membership(user_id)
+            if not is_member:
+                await answer_inline_query(
+                    query_id, [], 
+                    switch_pm_text="⚠️ መጀመሪያ ቻናሉን ይቀላቀሉ (Join Channel)", 
+                    switch_pm_param="start"
+                )
+                return
+
+            # Search in DB
+            search_criteria = {"display_name": {"$regex": query, "$options": "i"}} if query else {}
+            cursor = db.find(search_criteria).sort("_id", -1).limit(50)
+            
+            results = []
+            async for doc in cursor:
+                if 'file_id' in doc:
+                    results.append({
+                        "type": "audio",
+                        "id": str(doc["_id"]),
+                        "audio_file_id": doc["file_id"],
+                        "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
+                    })
+            
+            await answer_inline_query(query_id, results)
+
+    except Exception as e:
+        logger.error(f"Logic Error: {e}")
+
+# --- FLASK ROUTE ---
+@app.route('/', methods=['GET', 'POST'])
+def telegram_webhook():
+    if request.method == 'POST':
+        try:
+            data = request.get_json()
+            run_async(process_telegram_update(data))
+            return 'ok'
+        except Exception:
+            return 'error', 500
+            
+    return 'Al-Madih Bot is Running! (Force Sub Active) 🚀'
+
+if __name__ == '__main__':
+    app.run(debug=True)
