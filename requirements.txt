@@ -1,4 +1,5 @@
-aiogram
+flask
 motor
 dnspython
 pymongo
+aiohttp
