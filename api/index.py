@@ -20,17 +20,9 @@ MONGO_URL = os.environ.get("MONGO_URL")
 FORCE_CHANNEL_USERNAME = "Al_madih" 
 FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
-# Global DB Client (To fix connection issues)
-db_client = None
-
 # --- Helpers ---
-def get_database():
-    global db_client
-    if not db_client:
-        db_client = AsyncIOMotorClient(MONGO_URL)
-    return db_client["MenzumaDB"]["files"]
-
 def run_async(coro):
+    """እያንዳንዱ ጥሪ የራሱ Loop ይኖረዋል"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -74,7 +66,7 @@ async def check_membership(user_id):
 async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
-    # cache_time=5 ሰከንድ ብቻ (ለፍጥነት እና ለለውጥ)
+    # Cache time 5 ሰከንድ (ለፍጥነት)
     payload = {"inline_query_id": query_id, "results": results, "cache_time": 5}
     if switch_pm_text:
         payload["switch_pm_text"] = switch_pm_text
@@ -88,19 +80,16 @@ async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_
 # --- 🔥 SMART SEARCH ALGORITHM 🔥 ---
 def build_search_query(query_text):
     if not query_text:
-        return {} # ባዶ ከሆነ ሁሉንም (Latest)
+        return {} # ባዶ ከሆነ ሁሉንም
     
     query_text = query_text.strip()
     
-    # 1. አንድ ፊደል ብቻ ከሆነ (Starts With)
+    # 1 ፊደል ከሆነ (Starts With)
     if len(query_text) == 1:
-        return {"display_name": {"$regex": f"^{query_text}", "$options": "i"}}
+        return {"display_name": {"$regex": f"^{re.escape(query_text)}", "$options": "i"}}
     
-    # 2. Advanced: ቃላቱን መነጣጠል (Tokenization)
-    # ምሳሌ: "Muaz Habib" -> ["Muaz", "Habib"]
+    # ቃላትን መነጣጠል (AND Logic)
     words = query_text.split()
-    
-    # ሁሉንም ቃላት የያዘ መሆን አለበት (AND logic with Regex)
     regex_pattern = ""
     for word in words:
         regex_pattern += f"(?=.*{re.escape(word)})"
@@ -110,7 +99,10 @@ def build_search_query(query_text):
 # --- Main Logic ---
 async def process_telegram_update(data):
     if not MONGO_URL or not BOT_TOKEN: return
-    db = get_database()
+
+    # ⚠️ ወሳኝ ለውጥ: Database እዚህ ውስጥ ይፈጠራል (Global አይደለም!)
+    db_client = AsyncIOMotorClient(MONGO_URL)
+    db = db_client["MenzumaDB"]["files"]
 
     try:
         # 1. Message Handling
@@ -120,7 +112,7 @@ async def process_telegram_update(data):
             user_id = message.get("from", {}).get("id")
             text = message.get("text", "")
 
-            # Force Subscribe Check
+            # Force Subscribe
             if not await check_membership(user_id):
                 msg = "**⚠️ ይቅርታ! ቦቱን ለመጠቀም መጀመሪያ ቻናላችንን ይቀላቀሉ።**"
                 kb = {"inline_keyboard": [[{"text": "Join Channel 📢", "url": FORCE_CHANNEL_URL}]]}
@@ -144,7 +136,7 @@ async def process_telegram_update(data):
                 await send_message(chat_id, welcome, reply_markup=kb)
             
             elif text:
-                # Direct Search Logic
+                # Direct Search
                 search_query = build_search_query(text)
                 doc = await db.find_one(search_query)
                 
@@ -167,7 +159,7 @@ async def process_telegram_update(data):
             # Smart Search
             search_criteria = build_search_query(query)
             
-            # ባዶ ከሆነ አዳዲሶቹን አምጣ (Sort by ID desc)
+            # ውጤቱን ማምጣት
             cursor = db.find(search_criteria).sort("_id", -1).limit(50)
             
             results = []
@@ -184,6 +176,9 @@ async def process_telegram_update(data):
 
     except Exception as e:
         logger.error(f"Logic Error: {e}")
+    finally:
+        # Client መዝጋት እንዳይረሳ
+        db_client.close()
 
 # --- WEBHOOK ROUTE ---
 @app.route('/', methods=['GET', 'POST'])
@@ -195,7 +190,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Smart Mode) 🚀'
+    return 'Al-Madih Bot Running (Loop Fixed) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
