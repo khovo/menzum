@@ -40,6 +40,18 @@ async def send_message(chat_id, text, reply_markup=None):
         except Exception as e:
             logger.error(f"Send Error: {e}")
 
+# አዲስ: ኦዲዮ መላኪያ Function
+async def send_audio(chat_id, audio_file_id, caption):
+    if not BOT_TOKEN: return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendAudio"
+    async with aiohttp.ClientSession() as session:
+        payload = {"chat_id": chat_id, "audio": audio_file_id, "caption": caption, "parse_mode": "Markdown"}
+        try:
+            async with session.post(url, json=payload) as resp:
+                return await resp.json()
+        except Exception as e:
+            logger.error(f"Send Audio Error: {e}")
+
 async def check_membership(user_id):
     if not BOT_TOKEN: return True
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
@@ -57,7 +69,7 @@ async def check_membership(user_id):
 async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
-    payload = {"inline_query_id": query_id, "results": results, "cache_time": 10}
+    payload = {"inline_query_id": query_id, "results": results, "cache_time": 5} # Cache time reduced
     if switch_pm_text:
         payload["switch_pm_text"] = switch_pm_text
         payload["switch_pm_parameter"] = switch_pm_param
@@ -65,8 +77,8 @@ async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_
         try:
             async with session.post(url, json=payload) as resp:
                 return await resp.json()
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Inline Answer Error: {e}")
 
 # --- Main Logic ---
 async def process_telegram_update(data):
@@ -78,7 +90,7 @@ async def process_telegram_update(data):
     db = db_client["MenzumaDB"]["files"]
 
     try:
-        # 1. Message Handling (/start)
+        # 1. Message Handling (/start OR Text Search)
         if "message" in data:
             message = data["message"]
             chat_id = message.get("chat", {}).get("id")
@@ -93,11 +105,14 @@ async def process_telegram_update(data):
                 await send_message(chat_id, msg, reply_markup=kb)
                 return
 
+            # Command: /start
             if text.startswith("/start"):
                 welcome = (
                     "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
                     "በዚህ ቦት ከ 1,200 በላይ መንዙማዎችን ማግኘት ይችላሉ።\n\n"
-                    "👇 **ከታች ያለውን ቁልፍ በመጫን ይፈልጉ:**"
+                    "👇 **አጠቃቀም:**\n"
+                    "1. ዝም ብለው የመንዙማውን ስም ይጻፉልን።\n"
+                    "2. ወይም `Search` የሚለውን ቁልፍ ይጫኑ።"
                 )
                 kb = {
                     "inline_keyboard": [
@@ -106,6 +121,18 @@ async def process_telegram_update(data):
                     ]
                 }
                 await send_message(chat_id, welcome, reply_markup=kb)
+            
+            # Direct Text Search (ዝም ብሎ ጽሁፍ ሲላክ)
+            elif text:
+                logger.info(f"Direct Search: {text}")
+                query = text.strip()
+                # 1. በትክክለኛ ስም (Exact/Regex) መፈለግ
+                doc = await db.find_one({"display_name": {"$regex": query, "$options": "i"}})
+                
+                if doc and 'file_id' in doc:
+                    await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot")
+                else:
+                    await send_message(chat_id, "😔 ይቅርታ፣ ይህ መንዙማ አልተገኘም። እባክዎ ስሙን አስተካክለው ይሞክሩ።")
 
         # 2. Inline Query (Search)
         elif "inline_query" in data:
@@ -119,6 +146,7 @@ async def process_telegram_update(data):
                 await answer_inline_query(query_id, [], "⚠️ Join Channel First", "start")
                 return
 
+            # Search Query
             search_criteria = {"display_name": {"$regex": query, "$options": "i"}} if query else {}
             cursor = db.find(search_criteria).sort("_id", -1).limit(50)
             
@@ -138,7 +166,6 @@ async def process_telegram_update(data):
         logger.error(f"Logic Error: {e}")
 
 # --- WEBHOOK ROUTE FIX ---
-# እዚህ ጋር ነው ለውጡ! ሁለቱንም መንገድ እንዲቀበል አደረግነው።
 @app.route('/', methods=['GET', 'POST'])
 @app.route('/api/webhook', methods=['GET', 'POST'])
 def telegram_webhook():
