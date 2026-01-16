@@ -5,6 +5,7 @@ import asyncio
 import logging
 import traceback
 import aiohttp 
+import re
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +20,16 @@ MONGO_URL = os.environ.get("MONGO_URL")
 FORCE_CHANNEL_USERNAME = "Al_madih" 
 FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
+# Global DB Client (To fix connection issues)
+db_client = None
+
 # --- Helpers ---
+def get_database():
+    global db_client
+    if not db_client:
+        db_client = AsyncIOMotorClient(MONGO_URL)
+    return db_client["MenzumaDB"]["files"]
+
 def run_async(coro):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -64,27 +74,43 @@ async def check_membership(user_id):
 async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
-    
-    # እዚህ ጋር ነው ፍጥነት የጨመርነው (cache_time=300 ሰከንድ/5 ደቂቃ)
-    payload = {"inline_query_id": query_id, "results": results, "cache_time": 300}
-    
+    # cache_time=5 ሰከንድ ብቻ (ለፍጥነት እና ለለውጥ)
+    payload = {"inline_query_id": query_id, "results": results, "cache_time": 5}
     if switch_pm_text:
         payload["switch_pm_text"] = switch_pm_text
         payload["switch_pm_parameter"] = switch_pm_param
-        payload["cache_time"] = 5 # Force Sub ከሆነ Cache አናርግ
-        
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(url, json=payload) as resp:
                 return await resp.json()
         except: pass
 
+# --- 🔥 SMART SEARCH ALGORITHM 🔥 ---
+def build_search_query(query_text):
+    if not query_text:
+        return {} # ባዶ ከሆነ ሁሉንም (Latest)
+    
+    query_text = query_text.strip()
+    
+    # 1. አንድ ፊደል ብቻ ከሆነ (Starts With)
+    if len(query_text) == 1:
+        return {"display_name": {"$regex": f"^{query_text}", "$options": "i"}}
+    
+    # 2. Advanced: ቃላቱን መነጣጠል (Tokenization)
+    # ምሳሌ: "Muaz Habib" -> ["Muaz", "Habib"]
+    words = query_text.split()
+    
+    # ሁሉንም ቃላት የያዘ መሆን አለበት (AND logic with Regex)
+    regex_pattern = ""
+    for word in words:
+        regex_pattern += f"(?=.*{re.escape(word)})"
+    
+    return {"display_name": {"$regex": f"^{regex_pattern}", "$options": "i"}}
+
 # --- Main Logic ---
 async def process_telegram_update(data):
     if not MONGO_URL or not BOT_TOKEN: return
-
-    db_client = AsyncIOMotorClient(MONGO_URL)
-    db = db_client["MenzumaDB"]["files"]
+    db = get_database()
 
     try:
         # 1. Message Handling
@@ -106,8 +132,8 @@ async def process_telegram_update(data):
                     "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
                     "በዚህ ቦት ከ 1,200 በላይ መንዙማዎችን ማግኘት ይችላሉ።\n\n"
                     "👇 **አጠቃቀም:**\n"
-                    "1. ዝም ብለው ስም ይጻፉ (Direct).\n"
-                    "2. ወይም `Search` የሚለውን በመጫን ለጓደኛዎ ይላኩ።"
+                    "1. ዝም ብለው የመንዙማ ስም ይጻፉ።\n"
+                    "2. ለጓደኛዎ ለመላክ `Search` የሚለውን ይጫኑ።"
                 )
                 kb = {
                     "inline_keyboard": [
@@ -118,12 +144,14 @@ async def process_telegram_update(data):
                 await send_message(chat_id, welcome, reply_markup=kb)
             
             elif text:
-                query = text.strip()
-                doc = await db.find_one({"display_name": {"$regex": query, "$options": "i"}})
+                # Direct Search Logic
+                search_query = build_search_query(text)
+                doc = await db.find_one(search_query)
+                
                 if doc and 'file_id' in doc:
                     await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot")
                 else:
-                    await send_message(chat_id, "😔 ይቅርታ፣ አልተገኘም።")
+                    await send_message(chat_id, "😔 ይቅርታ፣ ይህ መንዙማ አልተገኘም።")
 
         # 2. Inline Query (Search)
         elif "inline_query" in data:
@@ -136,14 +164,10 @@ async def process_telegram_update(data):
                 await answer_inline_query(query_id, [], "⚠️ Join Channel First", "start")
                 return
 
-            # እዚህ ጋር ነው ዋናው ለውጥ!
-            if query:
-                # ከተጻፈ -> በስም ፈልግ
-                search_criteria = {"display_name": {"$regex": query, "$options": "i"}}
-            else:
-                # ባዶ ከሆነ -> ዝም ብለህ የቅርብ ጊዜዎቹን አምጣ (Show All)
-                search_criteria = {}
-
+            # Smart Search
+            search_criteria = build_search_query(query)
+            
+            # ባዶ ከሆነ አዳዲሶቹን አምጣ (Sort by ID desc)
             cursor = db.find(search_criteria).sort("_id", -1).limit(50)
             
             results = []
@@ -171,7 +195,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running 🚀'
+    return 'Al-Madih Bot Running (Smart Mode) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
