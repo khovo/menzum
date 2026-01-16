@@ -18,21 +18,12 @@ app = Flask(__name__)
 # --- Environment Variables ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URL = os.environ.get("MONGO_URL")
-ADMIN_ID = os.environ.get("ADMIN_ID") # Add your Telegram ID in Vercel Env Vars
+ADMIN_ID = os.environ.get("ADMIN_ID")
 
 FORCE_CHANNEL_USERNAME = "Al_madih" 
 FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
-# Global DB Client
-db_client = None
-
 # --- Helpers ---
-def get_database():
-    global db_client
-    if not db_client:
-        db_client = AsyncIOMotorClient(MONGO_URL)
-    return db_client["MenzumaDB"]
-
 def run_async(coro):
     """Run async code in sync context"""
     loop = asyncio.new_event_loop()
@@ -110,21 +101,18 @@ async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_
                 return await resp.json()
         except: pass
 
-# --- DB Helpers ---
-async def track_user(user_id, first_name):
-    db = get_database()
+# --- DB Helpers (Modified to accept db instance) ---
+async def track_user(db, user_id, first_name):
     await db.users.update_one(
         {"_id": user_id},
         {"$set": {"first_name": first_name, "last_active": datetime.now()}},
         upsert=True
     )
 
-async def increment_view(file_id):
-    db = get_database()
+async def increment_view(db, file_id):
     await db.files.update_one({"file_id": file_id}, {"$inc": {"views": 1}})
 
-async def toggle_favorite(user_id, file_id):
-    db = get_database()
+async def toggle_favorite(db, user_id, file_id):
     user = await db.users.find_one({"_id": user_id})
     favorites = user.get("favorites", []) if user else []
     
@@ -151,7 +139,10 @@ def build_search_query(query_text):
 # --- Main Logic ---
 async def process_telegram_update(data):
     if not MONGO_URL or not BOT_TOKEN: return
-    db = get_database()
+    
+    # ⚠️ FIX: Create DB client inside the function loop
+    db_client = AsyncIOMotorClient(MONGO_URL)
+    db = db_client["MenzumaDB"]
 
     try:
         # 1. Callback Query (Button Clicks)
@@ -163,10 +154,9 @@ async def process_telegram_update(data):
             
             if data_str.startswith("fav_"):
                 file_id = data_str.split("fav_")[1]
-                is_fav = await toggle_favorite(user_id, file_id)
+                is_fav = await toggle_favorite(db, user_id, file_id)
                 text = "❤️ Saved to Favorites" if is_fav else "💔 Removed from Favorites"
                 
-                # Update Button
                 new_text = "💔 Remove" if is_fav else "❤️ Add to Favorite"
                 kb = {"inline_keyboard": [[{"text": new_text, "callback_data": f"fav_{file_id}"}]]}
                 
@@ -182,17 +172,14 @@ async def process_telegram_update(data):
             first_name = message.get("from", {}).get("first_name", "User")
             text = message.get("text", "")
 
-            # Track User
-            await track_user(user_id, first_name)
+            await track_user(db, user_id, first_name)
 
-            # Force Subscribe Check
             if not await check_membership(user_id):
                 msg = "**⚠️ ይቅርታ! ቦቱን ለመጠቀም መጀመሪያ ቻናላችንን ይቀላቀሉ።**"
                 kb = {"inline_keyboard": [[{"text": "Join Channel 📢", "url": FORCE_CHANNEL_URL}]]}
                 await send_message(chat_id, msg, reply_markup=kb)
                 return
 
-            # --- Commands ---
             if text == "/start":
                 welcome = (
                     "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
@@ -217,7 +204,7 @@ async def process_telegram_update(data):
                 async for doc in db.files.aggregate(pipeline):
                     kb = {"inline_keyboard": [[{"text": "❤️ Add to Favorite", "callback_data": f"fav_{doc['file_id']}"}]]}
                     await send_audio(chat_id, doc['file_id'], f"🎲 **Random Pick:**\n{doc.get('display_name')}\n\n@Almadihbot", kb)
-                    await increment_view(doc['file_id'])
+                    await increment_view(db, doc['file_id'])
 
             elif text == "/new":
                 cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).limit(10)
@@ -247,7 +234,6 @@ async def process_telegram_update(data):
                     await send_message(chat_id, "📭 እስካሁን የመረጡት መንዙማ የለም።\n\nመንዙማ ሲሰሙ '❤️ Add to Favorite' የሚለውን ይጫኑ።")
                 else:
                     msg = "**❤️ የእርስዎ ምርጫዎች:**\n\n"
-                    # Get details for first 20 favs
                     cursor = db.files.find({"file_id": {"$in": fav_ids}}).limit(20)
                     i = 1
                     async for doc in cursor:
@@ -256,7 +242,6 @@ async def process_telegram_update(data):
                         i += 1
                     await send_message(chat_id, msg)
 
-            # --- Admin Commands ---
             elif text == "/admin" and str(user_id) == str(ADMIN_ID):
                 users_count = await db.users.count_documents({})
                 files_count = await db.files.count_documents({})
@@ -278,24 +263,22 @@ async def process_telegram_update(data):
                     try:
                         await send_message(user["_id"], f"📢 **ማስታወቂያ:**\n\n{broadcast_msg}")
                         count += 1
-                        await asyncio.sleep(0.05) # Prevent Rate limit
+                        await asyncio.sleep(0.05) 
                     except: pass
                 await send_message(chat_id, f"✅ Broadcast completed to {count} users.")
 
-            # --- Direct Search ---
             elif text and not text.startswith("/"):
                 search_query = build_search_query(text)
                 doc = await db.files.find_one(search_query)
                 
                 if doc and 'file_id' in doc:
-                    # Check if fav
                     user = await db.users.find_one({"_id": user_id})
                     favs = user.get("favorites", []) if user else []
                     btn_text = "💔 Remove" if doc['file_id'] in favs else "❤️ Add to Favorite"
                     kb = {"inline_keyboard": [[{"text": btn_text, "callback_data": f"fav_{doc['file_id']}"}]]}
                     
                     await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
-                    await increment_view(doc['file_id'])
+                    await increment_view(db, doc['file_id'])
                 else:
                     await send_message(chat_id, "😔 ይቅርታ፣ ይህ መንዙማ አልተገኘም።")
 
@@ -307,7 +290,7 @@ async def process_telegram_update(data):
             first_name = iq.get("from", {}).get("first_name", "User")
             query = iq.get("query", "").strip()
 
-            await track_user(user_id, first_name)
+            await track_user(db, user_id, first_name)
 
             if not await check_membership(user_id):
                 await answer_inline_query(query_id, [], "⚠️ Join Channel First", "start")
@@ -331,7 +314,8 @@ async def process_telegram_update(data):
     except Exception as e:
         logger.error(f"Logic Error: {e}")
     finally:
-        if db_client: db_client.close()
+        # ወሳኝ: ስራ ሲጨርስ ዳታቤዝ connection መዝጋት
+        db_client.close()
 
 # --- WEBHOOK ROUTE ---
 @app.route('/', methods=['GET', 'POST'])
@@ -343,7 +327,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (v2.0) 🚀'
+    return 'Al-Madih Bot Running (Loop Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
