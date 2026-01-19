@@ -25,6 +25,7 @@ FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
 # --- Helpers ---
 def run_async(coro):
+    """Run async code in sync context"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -100,11 +101,19 @@ async def check_membership(user_id):
         try:
             async with session.get(url, params=params) as resp:
                 res = await resp.json()
-                if not res.get("ok"): return True 
+                if not res.get("ok"): 
+                    # If bot isn't admin or error, defaulting to False is safer for strict mode, 
+                    # but True prevents broken bot if API fails. 
+                    # Critique suggested this is a risk. Let's return False on explicit 'not ok' 
+                    # only if it's a membership error, but for now we will be strict.
+                    return False 
+                
                 return res["result"]["status"] in ["creator", "administrator", "member"]
-        except: return True
+        except: 
+            # Fail closed (Secure)
+            return False
 
-async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=0):
+async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=1):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
     payload = {"inline_query_id": query_id, "results": results, "cache_time": cache_time}
@@ -146,9 +155,15 @@ async def toggle_favorite(db, user_id, file_id):
 def build_search_query(query_text):
     if not query_text: return {}
     query_text = query_text.strip()
-    if query_text.startswith("#"): return {} 
+    
+    # FIX: If it starts with # but wasn't handled by main logic, return a "match nothing" query
+    # instead of returning {} which matches everything.
+    if query_text.startswith("#"): 
+        return {"_id": {"$exists": False}} 
+
     if len(query_text) == 1:
         return {"display_name": {"$regex": f"^{re.escape(query_text)}", "$options": "i"}}
+    
     words = query_text.split()
     regex_pattern = ""
     for word in words:
@@ -159,7 +174,7 @@ def build_search_query(query_text):
 async def process_telegram_update(data):
     if not MONGO_URL or not BOT_TOKEN: return
     
-    # ⚠️ FIXED: Create NEW client for EVERY request to avoid closed loop errors
+    # Creating client per request is required for Flask+Vercel due to loop isolation
     db_client = AsyncIOMotorClient(MONGO_URL)
     db = db_client["MenzumaDB"]
 
@@ -252,7 +267,7 @@ async def process_telegram_update(data):
                 files_count = await db.files.count_documents({})
                 await send_message(chat_id, f"📊 **Stats:**\n👥 Users: {users_count}\n📂 Files: {files_count}")
 
-            # Direct Search Logic (Fix for "Silent" issue)
+            # Direct Search Logic
             elif text and not text.startswith("/"):
                 search_query = build_search_query(text)
                 doc = await db.files.find_one(search_query)
@@ -262,7 +277,7 @@ async def process_telegram_update(data):
                         await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
                         await increment_view(db, doc['file_id'])
                     else:
-                        await send_message(chat_id, "⚠️ ፋይሉ ተገኝቷል ግን Audio ID የለውም።")
+                        await send_message(chat_id, "⚠️ ፋይሉ በዳታቤዝ አለ ነገር ግን ኦዲዮው ጠፍቷል።")
                 else:
                     await send_message(chat_id, "😔 ይቅርታ፣ አልተገኘም።")
 
@@ -291,7 +306,6 @@ async def process_telegram_update(data):
                 filter_text = query.replace("#trending", "").strip()
                 search_filter = {}
                 if filter_text: search_filter["display_name"] = {"$regex": filter_text, "$options": "i"}
-                # 🔥 FIX: አሁንም እይታ ባይኖርም እንዲመጡ በ ID ደግፈነዋል
                 cursor = db.files.find(search_filter).sort([("views", -1), ("_id", -1)]).limit(50)
                 
             elif query.startswith("#new"):
@@ -326,13 +340,12 @@ async def process_telegram_update(data):
                             "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
                         })
 
-            # 🔥 Cache Time 0 አድርጌዋለሁ፣ ወዲያው ይቀያየራል
-            await answer_inline_query(query_id, results, cache_time=0)
+            await answer_inline_query(query_id, results, cache_time=1)
 
     except Exception as e:
         logger.error(f"Logic Error: {e}")
     finally:
-        db_client.close() # Close properly
+        db_client.close()
 
 @app.route('/', methods=['GET', 'POST'])
 @app.route('/api/webhook', methods=['GET', 'POST'])
@@ -343,7 +356,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (v4.0 Ultimate) 🚀'
+    return 'Al-Madih Bot Running (v4.1 Security Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
