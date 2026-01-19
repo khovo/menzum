@@ -9,7 +9,7 @@ import re
 import random
 from datetime import datetime
 
-# Logging
+# Logging Setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,10 @@ FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
 # --- Helpers ---
 def run_async(coro):
+    """
+    Creates a fresh event loop for each request to handle Flask's sync nature on Vercel.
+    Crucial: We must ensure all async work finishes inside here.
+    """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -39,8 +43,7 @@ async def send_message(chat_id, text, reply_markup=None):
         payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
-            async with session.post(url, json=payload) as resp:
-                return await resp.json()
+            async with session.post(url, json=payload) as resp: return await resp.json()
         except: pass
 
 async def send_audio(chat_id, audio_file_id, caption, reply_markup=None):
@@ -51,18 +54,17 @@ async def send_audio(chat_id, audio_file_id, caption, reply_markup=None):
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
             async with session.post(url, json=payload) as resp:
-                return await resp.json()
+                res = await resp.json()
+                if not res.get("ok"):
+                    await send_message(chat_id, "⚠️ ይህ ፋይል በቴሌግራም ችግር ምክንያት መላክ አልተቻለም።")
+                return res
         except: pass
 
 async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
     async with aiohttp.ClientSession() as session:
-        payload = {
-            "chat_id": chat_id,
-            "from_chat_id": from_chat_id,
-            "message_id": message_id
-        }
+        payload = {"chat_id": chat_id, "from_chat_id": from_chat_id, "message_id": message_id}
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
             async with session.post(url, json=payload) as resp: return await resp.json()
@@ -95,22 +97,20 @@ async def check_membership(user_id):
         try:
             async with session.get(url, params=params) as resp:
                 res = await resp.json()
-                if not res.get("ok"): return True 
+                if not res.get("ok"): return False # Strict check
                 return res["result"]["status"] in ["creator", "administrator", "member"]
-        except: return True
+        except: return False
 
 async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=0):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
-    
-    # 🔥 FIX: Cache Time 0 & is_personal=True
+    # 🔥 Cache Disabled (0) for instant updates
     payload = {
         "inline_query_id": query_id, 
         "results": results, 
         "cache_time": cache_time,
         "is_personal": True 
     }
-    
     if switch_pm_text:
         payload["switch_pm_text"] = switch_pm_text
         payload["switch_pm_parameter"] = switch_pm_param
@@ -147,22 +147,11 @@ async def toggle_favorite(db, user_id, file_id):
             return True
     except: return False
 
-def build_search_query(query_text):
-    if not query_text: return {}
-    query_text = query_text.strip()
-    if query_text.startswith("#"): return {} 
-    if len(query_text) == 1:
-        return {"display_name": {"$regex": f"^{re.escape(query_text)}", "$options": "i"}}
-    words = query_text.split()
-    regex_pattern = ""
-    for word in words:
-        regex_pattern += f"(?=.*{re.escape(word)})"
-    return {"display_name": {"$regex": f"^{regex_pattern}", "$options": "i"}}
-
 # --- Main Logic ---
 async def process_telegram_update(data):
     if not MONGO_URL or not BOT_TOKEN: return
     
+    # Create client inside the loop context (Critical for Vercel)
     db_client = AsyncIOMotorClient(MONGO_URL)
     db = db_client["MenzumaDB"]
 
@@ -223,61 +212,31 @@ async def process_telegram_update(data):
                 }
                 await send_message(chat_id, welcome, reply_markup=kb)
 
-            # Admin Broadcast
-            elif text and text.startswith("/broadcast") and str(user_id) == str(ADMIN_ID):
-                if "reply_to_message" in message:
-                    reply_msg_id = message["reply_to_message"]["message_id"]
-                    users_cursor = db.users.find({})
-                    count = 0
-                    await send_message(chat_id, "🚀 Media Broadcast started...")
-                    async for user in users_cursor:
-                        try:
-                            await copy_message(user["_id"], chat_id, reply_msg_id)
-                            count += 1
-                            await asyncio.sleep(0.05) 
-                        except: pass
-                    await send_message(chat_id, f"✅ Sent to {count} users.")
-                else:
-                    msg_content = text.replace("/broadcast ", "")
-                    users_cursor = db.users.find({})
-                    count = 0
-                    await send_message(chat_id, "🚀 Text Broadcast started...")
-                    async for user in users_cursor:
-                        try:
-                            await send_message(user["_id"], f"📢 **ማስታወቂያ:**\n\n{msg_content}")
-                            count += 1
-                            await asyncio.sleep(0.05)
-                        except: pass
-                    await send_message(chat_id, f"✅ Sent to {count} users.")
-
-            elif text == "/admin" and str(user_id) == str(ADMIN_ID):
-                users_count = await db.users.count_documents({})
-                files_count = await db.files.count_documents({})
-                await send_message(chat_id, f"📊 **Stats:**\n👥 Users: {users_count}\n📂 Files: {files_count}")
-
-            # Direct Search Logic
+            # Direct Search (Text) - Enforcing file_id exists
             elif text and not text.startswith("/"):
-                search_query = build_search_query(text)
+                # 🔥 FIX: Ensure file_id exists in the query itself!
+                search_query = {
+                    "file_id": {"$exists": True},
+                    "display_name": {"$regex": re.escape(text.strip()), "$options": "i"}
+                }
                 doc = await db.files.find_one(search_query)
+                
                 if doc:
-                    if 'file_id' in doc:
-                        kb = {"inline_keyboard": [[{"text": "❤️ Add to Favorite", "callback_data": f"fav_{doc['file_id']}"}]]}
-                        await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
-                        await increment_view(db, doc['file_id'])
-                    else:
-                        await send_message(chat_id, "⚠️ ፋይሉ ተገኝቷል ግን Audio ID የለውም።")
+                    kb = {"inline_keyboard": [[{"text": "❤️ Add to Favorite", "callback_data": f"fav_{doc['file_id']}"}]]}
+                    await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
+                    await increment_view(db, doc['file_id'])
                 else:
                     await send_message(chat_id, "😔 ይቅርታ፣ አልተገኘም።")
 
-        # 3. Inline Query (Fixed by ChatGPT Logic)
+        # 3. Inline Query (Fixed with 'to_list' and Aggregation)
         elif "inline_query" in data:
             iq = data["inline_query"]
             query_id = iq["id"]
             user_id = iq.get("from", {}).get("id")
             first_name = iq.get("from", {}).get("first_name", "User")
-            query = iq.get("query", "").strip().lower() # Normalize
+            query = iq.get("query", "").strip().lower()
 
-            logger.info(f"INLINE QUERY: '{query}'") # Debug Log
+            logger.info(f"INLINE QUERY: '{query}'")
 
             await track_user(db, user_id, first_name)
 
@@ -286,12 +245,10 @@ async def process_telegram_update(data):
                 return
 
             cursor = None
-            results = []
             
             # --- HASHTAG LOGIC ---
             
             if query.startswith("#random"):
-                # Explicit safe aggregation
                 pipeline = [
                     {"$match": {"file_id": {"$exists": True}}},
                     {"$sample": {"size": 50}}
@@ -299,7 +256,7 @@ async def process_telegram_update(data):
                 cursor = db.files.aggregate(pipeline)
                 
             elif query.startswith("#trending"):
-                # 🔥 FIX: Use Aggregation to handle missing views as 0
+                # Aggregation to fix missing views
                 filter_text = query.replace("#trending", "").strip()
                 match_stage = {"file_id": {"$exists": True}}
                 if filter_text:
@@ -307,15 +264,15 @@ async def process_telegram_update(data):
                 
                 pipeline = [
                     {"$match": match_stage},
-                    {"$addFields": {"views_safe": {"$ifNull": ["$views", 0]}}}, # Treat null as 0
-                    {"$sort": {"views_safe": -1, "_id": -1}}, # Sort descending
+                    {"$addFields": {"views_safe": {"$ifNull": ["$views", 0]}}}, 
+                    {"$sort": {"views_safe": -1, "_id": -1}}, 
                     {"$limit": 50}
                 ]
                 cursor = db.files.aggregate(pipeline)
                 
             elif query.startswith("#new"):
                 filter_text = query.replace("#new", "").strip()
-                search_filter = {"file_id": {"$exists": True}}
+                search_filter = {"file_id": {"$exists": True}} # Explicitly require file_id
                 if filter_text:
                     search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
                 cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
@@ -329,18 +286,28 @@ async def process_telegram_update(data):
                     if filter_text:
                         search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
                     cursor = db.files.find(search_filter).limit(50)
+                else:
+                    cursor = None # No favs
             
             else:
-                # Normal Search (Empty or Text)
-                search_criteria = build_search_query(query) if query else {}
-                cursor = db.files.find(search_criteria).sort("_id", -1).limit(50)
+                # Normal Search
+                search_filter = {"file_id": {"$exists": True}} # Always require file_id
+                if query:
+                    search_filter["display_name"] = {"$regex": re.escape(query), "$options": "i"}
+                
+                cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
 
-            # Process Results
+            results = []
             if cursor:
-                async for doc in cursor:
-                    if 'file_id' in doc:
+                # 🔥 THE SILVER BULLET FIX: 
+                # Force fetch ALL items immediately before the loop closes.
+                # 'async for' can be interrupted on Vercel, 'to_list' is safer.
+                docs = await cursor.to_list(length=50)
+                
+                for doc in docs:
+                    # We already filtered for file_id exists, but safety check doesn't hurt
+                    if doc.get('file_id'):
                         desc = "@Almadihbot"
-                        # Show view count for trending
                         if query.startswith("#trending"): 
                             views = doc.get('views', 0)
                             desc = f"🔥 {views} Views"
@@ -352,7 +319,6 @@ async def process_telegram_update(data):
                             "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
                         })
 
-            # 🔥 FIX: Disable Cache Completely
             await answer_inline_query(query_id, results, cache_time=0)
 
     except Exception as e:
@@ -369,7 +335,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (ChatGPT Optimized) 🚀'
+    return 'Al-Madih Bot Running (Vercel Async Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
