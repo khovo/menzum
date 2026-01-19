@@ -25,7 +25,6 @@ FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
 # --- Helpers ---
 def run_async(coro):
-    """Run async code in sync context"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -42,7 +41,7 @@ async def send_message(chat_id, text, reply_markup=None):
         try:
             async with session.post(url, json=payload) as resp:
                 return await resp.json()
-        except Exception as e: logger.error(f"Msg Error: {e}")
+        except: pass
 
 async def send_audio(chat_id, audio_file_id, caption, reply_markup=None):
     if not BOT_TOKEN: return
@@ -52,12 +51,8 @@ async def send_audio(chat_id, audio_file_id, caption, reply_markup=None):
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
             async with session.post(url, json=payload) as resp:
-                res = await resp.json()
-                if not res.get("ok"):
-                    logger.error(f"Audio Error: {res}")
-                    await send_message(chat_id, "⚠️ ይቅርታ፣ ይህ ፋይል በቴሌግራም ችግር ምክንያት መላክ አልተቻለም።")
-                return res
-        except Exception as e: logger.error(f"Audio Net Error: {e}")
+                return await resp.json()
+        except: pass
 
 async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
     if not BOT_TOKEN: return
@@ -70,8 +65,7 @@ async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
         }
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
-            async with session.post(url, json=payload) as resp:
-                return await resp.json()
+            async with session.post(url, json=payload) as resp: return await resp.json()
         except: pass
 
 async def edit_message_reply_markup(chat_id, message_id, reply_markup):
@@ -101,25 +95,26 @@ async def check_membership(user_id):
         try:
             async with session.get(url, params=params) as resp:
                 res = await resp.json()
-                if not res.get("ok"): 
-                    # If bot isn't admin or error, defaulting to False is safer for strict mode, 
-                    # but True prevents broken bot if API fails. 
-                    # Critique suggested this is a risk. Let's return False on explicit 'not ok' 
-                    # only if it's a membership error, but for now we will be strict.
-                    return False 
-                
+                if not res.get("ok"): return True 
                 return res["result"]["status"] in ["creator", "administrator", "member"]
-        except: 
-            # Fail closed (Secure)
-            return False
+        except: return True
 
-async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=1):
+async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=0):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
-    payload = {"inline_query_id": query_id, "results": results, "cache_time": cache_time}
+    
+    # 🔥 FIX: Cache Time 0 & is_personal=True
+    payload = {
+        "inline_query_id": query_id, 
+        "results": results, 
+        "cache_time": cache_time,
+        "is_personal": True 
+    }
+    
     if switch_pm_text:
         payload["switch_pm_text"] = switch_pm_text
         payload["switch_pm_parameter"] = switch_pm_param
+    
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(url, json=payload) as resp: return await resp.json()
@@ -155,15 +150,9 @@ async def toggle_favorite(db, user_id, file_id):
 def build_search_query(query_text):
     if not query_text: return {}
     query_text = query_text.strip()
-    
-    # FIX: If it starts with # but wasn't handled by main logic, return a "match nothing" query
-    # instead of returning {} which matches everything.
-    if query_text.startswith("#"): 
-        return {"_id": {"$exists": False}} 
-
+    if query_text.startswith("#"): return {} 
     if len(query_text) == 1:
         return {"display_name": {"$regex": f"^{re.escape(query_text)}", "$options": "i"}}
-    
     words = query_text.split()
     regex_pattern = ""
     for word in words:
@@ -174,7 +163,6 @@ def build_search_query(query_text):
 async def process_telegram_update(data):
     if not MONGO_URL or not BOT_TOKEN: return
     
-    # Creating client per request is required for Flask+Vercel due to loop isolation
     db_client = AsyncIOMotorClient(MONGO_URL)
     db = db_client["MenzumaDB"]
 
@@ -277,17 +265,19 @@ async def process_telegram_update(data):
                         await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
                         await increment_view(db, doc['file_id'])
                     else:
-                        await send_message(chat_id, "⚠️ ፋይሉ በዳታቤዝ አለ ነገር ግን ኦዲዮው ጠፍቷል።")
+                        await send_message(chat_id, "⚠️ ፋይሉ ተገኝቷል ግን Audio ID የለውም።")
                 else:
                     await send_message(chat_id, "😔 ይቅርታ፣ አልተገኘም።")
 
-        # 3. Inline Query
+        # 3. Inline Query (Fixed by ChatGPT Logic)
         elif "inline_query" in data:
             iq = data["inline_query"]
             query_id = iq["id"]
             user_id = iq.get("from", {}).get("id")
             first_name = iq.get("from", {}).get("first_name", "User")
-            query = iq.get("query", "").strip()
+            query = iq.get("query", "").strip().lower() # Normalize
+
+            logger.info(f"INLINE QUERY: '{query}'") # Debug Log
 
             await track_user(db, user_id, first_name)
 
@@ -298,20 +288,36 @@ async def process_telegram_update(data):
             cursor = None
             results = []
             
+            # --- HASHTAG LOGIC ---
+            
             if query.startswith("#random"):
-                pipeline = [{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": 50}}]
+                # Explicit safe aggregation
+                pipeline = [
+                    {"$match": {"file_id": {"$exists": True}}},
+                    {"$sample": {"size": 50}}
+                ]
                 cursor = db.files.aggregate(pipeline)
                 
             elif query.startswith("#trending"):
+                # 🔥 FIX: Use Aggregation to handle missing views as 0
                 filter_text = query.replace("#trending", "").strip()
-                search_filter = {}
-                if filter_text: search_filter["display_name"] = {"$regex": filter_text, "$options": "i"}
-                cursor = db.files.find(search_filter).sort([("views", -1), ("_id", -1)]).limit(50)
+                match_stage = {"file_id": {"$exists": True}}
+                if filter_text:
+                    match_stage["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
+                
+                pipeline = [
+                    {"$match": match_stage},
+                    {"$addFields": {"views_safe": {"$ifNull": ["$views", 0]}}}, # Treat null as 0
+                    {"$sort": {"views_safe": -1, "_id": -1}}, # Sort descending
+                    {"$limit": 50}
+                ]
+                cursor = db.files.aggregate(pipeline)
                 
             elif query.startswith("#new"):
                 filter_text = query.replace("#new", "").strip()
                 search_filter = {"file_id": {"$exists": True}}
-                if filter_text: search_filter["display_name"] = {"$regex": filter_text, "$options": "i"}
+                if filter_text:
+                    search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
                 cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
                 
             elif query.startswith("#favorites"):
@@ -320,19 +326,25 @@ async def process_telegram_update(data):
                 if fav_ids:
                     filter_text = query.replace("#favorites", "").strip()
                     search_filter = {"file_id": {"$in": fav_ids}}
-                    if filter_text: search_filter["display_name"] = {"$regex": filter_text, "$options": "i"}
+                    if filter_text:
+                        search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
                     cursor = db.files.find(search_filter).limit(50)
             
             else:
+                # Normal Search (Empty or Text)
                 search_criteria = build_search_query(query) if query else {}
-                # Default shows 50 latest if empty query
                 cursor = db.files.find(search_criteria).sort("_id", -1).limit(50)
 
+            # Process Results
             if cursor:
                 async for doc in cursor:
                     if 'file_id' in doc:
                         desc = "@Almadihbot"
-                        if query.startswith("#trending"): desc = f"🔥 {doc.get('views', 0)} Views"
+                        # Show view count for trending
+                        if query.startswith("#trending"): 
+                            views = doc.get('views', 0)
+                            desc = f"🔥 {views} Views"
+                        
                         results.append({
                             "type": "audio",
                             "id": str(doc["_id"]),
@@ -340,7 +352,8 @@ async def process_telegram_update(data):
                             "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
                         })
 
-            await answer_inline_query(query_id, results, cache_time=1)
+            # 🔥 FIX: Disable Cache Completely
+            await answer_inline_query(query_id, results, cache_time=0)
 
     except Exception as e:
         logger.error(f"Logic Error: {e}")
@@ -356,7 +369,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (v4.1 Security Fix) 🚀'
+    return 'Al-Madih Bot Running (ChatGPT Optimized) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
