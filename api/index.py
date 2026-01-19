@@ -27,12 +27,6 @@ FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 db_client = None
 
 # --- Helpers ---
-def get_database():
-    global db_client
-    if not db_client:
-        db_client = AsyncIOMotorClient(MONGO_URL)
-    return db_client["MenzumaDB"]
-
 def run_async(coro):
     """Run async code in sync context"""
     loop = asyncio.new_event_loop()
@@ -61,12 +55,7 @@ async def send_audio(chat_id, audio_file_id, caption, reply_markup=None):
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
             async with session.post(url, json=payload) as resp:
-                result = await resp.json()
-                # Error ከመጣ ለመንገር
-                if not result.get("ok"):
-                    logger.error(f"Send Audio Fail: {result}")
-                    await send_message(chat_id, "⚠️ ይህ ፋይል በቴሌግራም ችግር ምክንያት መላክ አልተቻለም።")
-                return result
+                return await resp.json()
         except: pass
 
 async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
@@ -119,9 +108,10 @@ async def check_membership(user_id):
                 return result["result"]["status"] in ["creator", "administrator", "member"]
         except: return True
 
-async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=5):
+async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=1):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
+    # 🔥 Cache Time 1 ሰከንድ አድርጌዋለሁ (ለውጡ ወዲያው እንዲታይ)
     payload = {"inline_query_id": query_id, "results": results, "cache_time": cache_time}
     if switch_pm_text:
         payload["switch_pm_text"] = switch_pm_text
@@ -159,9 +149,8 @@ def build_search_query(query_text):
     if not query_text: return {}
     query_text = query_text.strip()
     
-    # Check for Hashtags first
     if query_text.startswith("#"):
-        return {} # Handle hashtags separately
+        return {} 
 
     if len(query_text) == 1:
         return {"display_name": {"$regex": f"^{re.escape(query_text)}", "$options": "i"}}
@@ -242,6 +231,7 @@ async def process_telegram_update(data):
 
             # --- Admin Broadcast (Reply Mode) ---
             elif text and text.startswith("/broadcast") and str(user_id) == str(ADMIN_ID):
+                # 1. Media Broadcast (Reply)
                 if "reply_to_message" in message:
                     reply_msg_id = message["reply_to_message"]["message_id"]
                     users_cursor = db.users.find({})
@@ -249,15 +239,17 @@ async def process_telegram_update(data):
                     await send_message(chat_id, "🚀 Media Broadcasting started...")
                     async for user in users_cursor:
                         try:
+                            # copyMessage ይጠቀማል (ሁሉንም አይነት ሚዲያ ይልካል)
                             await copy_message(user["_id"], chat_id, reply_msg_id)
                             count += 1
                             await asyncio.sleep(0.05) 
                         except: pass
                     await send_message(chat_id, f"✅ Broadcast sent to {count} users.")
+                # 2. Text Broadcast (Direct)
                 else:
                     msg_content = text.replace("/broadcast ", "")
                     if len(msg_content) < 2:
-                        await send_message(chat_id, "⚠️ Reply to a message with /broadcast to send media, or type message after command.")
+                        await send_message(chat_id, "⚠️ Usage: Reply to media OR type `/broadcast message`")
                         return
                     users_cursor = db.users.find({})
                     count = 0
@@ -304,27 +296,25 @@ async def process_telegram_update(data):
             cursor = None
             results = []
             
-            # --- HASHTAG LOGIC ---
+            # --- HASHTAG LOGIC (Limit = 50) ---
             if query.startswith("#random"):
-                # Random 50 files (Increased from 10)
                 pipeline = [{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": 50}}]
                 cursor = db.files.aggregate(pipeline)
                 
             elif query.startswith("#trending"):
-                # Top views (Removed 'exists' check to ensure results show up even with 0 views)
                 filter_text = query.replace("#trending", "").strip()
-                search_filter = {} # No strict filter, allow all
+                search_filter = {} 
                 if filter_text:
                     search_filter["display_name"] = {"$regex": filter_text, "$options": "i"}
-                # Sort by views desc, Limit increased to 50
+                # እዚህ ጋር Limit 50 ነው
                 cursor = db.files.find(search_filter).sort("views", -1).limit(50)
                 
             elif query.startswith("#new"):
-                # Newest additions (Limit increased to 50)
                 filter_text = query.replace("#new", "").strip()
                 search_filter = {"file_id": {"$exists": True}}
                 if filter_text:
                     search_filter["display_name"] = {"$regex": filter_text, "$options": "i"}
+                # እዚህ ጋር Limit 50 ነው
                 cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
                 
             elif query.startswith("#favorites"):
@@ -357,7 +347,8 @@ async def process_telegram_update(data):
                             "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
                         })
 
-            cache_time = 0 if query.startswith("#random") else 10
+            # 🔥 Cache Time 0 (ወይም 1) አድርጌዋለሁ ለውጡ ወዲያው እንዲታይ
+            cache_time = 0 if query.startswith("#random") else 1
             await answer_inline_query(query_id, results, cache_time=cache_time)
 
     except Exception as e:
@@ -375,7 +366,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Full Fix) 🚀'
+    return 'Al-Madih Bot Running (v3.0 Final) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
