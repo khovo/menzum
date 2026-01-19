@@ -23,12 +23,8 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 FORCE_CHANNEL_USERNAME = "Al_madih" 
 FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
-# Global DB Client
-db_client = None
-
 # --- Helpers ---
 def run_async(coro):
-    """Run async code in sync context"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -45,7 +41,7 @@ async def send_message(chat_id, text, reply_markup=None):
         try:
             async with session.post(url, json=payload) as resp:
                 return await resp.json()
-        except: pass
+        except Exception as e: logger.error(f"Msg Error: {e}")
 
 async def send_audio(chat_id, audio_file_id, caption, reply_markup=None):
     if not BOT_TOKEN: return
@@ -55,11 +51,14 @@ async def send_audio(chat_id, audio_file_id, caption, reply_markup=None):
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
             async with session.post(url, json=payload) as resp:
-                return await resp.json()
-        except: pass
+                res = await resp.json()
+                if not res.get("ok"):
+                    logger.error(f"Audio Error: {res}")
+                    await send_message(chat_id, "⚠️ ይቅርታ፣ ይህ ፋይል በቴሌግራም ችግር ምክንያት መላክ አልተቻለም።")
+                return res
+        except Exception as e: logger.error(f"Audio Net Error: {e}")
 
 async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
-    """ማንኛውንም አይነት መልዕክት (Media/Text) ኮፒ አድርጎ መላክ"""
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
     async with aiohttp.ClientSession() as session:
@@ -72,8 +71,7 @@ async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
         try:
             async with session.post(url, json=payload) as resp:
                 return await resp.json()
-        except Exception as e:
-            logger.error(f"Copy Error: {e}")
+        except: pass
 
 async def edit_message_reply_markup(chat_id, message_id, reply_markup):
     if not BOT_TOKEN: return
@@ -81,8 +79,7 @@ async def edit_message_reply_markup(chat_id, message_id, reply_markup):
     async with aiohttp.ClientSession() as session:
         payload = {"chat_id": chat_id, "message_id": message_id, "reply_markup": reply_markup}
         try:
-            async with session.post(url, json=payload) as resp:
-                return await resp.json()
+            async with session.post(url, json=payload) as resp: return await resp.json()
         except: pass
 
 async def answer_callback_query(callback_query_id, text=None):
@@ -92,8 +89,7 @@ async def answer_callback_query(callback_query_id, text=None):
     if text: payload["text"] = text
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(url, json=payload) as resp:
-                return await resp.json()
+            async with session.post(url, json=payload) as resp: return await resp.json()
         except: pass
 
 async def check_membership(user_id):
@@ -103,58 +99,56 @@ async def check_membership(user_id):
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(url, params=params) as resp:
-                result = await resp.json()
-                if not result.get("ok"): return True 
-                return result["result"]["status"] in ["creator", "administrator", "member"]
+                res = await resp.json()
+                if not res.get("ok"): return True 
+                return res["result"]["status"] in ["creator", "administrator", "member"]
         except: return True
 
-async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=1):
+async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=0):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
-    # 🔥 Cache Time 1 ሰከንድ አድርጌዋለሁ (ለውጡ ወዲያው እንዲታይ)
     payload = {"inline_query_id": query_id, "results": results, "cache_time": cache_time}
     if switch_pm_text:
         payload["switch_pm_text"] = switch_pm_text
         payload["switch_pm_parameter"] = switch_pm_param
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(url, json=payload) as resp:
-                return await resp.json()
+            async with session.post(url, json=payload) as resp: return await resp.json()
         except: pass
 
 # --- DB Helpers ---
 async def track_user(db, user_id, first_name):
-    await db.users.update_one(
-        {"_id": user_id},
-        {"$set": {"first_name": first_name, "last_active": datetime.now()}},
-        upsert=True
-    )
+    try:
+        await db.users.update_one(
+            {"_id": user_id},
+            {"$set": {"first_name": first_name, "last_active": datetime.now()}},
+            upsert=True
+        )
+    except: pass
 
 async def increment_view(db, file_id):
-    await db.files.update_one({"file_id": file_id}, {"$inc": {"views": 1}})
+    try:
+        await db.files.update_one({"file_id": file_id}, {"$inc": {"views": 1}})
+    except: pass
 
 async def toggle_favorite(db, user_id, file_id):
-    user = await db.users.find_one({"_id": user_id})
-    favorites = user.get("favorites", []) if user else []
-    
-    if file_id in favorites:
-        await db.users.update_one({"_id": user_id}, {"$pull": {"favorites": file_id}})
-        return False # Removed
-    else:
-        await db.users.update_one({"_id": user_id}, {"$addToSet": {"favorites": file_id}})
-        return True # Added
+    try:
+        user = await db.users.find_one({"_id": user_id})
+        favorites = user.get("favorites", []) if user else []
+        if file_id in favorites:
+            await db.users.update_one({"_id": user_id}, {"$pull": {"favorites": file_id}})
+            return False
+        else:
+            await db.users.update_one({"_id": user_id}, {"$addToSet": {"favorites": file_id}})
+            return True
+    except: return False
 
-# --- 🔥 SMART SEARCH BUILDER 🔥 ---
 def build_search_query(query_text):
     if not query_text: return {}
     query_text = query_text.strip()
-    
-    if query_text.startswith("#"):
-        return {} 
-
+    if query_text.startswith("#"): return {} 
     if len(query_text) == 1:
         return {"display_name": {"$regex": f"^{re.escape(query_text)}", "$options": "i"}}
-    
     words = query_text.split()
     regex_pattern = ""
     for word in words:
@@ -165,11 +159,12 @@ def build_search_query(query_text):
 async def process_telegram_update(data):
     if not MONGO_URL or not BOT_TOKEN: return
     
+    # ⚠️ FIXED: Create NEW client for EVERY request to avoid closed loop errors
     db_client = AsyncIOMotorClient(MONGO_URL)
     db = db_client["MenzumaDB"]
 
     try:
-        # 1. Callback Query (Button Clicks)
+        # 1. Callback Query
         if "callback_query" in data:
             cb = data["callback_query"]
             user_id = cb["from"]["id"]
@@ -202,17 +197,13 @@ async def process_telegram_update(data):
                 await send_message(chat_id, msg, reply_markup=kb)
                 return
 
-            # Commands
             if text == "/start":
                 welcome = (
                     "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
-                    "በዚህ ቦት ከ 1,200 በላይ መንዙማዎችን ማግኘት ይችላሉ።\n\n"
-                    "👇 **ይሞክሩ (Try Inline Search):**\n"
-                    "ማንኛውም ቻት ላይ `@Almadihbot` ብለው ስፔስ ሲሰጡ ምርጫ ይመጣልዎታል።\n\n"
-                    "🆕 `#new` - አዳዲስ የገቡ\n"
-                    "🔥 `#trending` - ተወዳጅ\n"
-                    "🎲 `#random` - እጣ\n"
-                    "❤️ `#favorites` - የመረጧቸው"
+                    "ከ 1,200 በላይ መንዙማዎችን እዚህ ያገኛሉ።\n\n"
+                    "👇 **አጠቃቀም:**\n"
+                    "• ዝም ብለው ስም ይጻፉ (Direct).\n"
+                    "• ለጓደኛዎ ለመላክ `Search` የሚለውን ይጫኑ።"
                 )
                 kb = {
                     "inline_keyboard": [
@@ -229,46 +220,39 @@ async def process_telegram_update(data):
                 }
                 await send_message(chat_id, welcome, reply_markup=kb)
 
-            # --- Admin Broadcast (Reply Mode) ---
+            # Admin Broadcast
             elif text and text.startswith("/broadcast") and str(user_id) == str(ADMIN_ID):
-                # 1. Media Broadcast (Reply)
                 if "reply_to_message" in message:
                     reply_msg_id = message["reply_to_message"]["message_id"]
                     users_cursor = db.users.find({})
                     count = 0
-                    await send_message(chat_id, "🚀 Media Broadcasting started...")
+                    await send_message(chat_id, "🚀 Media Broadcast started...")
                     async for user in users_cursor:
                         try:
-                            # copyMessage ይጠቀማል (ሁሉንም አይነት ሚዲያ ይልካል)
                             await copy_message(user["_id"], chat_id, reply_msg_id)
                             count += 1
                             await asyncio.sleep(0.05) 
                         except: pass
-                    await send_message(chat_id, f"✅ Broadcast sent to {count} users.")
-                # 2. Text Broadcast (Direct)
+                    await send_message(chat_id, f"✅ Sent to {count} users.")
                 else:
                     msg_content = text.replace("/broadcast ", "")
-                    if len(msg_content) < 2:
-                        await send_message(chat_id, "⚠️ Usage: Reply to media OR type `/broadcast message`")
-                        return
                     users_cursor = db.users.find({})
                     count = 0
-                    await send_message(chat_id, "🚀 Text Broadcasting...")
+                    await send_message(chat_id, "🚀 Text Broadcast started...")
                     async for user in users_cursor:
                         try:
                             await send_message(user["_id"], f"📢 **ማስታወቂያ:**\n\n{msg_content}")
                             count += 1
                             await asyncio.sleep(0.05)
                         except: pass
-                    await send_message(chat_id, f"✅ Text Broadcast sent to {count} users.")
+                    await send_message(chat_id, f"✅ Sent to {count} users.")
 
             elif text == "/admin" and str(user_id) == str(ADMIN_ID):
                 users_count = await db.users.count_documents({})
                 files_count = await db.files.count_documents({})
-                msg = f"📊 **Stats:**\n👥 Users: {users_count}\n📂 Files: {files_count}"
-                await send_message(chat_id, msg)
+                await send_message(chat_id, f"📊 **Stats:**\n👥 Users: {users_count}\n📂 Files: {files_count}")
 
-            # Direct Search Fallback (Text sent to bot)
+            # Direct Search Logic (Fix for "Silent" issue)
             elif text and not text.startswith("/"):
                 search_query = build_search_query(text)
                 doc = await db.files.find_one(search_query)
@@ -278,16 +262,19 @@ async def process_telegram_update(data):
                         await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
                         await increment_view(db, doc['file_id'])
                     else:
-                        await send_message(chat_id, "⚠️ ፋይሉ በዳታቤዝ አለ ነገር ግን ኦዲዮው ጠፍቷል።")
+                        await send_message(chat_id, "⚠️ ፋይሉ ተገኝቷል ግን Audio ID የለውም።")
                 else:
                     await send_message(chat_id, "😔 ይቅርታ፣ አልተገኘም።")
 
-        # 3. Inline Query (The Main Feature!)
+        # 3. Inline Query
         elif "inline_query" in data:
             iq = data["inline_query"]
             query_id = iq["id"]
             user_id = iq.get("from", {}).get("id")
+            first_name = iq.get("from", {}).get("first_name", "User")
             query = iq.get("query", "").strip()
+
+            await track_user(db, user_id, first_name)
 
             if not await check_membership(user_id):
                 await answer_inline_query(query_id, [], "⚠️ Join Channel First", "start")
@@ -296,25 +283,21 @@ async def process_telegram_update(data):
             cursor = None
             results = []
             
-            # --- HASHTAG LOGIC (Limit = 50) ---
             if query.startswith("#random"):
                 pipeline = [{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": 50}}]
                 cursor = db.files.aggregate(pipeline)
                 
             elif query.startswith("#trending"):
                 filter_text = query.replace("#trending", "").strip()
-                search_filter = {} 
-                if filter_text:
-                    search_filter["display_name"] = {"$regex": filter_text, "$options": "i"}
-                # እዚህ ጋር Limit 50 ነው
-                cursor = db.files.find(search_filter).sort("views", -1).limit(50)
+                search_filter = {}
+                if filter_text: search_filter["display_name"] = {"$regex": filter_text, "$options": "i"}
+                # 🔥 FIX: አሁንም እይታ ባይኖርም እንዲመጡ በ ID ደግፈነዋል
+                cursor = db.files.find(search_filter).sort([("views", -1), ("_id", -1)]).limit(50)
                 
             elif query.startswith("#new"):
                 filter_text = query.replace("#new", "").strip()
                 search_filter = {"file_id": {"$exists": True}}
-                if filter_text:
-                    search_filter["display_name"] = {"$regex": filter_text, "$options": "i"}
-                # እዚህ ጋር Limit 50 ነው
+                if filter_text: search_filter["display_name"] = {"$regex": filter_text, "$options": "i"}
                 cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
                 
             elif query.startswith("#favorites"):
@@ -323,23 +306,19 @@ async def process_telegram_update(data):
                 if fav_ids:
                     filter_text = query.replace("#favorites", "").strip()
                     search_filter = {"file_id": {"$in": fav_ids}}
-                    if filter_text:
-                        search_filter["display_name"] = {"$regex": filter_text, "$options": "i"}
+                    if filter_text: search_filter["display_name"] = {"$regex": filter_text, "$options": "i"}
                     cursor = db.files.find(search_filter).limit(50)
             
             else:
-                # Normal Search (Limit 50)
                 search_criteria = build_search_query(query) if query else {}
+                # Default shows 50 latest if empty query
                 cursor = db.files.find(search_criteria).sort("_id", -1).limit(50)
 
-            # Process Results
             if cursor:
                 async for doc in cursor:
                     if 'file_id' in doc:
                         desc = "@Almadihbot"
-                        if query.startswith("#trending"):
-                            desc = f"🔥 {doc.get('views', 0)} Views"
-                        
+                        if query.startswith("#trending"): desc = f"🔥 {doc.get('views', 0)} Views"
                         results.append({
                             "type": "audio",
                             "id": str(doc["_id"]),
@@ -347,16 +326,14 @@ async def process_telegram_update(data):
                             "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
                         })
 
-            # 🔥 Cache Time 0 (ወይም 1) አድርጌዋለሁ ለውጡ ወዲያው እንዲታይ
-            cache_time = 0 if query.startswith("#random") else 1
-            await answer_inline_query(query_id, results, cache_time=cache_time)
+            # 🔥 Cache Time 0 አድርጌዋለሁ፣ ወዲያው ይቀያየራል
+            await answer_inline_query(query_id, results, cache_time=0)
 
     except Exception as e:
         logger.error(f"Logic Error: {e}")
     finally:
-        db_client.close()
+        db_client.close() # Close properly
 
-# --- WEBHOOK ---
 @app.route('/', methods=['GET', 'POST'])
 @app.route('/api/webhook', methods=['GET', 'POST'])
 def telegram_webhook():
@@ -366,7 +343,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (v3.0 Final) 🚀'
+    return 'Al-Madih Bot Running (v4.0 Ultimate) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
