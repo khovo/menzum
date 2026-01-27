@@ -36,20 +36,17 @@ async def send_message(chat_id, text, reply_markup=None):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     async with aiohttp.ClientSession() as session:
-        # 🔥 FIX: Removed parse_mode to prevent errors with special characters
         payload = {"chat_id": chat_id, "text": text} 
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
             async with session.post(url, json=payload) as resp:
                 return await resp.json()
-        except: pass
+        except Exception as e: logger.error(f"Msg Error: {e}")
 
 async def send_audio(chat_id, audio_file_id, caption, reply_markup=None):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendAudio"
     async with aiohttp.ClientSession() as session:
-        # 🔥 FIX: Removed "parse_mode": "Markdown" 
-        # This allows names with _, *, [, ] to be sent without error
         payload = {
             "chat_id": chat_id, 
             "audio": audio_file_id, 
@@ -60,15 +57,18 @@ async def send_audio(chat_id, audio_file_id, caption, reply_markup=None):
             async with session.post(url, json=payload) as resp:
                 res = await resp.json()
                 if not res.get("ok"):
-                    logger.error(f"Send Fail: {res}")
-                    # If it fails, try sending without caption (Fallback)
-                    if "description" in str(res):
-                         payload.pop("caption")
-                         await session.post(url, json=payload)
-                    else:
-                        await send_message(chat_id, "⚠️ ይቅርታ፣ ይህ ፋይል በቴሌግራም ችግር ምክንያት መላክ አልተቻለም።")
+                    logger.error(f"First Send Fail: {res}")
+                    # Fallback: Try sending WITHOUT caption (Sometimes caption causes error)
+                    payload.pop("caption")
+                    async with session.post(url, json=payload) as resp2:
+                        res2 = await resp2.json()
+                        if not res2.get("ok"):
+                            error_desc = res2.get('description', 'Unknown Error')
+                            await send_message(chat_id, f"⚠️ ይህን መንዙማ መላክ አልተቻለም።\nReason: {error_desc}")
                 return res
-        except: pass
+        except Exception as e:
+            logger.error(f"Audio Net Error: {e}")
+            await send_message(chat_id, "⚠️ Network Error while sending audio.")
 
 async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
     if not BOT_TOKEN: return
@@ -154,8 +154,12 @@ def build_search_query(query_text):
     if not query_text: return {}
     query_text = query_text.strip()
     if query_text.startswith("#"): return {} 
+    
+    # 1 ፊደል ከሆነ (Starts with)
     if len(query_text) == 1:
         return {"display_name": {"$regex": f"^{re.escape(query_text)}", "$options": "i"}}
+    
+    # ቃላትን መነጣጠል (AND Logic)
     words = query_text.split()
     regex_pattern = ""
     for word in words:
@@ -222,23 +226,16 @@ async def process_telegram_update(data):
 
             if text == "/start":
                 welcome = (
-                    "🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙\n\n"
+                    "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
                     "ከ 1,200 በላይ መንዙማዎችን እዚህ ያገኛሉ።\n\n"
-                    "👇 አጠቃቀም:\n"
+                    "👇 **አጠቃቀም:**\n"
                     "• ዝም ብለው ስም ይጻፉ (Direct).\n"
-                    "• ለጓደኛዎ ለመላክ Search የሚለውን ይጫኑ።"
+                    "• ለጓደኛዎ ለመላክ `Search` የሚለውን ይጫኑ።"
                 )
                 kb = {
                     "inline_keyboard": [
-                        [
-                            {"text": "🔥 Trending", "switch_inline_query_current_chat": "#trending"},
-                            {"text": "🆕 New", "switch_inline_query_current_chat": "#new"}
-                        ],
-                        [
-                            {"text": "🎲 Random", "switch_inline_query_current_chat": "#random"},
-                            {"text": "❤️ Favorites", "switch_inline_query_current_chat": "#favorites"}
-                        ],
-                        [{"text": "🔍 Search Name", "switch_inline_query_current_chat": ""}]
+                        [{"text": "🔍 መንዙማ ይፈልጉ", "switch_inline_query_current_chat": ""}],
+                        [{"text": "ቻናላችን 📢", "url": FORCE_CHANNEL_URL}]
                     ]
                 }
                 await send_message(chat_id, welcome, reply_markup=kb)
@@ -246,19 +243,24 @@ async def process_telegram_update(data):
             elif text == "/admin" and str(user_id) == str(ADMIN_ID):
                 users_count = await db.users.count_documents({})
                 files_count = await db.files.count_documents({})
-                await send_message(chat_id, f"📊 Stats:\n👥 Users: {users_count}\n📂 Files: {files_count}")
+                await send_message(chat_id, f"📊 **Stats:**\n👥 Users: {users_count}\n📂 Files: {files_count}")
 
+            # Direct Search Logic
             elif text and not text.startswith("/"):
+                # Log what we are searching for
+                logger.info(f"Direct Searching for: {text}")
+                
                 search_query = build_search_query(text)
                 doc = await db.files.find_one(search_query)
+                
                 if doc:
+                    logger.info(f"Found: {doc.get('display_name')}")
                     if 'file_id' in doc:
                         kb = {"inline_keyboard": [[{"text": "❤️ Add to Favorite", "callback_data": f"fav_{doc['file_id']}"}]]}
-                        # Removed parse_mode to be safe
                         await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
                         await increment_view(db, doc['file_id'])
                     else:
-                        await send_message(chat_id, "⚠️ ፋይሉ በዳታቤዝ አለ ነገር ግን ኦዲዮው ጠፍቷል።")
+                        await send_message(chat_id, "⚠️ ፋይሉ በዳታቤዝ አለ ነገር ግን ኦዲዮው ጠፍቷል። (Missing File ID)")
                 else:
                     await send_message(chat_id, "😔 ይቅርታ፣ አልተገኘም።")
 
@@ -342,7 +344,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Caption Fix) 🚀'
+    return 'Al-Madih Bot Running (Send Audio Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
