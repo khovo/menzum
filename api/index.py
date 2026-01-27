@@ -36,24 +36,37 @@ async def send_message(chat_id, text, reply_markup=None):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     async with aiohttp.ClientSession() as session:
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+        # 🔥 FIX: Removed parse_mode to prevent errors with special characters
+        payload = {"chat_id": chat_id, "text": text} 
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
-            async with session.post(url, json=payload) as resp: return await resp.json()
+            async with session.post(url, json=payload) as resp:
+                return await resp.json()
         except: pass
 
 async def send_audio(chat_id, audio_file_id, caption, reply_markup=None):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendAudio"
     async with aiohttp.ClientSession() as session:
-        payload = {"chat_id": chat_id, "audio": audio_file_id, "caption": caption, "parse_mode": "Markdown"}
+        # 🔥 FIX: Removed "parse_mode": "Markdown" 
+        # This allows names with _, *, [, ] to be sent without error
+        payload = {
+            "chat_id": chat_id, 
+            "audio": audio_file_id, 
+            "caption": caption
+        }
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
             async with session.post(url, json=payload) as resp:
                 res = await resp.json()
                 if not res.get("ok"):
                     logger.error(f"Send Fail: {res}")
-                    await send_message(chat_id, "⚠️ ይቅርታ፣ ይህ ፋይል በቴሌግራም ችግር ምክንያት መላክ አልተቻለም። (File ID Invalid)")
+                    # If it fails, try sending without caption (Fallback)
+                    if "description" in str(res):
+                         payload.pop("caption")
+                         await session.post(url, json=payload)
+                    else:
+                        await send_message(chat_id, "⚠️ ይቅርታ፣ ይህ ፋይል በቴሌግራም ችግር ምክንያት መላክ አልተቻለም።")
                 return res
         except: pass
 
@@ -140,12 +153,9 @@ async def toggle_favorite(db, user_id, file_id):
 def build_search_query(query_text):
     if not query_text: return {}
     query_text = query_text.strip()
-    
-    # አንድ ፊደል ብቻ ከሆነ (Starts with)
+    if query_text.startswith("#"): return {} 
     if len(query_text) == 1:
         return {"display_name": {"$regex": f"^{re.escape(query_text)}", "$options": "i"}}
-    
-    # ቃላትን መነጣጠል (AND Logic)
     words = query_text.split()
     regex_pattern = ""
     for word in words:
@@ -212,16 +222,23 @@ async def process_telegram_update(data):
 
             if text == "/start":
                 welcome = (
-                    "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
+                    "🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙\n\n"
                     "ከ 1,200 በላይ መንዙማዎችን እዚህ ያገኛሉ።\n\n"
-                    "👇 **አጠቃቀም:**\n"
+                    "👇 አጠቃቀም:\n"
                     "• ዝም ብለው ስም ይጻፉ (Direct).\n"
-                    "• ለጓደኛዎ ለመላክ `Search` የሚለውን ይጫኑ።"
+                    "• ለጓደኛዎ ለመላክ Search የሚለውን ይጫኑ።"
                 )
                 kb = {
                     "inline_keyboard": [
-                        [{"text": "🔍 መንዙማ ይፈልጉ", "switch_inline_query_current_chat": ""}],
-                        [{"text": "ቻናላችን 📢", "url": FORCE_CHANNEL_URL}]
+                        [
+                            {"text": "🔥 Trending", "switch_inline_query_current_chat": "#trending"},
+                            {"text": "🆕 New", "switch_inline_query_current_chat": "#new"}
+                        ],
+                        [
+                            {"text": "🎲 Random", "switch_inline_query_current_chat": "#random"},
+                            {"text": "❤️ Favorites", "switch_inline_query_current_chat": "#favorites"}
+                        ],
+                        [{"text": "🔍 Search Name", "switch_inline_query_current_chat": ""}]
                     ]
                 }
                 await send_message(chat_id, welcome, reply_markup=kb)
@@ -229,7 +246,7 @@ async def process_telegram_update(data):
             elif text == "/admin" and str(user_id) == str(ADMIN_ID):
                 users_count = await db.users.count_documents({})
                 files_count = await db.files.count_documents({})
-                await send_message(chat_id, f"📊 **Stats:**\n👥 Users: {users_count}\n📂 Files: {files_count}")
+                await send_message(chat_id, f"📊 Stats:\n👥 Users: {users_count}\n📂 Files: {files_count}")
 
             elif text and not text.startswith("/"):
                 search_query = build_search_query(text)
@@ -237,6 +254,7 @@ async def process_telegram_update(data):
                 if doc:
                     if 'file_id' in doc:
                         kb = {"inline_keyboard": [[{"text": "❤️ Add to Favorite", "callback_data": f"fav_{doc['file_id']}"}]]}
+                        # Removed parse_mode to be safe
                         await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
                         await increment_view(db, doc['file_id'])
                     else:
@@ -244,7 +262,7 @@ async def process_telegram_update(data):
                 else:
                     await send_message(chat_id, "😔 ይቅርታ፣ አልተገኘም።")
 
-        # 3. Inline Query (Simplified & Fast)
+        # 3. Inline Query
         elif "inline_query" in data:
             iq = data["inline_query"]
             query_id = iq["id"]
@@ -258,24 +276,55 @@ async def process_telegram_update(data):
                 await answer_inline_query(query_id, [], "⚠️ Join Channel First", "start")
                 return
 
+            cursor = None
             results = []
             
-            # --- SIMPLE SEARCH LOGIC ---
-            search_criteria = build_search_query(query) if query else {}
-            # ባዶ ከሆነ ወይም ከተጻፈ፣ የመጨረሻዎቹን 50 አምጣ
-            cursor = db.files.find(search_criteria).sort("_id", -1).limit(50)
-
-            # Force Fetch (to_list to avoid loop closing issue)
-            docs = await cursor.to_list(length=50)
+            if query.startswith("#random"):
+                pipeline = [{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": 50}}]
+                cursor = db.files.aggregate(pipeline)
+                
+            elif query.startswith("#trending"):
+                filter_text = query.replace("#trending", "").strip()
+                match_stage = {"file_id": {"$exists": True}}
+                if filter_text:
+                    match_stage["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
+                pipeline = [
+                    {"$match": match_stage},
+                    {"$addFields": {"views_safe": {"$ifNull": ["$views", 0]}}}, 
+                    {"$sort": {"views_safe": -1, "_id": -1}}, 
+                    {"$limit": 50}
+                ]
+                cursor = db.files.aggregate(pipeline)
+                
+            elif query.startswith("#new"):
+                filter_text = query.replace("#new", "").strip()
+                search_filter = {"file_id": {"$exists": True}}
+                if filter_text: search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
+                cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
+                
+            elif query.startswith("#favorites"):
+                user = await db.users.find_one({"_id": user_id})
+                fav_ids = user.get("favorites", []) if user else []
+                if fav_ids:
+                    filter_text = query.replace("#favorites", "").strip()
+                    search_filter = {"file_id": {"$in": fav_ids}}
+                    if filter_text: search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
+                    cursor = db.files.find(search_filter).limit(50)
             
-            for doc in docs:
-                if doc.get('file_id'):
-                    results.append({
-                        "type": "audio",
-                        "id": str(doc["_id"]),
-                        "audio_file_id": doc["file_id"],
-                        "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
-                    })
+            else:
+                search_criteria = build_search_query(query) if query else {}
+                cursor = db.files.find(search_criteria).sort("_id", -1).limit(50)
+
+            if cursor:
+                docs = await cursor.to_list(length=50)
+                for doc in docs:
+                    if doc.get('file_id'):
+                        results.append({
+                            "type": "audio",
+                            "id": str(doc["_id"]),
+                            "audio_file_id": doc["file_id"],
+                            "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
+                        })
 
             await answer_inline_query(query_id, results, cache_time=0)
 
@@ -293,7 +342,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Simple Mode) 🚀'
+    return 'Al-Madih Bot Running (Caption Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
