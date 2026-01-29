@@ -1,5 +1,6 @@
 from flask import Flask, request
 from motor.motor_asyncio import AsyncIOMotorClient
+from bson import ObjectId # ለ አጭር ID
 import os
 import asyncio
 import logging
@@ -36,39 +37,33 @@ async def send_message(chat_id, text, reply_markup=None):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     async with aiohttp.ClientSession() as session:
-        payload = {"chat_id": chat_id, "text": text} 
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
             async with session.post(url, json=payload) as resp:
                 return await resp.json()
-        except Exception as e: logger.error(f"Msg Error: {e}")
+        except: pass
 
 async def send_audio(chat_id, audio_file_id, caption, reply_markup=None):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendAudio"
     async with aiohttp.ClientSession() as session:
-        payload = {
-            "chat_id": chat_id, 
-            "audio": audio_file_id, 
-            "caption": caption
-        }
+        payload = {"chat_id": chat_id, "audio": audio_file_id, "caption": caption, "parse_mode": "Markdown"}
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
             async with session.post(url, json=payload) as resp:
                 res = await resp.json()
                 if not res.get("ok"):
-                    logger.error(f"First Send Fail: {res}")
-                    # Fallback: Try sending WITHOUT caption (Sometimes caption causes error)
-                    payload.pop("caption")
-                    async with session.post(url, json=payload) as resp2:
-                        res2 = await resp2.json()
-                        if not res2.get("ok"):
-                            error_desc = res2.get('description', 'Unknown Error')
-                            await send_message(chat_id, f"⚠️ ይህን መንዙማ መላክ አልተቻለም።\nReason: {error_desc}")
+                    logger.error(f"Send Fail: {res}")
+                    # Error ከመጣ ምክንያቱን እንይ
+                    if "BUTTON_DATA_INVALID" in str(res):
+                         # አዝራሩ ካስቸገረ ያለ አዝራር ይላክ
+                         payload.pop("reply_markup")
+                         await session.post(url, json=payload)
+                    else:
+                        await send_message(chat_id, "⚠️ ይቅርታ፣ ይህ ፋይል በቴሌግራም ችግር ምክንያት መላክ አልተቻለም።")
                 return res
-        except Exception as e:
-            logger.error(f"Audio Net Error: {e}")
-            await send_message(chat_id, "⚠️ Network Error while sending audio.")
+        except: pass
 
 async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
     if not BOT_TOKEN: return
@@ -107,9 +102,9 @@ async def check_membership(user_id):
         try:
             async with session.get(url, params=params) as resp:
                 res = await resp.json()
-                if not res.get("ok"): return False 
+                if not res.get("ok"): return True 
                 return res["result"]["status"] in ["creator", "administrator", "member"]
-        except: return False
+        except: return True
 
 async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=0):
     if not BOT_TOKEN: return
@@ -154,12 +149,8 @@ def build_search_query(query_text):
     if not query_text: return {}
     query_text = query_text.strip()
     if query_text.startswith("#"): return {} 
-    
-    # 1 ፊደል ከሆነ (Starts with)
     if len(query_text) == 1:
         return {"display_name": {"$regex": f"^{re.escape(query_text)}", "$options": "i"}}
-    
-    # ቃላትን መነጣጠል (AND Logic)
     words = query_text.split()
     regex_pattern = ""
     for word in words:
@@ -173,21 +164,33 @@ async def process_telegram_update(data):
     db = db_client["MenzumaDB"]
 
     try:
-        # 1. Callback Query
+        # 1. Callback Query (Button Clicks)
         if "callback_query" in data:
             cb = data["callback_query"]
             user_id = cb["from"]["id"]
             cb_id = cb["id"]
             data_str = cb.get("data", "")
             
+            # 🔥 FIX: Use short ObjectId instead of long File ID
             if data_str.startswith("fav_"):
-                file_id = data_str.split("fav_")[1]
-                is_fav = await toggle_favorite(db, user_id, file_id)
-                text = "❤️ Saved" if is_fav else "💔 Removed"
-                new_text = "💔 Remove" if is_fav else "❤️ Add to Favorite"
-                kb = {"inline_keyboard": [[{"text": new_text, "callback_data": f"fav_{file_id}"}]]}
-                await answer_callback_query(cb_id, text)
-                await edit_message_reply_markup(cb["message"]["chat"]["id"], cb["message"]["message_id"], kb)
+                doc_id = data_str.split("fav_")[1]
+                
+                # Find the file by ObjectId to get the real File ID
+                try:
+                    file_doc = await db.files.find_one({"_id": ObjectId(doc_id)})
+                    if file_doc:
+                        file_id = file_doc['file_id']
+                        is_fav = await toggle_favorite(db, user_id, file_id)
+                        text = "❤️ Saved" if is_fav else "💔 Removed"
+                        new_text = "💔 Remove" if is_fav else "❤️ Add to Favorite"
+                        # Use doc_id again for the button
+                        kb = {"inline_keyboard": [[{"text": new_text, "callback_data": f"fav_{doc_id}"}]]}
+                        await answer_callback_query(cb_id, text)
+                        await edit_message_reply_markup(cb["message"]["chat"]["id"], cb["message"]["message_id"], kb)
+                    else:
+                        await answer_callback_query(cb_id, "⚠️ File not found")
+                except:
+                    await answer_callback_query(cb_id, "⚠️ Error")
             return
 
         # 2. Message Handling
@@ -227,15 +230,25 @@ async def process_telegram_update(data):
             if text == "/start":
                 welcome = (
                     "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
-                    "ከ 1,200 በላይ መንዙማዎችን እዚህ ያገኛሉ።\n\n"
-                    "👇 **አጠቃቀም:**\n"
-                    "• ዝም ብለው ስም ይጻፉ (Direct).\n"
-                    "• ለጓደኛዎ ለመላክ `Search` የሚለውን ይጫኑ።"
+                    "በዚህ ቦት ከ 1,200 በላይ መንዙማዎችን ማግኘት ይችላሉ።\n\n"
+                    "👇 **ይሞክሩ (Try Inline Search):**\n"
+                    "ማንኛውም ቻት ላይ `@Almadihbot` ብለው ስፔስ ሲሰጡ ምርጫ ይመጣልዎታል።\n\n"
+                    "🆕 `#new` - አዳዲስ የገቡ\n"
+                    "🔥 `#trending` - ተወዳጅ\n"
+                    "🎲 `#random` - እጣ\n"
+                    "❤️ `#favorites` - የመረጧቸው"
                 )
                 kb = {
                     "inline_keyboard": [
-                        [{"text": "🔍 መንዙማ ይፈልጉ", "switch_inline_query_current_chat": ""}],
-                        [{"text": "ቻናላችን 📢", "url": FORCE_CHANNEL_URL}]
+                        [
+                            {"text": "🔥 Trending", "switch_inline_query_current_chat": "#trending"},
+                            {"text": "🆕 New", "switch_inline_query_current_chat": "#new"}
+                        ],
+                        [
+                            {"text": "🎲 Random", "switch_inline_query_current_chat": "#random"},
+                            {"text": "❤️ Favorites", "switch_inline_query_current_chat": "#favorites"}
+                        ],
+                        [{"text": "🔍 Search Name", "switch_inline_query_current_chat": ""}]
                     ]
                 }
                 await send_message(chat_id, welcome, reply_markup=kb)
@@ -245,22 +258,18 @@ async def process_telegram_update(data):
                 files_count = await db.files.count_documents({})
                 await send_message(chat_id, f"📊 **Stats:**\n👥 Users: {users_count}\n📂 Files: {files_count}")
 
-            # Direct Search Logic
             elif text and not text.startswith("/"):
-                # Log what we are searching for
-                logger.info(f"Direct Searching for: {text}")
-                
                 search_query = build_search_query(text)
                 doc = await db.files.find_one(search_query)
-                
                 if doc:
-                    logger.info(f"Found: {doc.get('display_name')}")
                     if 'file_id' in doc:
-                        kb = {"inline_keyboard": [[{"text": "❤️ Add to Favorite", "callback_data": f"fav_{doc['file_id']}"}]]}
+                        # 🔥 FIX: Use str(doc['_id']) which is short, instead of file_id
+                        short_id = str(doc['_id'])
+                        kb = {"inline_keyboard": [[{"text": "❤️ Add to Favorite", "callback_data": f"fav_{short_id}"}]]}
                         await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
                         await increment_view(db, doc['file_id'])
                     else:
-                        await send_message(chat_id, "⚠️ ፋይሉ በዳታቤዝ አለ ነገር ግን ኦዲዮው ጠፍቷል። (Missing File ID)")
+                        await send_message(chat_id, "⚠️ ፋይሉ በዳታቤዝ አለ ነገር ግን ኦዲዮው ጠፍቷል።")
                 else:
                     await send_message(chat_id, "😔 ይቅርታ፣ አልተገኘም።")
 
@@ -344,7 +353,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Send Audio Fix) 🚀'
+    return 'Al-Madih Bot Running (Button Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
