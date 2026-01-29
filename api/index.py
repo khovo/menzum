@@ -128,7 +128,6 @@ async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
     async with aiohttp.ClientSession() as session:
         payload = {"chat_id": chat_id, "from_chat_id": from_chat_id, "message_id": message_id}
-        # 🔥 FIX: አዝራር ካለ (reply_markup) አብሮ እንዲሄድ
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
             async with session.post(url, json=payload) as resp: return await resp.json()
@@ -248,10 +247,7 @@ async def process_telegram_update(data):
             # 🔥 NEW: Verify Subscription Button
             if data_str == "check_subscription":
                 if await check_membership(user_id):
-                    # User is now a member
                     await answer_callback_query(cb_id, "✅ ተቀላቅለዋል! እንኳን ደህና መጡ።")
-                    
-                    # Replace the "Join" message with the Welcome menu
                     welcome = (
                         "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
                         "ከ 1,200 በላይ መንዙማዎችን እዚህ ያገኛሉ።\n\n"
@@ -274,8 +270,26 @@ async def process_telegram_update(data):
                     }
                     await edit_message_text(chat_id, message_id, welcome, reply_markup=kb)
                 else:
-                    # Still not a member - Alert them
                     await answer_callback_query(cb_id, "❌ አሁንም አልተቀላቀሉም! መጀመሪያ Join ይበሉ።", show_alert=True)
+                return
+
+            # 🔥 NEW: Report Broken File
+            if data_str.startswith("report_"):
+                doc_id = data_str.split("report_")[1]
+                # Notify Admin
+                try:
+                    file_doc = await db.files.find_one({"_id": ObjectId(doc_id)})
+                    file_name = file_doc.get("display_name", "Unknown") if file_doc else "Unknown"
+                    report_msg = (
+                        f"🚨 **Broken File Report!** 🚨\n\n"
+                        f"👤 Reported By: `{user_id}`\n"
+                        f"📂 File: `{file_name}`\n"
+                        f"🆔 Doc ID: `{doc_id}`"
+                    )
+                    await send_message(ADMIN_ID, report_msg)
+                    await answer_callback_query(cb_id, "✅ ሪፖርት ተልኳል! እናስተካክለዋለን።", show_alert=True)
+                except:
+                    await answer_callback_query(cb_id, "Error reporting.")
                 return
 
             # Broadcast Confirmation Logic
@@ -331,11 +345,14 @@ async def process_telegram_update(data):
                         text = "❤️ Saved" if is_fav else "💔 Removed"
                         new_text = "💔 Remove" if is_fav else "❤️ Add to Favorite"
                         
-                        # Share Button
+                        # Share & Report Buttons
                         kb = {
                             "inline_keyboard": [
                                 [{"text": new_text, "callback_data": f"fav_{doc_id}"}],
-                                [{"text": "↗️ Share", "switch_inline_query": ""}]
+                                [
+                                    {"text": "↗️ Share", "switch_inline_query": ""},
+                                    {"text": "⚠️ Report", "callback_data": f"report_{doc_id}"}
+                                ]
                             ]
                         }
                         
@@ -406,7 +423,6 @@ async def process_telegram_update(data):
 
             if not await check_membership(user_id):
                 msg = "**⚠️ ይቅርታ! ቦቱን ለመጠቀም መጀመሪያ ቻናላችንን ይቀላቀሉ።**"
-                # 🔥 FIX: Added Verify Button
                 kb = {
                     "inline_keyboard": [
                         [{"text": "Join Channel 📢", "url": FORCE_CHANNEL_URL}],
@@ -510,12 +526,18 @@ async def process_telegram_update(data):
                 if doc:
                     if 'file_id' in doc:
                         short_id = str(doc['_id'])
+                        
+                        # 🔥 NEW: Report Button Added
                         kb = {
                             "inline_keyboard": [
                                 [{"text": "❤️ Add to Favorite", "callback_data": f"fav_{short_id}"}],
-                                [{"text": "↗️ Share", "switch_inline_query": ""}]
+                                [
+                                    {"text": "↗️ Share", "switch_inline_query": ""},
+                                    {"text": "⚠️ Report", "callback_data": f"report_{short_id}"}
+                                ]
                             ]
                         }
+                        
                         await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
                         await increment_view(db, doc['file_id'])
                     else:
