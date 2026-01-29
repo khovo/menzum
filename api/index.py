@@ -127,6 +127,7 @@ async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
     async with aiohttp.ClientSession() as session:
         payload = {"chat_id": chat_id, "from_chat_id": from_chat_id, "message_id": message_id}
+        # 🔥 FIX: አዝራር ካለ (reply_markup) አብሮ እንዲሄድ
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
             async with session.post(url, json=payload) as resp: return await resp.json()
@@ -248,6 +249,8 @@ async def process_telegram_update(data):
                 if str(user_id) != str(ADMIN_ID): return
                 admin_data = await get_user_data(db, user_id)
                 msg_id_to_copy = admin_data.get("broadcast_msg_id")
+                # 🔥 FIX: Retrieve original markup from DB
+                markup_to_copy = admin_data.get("broadcast_markup")
                 
                 if not msg_id_to_copy:
                     await answer_callback_query(cb_id, "⚠️ Error: Message not found.")
@@ -258,8 +261,8 @@ async def process_telegram_update(data):
                 count = 0
                 async for user in users_cursor:
                     try:
-                        # 🔥 FIX: No Reply Markup (Original Buttons will be copied)
-                        await copy_message(user["_id"], chat_id, msg_id_to_copy)
+                        # Pass the original markup!
+                        await copy_message(user["_id"], chat_id, msg_id_to_copy, reply_markup=markup_to_copy)
                         count += 1
                         await asyncio.sleep(0.05) 
                     except: pass
@@ -296,7 +299,7 @@ async def process_telegram_update(data):
                         text = "❤️ Saved" if is_fav else "💔 Removed"
                         new_text = "💔 Remove" if is_fav else "❤️ Add to Favorite"
                         
-                        # Share Button added here too
+                        # Share Button
                         kb = {
                             "inline_keyboard": [
                                 [{"text": new_text, "callback_data": f"fav_{doc_id}"}],
@@ -324,7 +327,6 @@ async def process_telegram_update(data):
 
             # --- ADMIN LOGIC ---
             if str(user_id) == str(ADMIN_ID):
-                # Check for Broadcast State
                 admin_data = await get_user_data(db, user_id)
                 state = admin_data.get("state")
                 
@@ -335,10 +337,16 @@ async def process_telegram_update(data):
                         return
 
                     broadcast_msg_id = message["message_id"]
-                    await set_user_state(db, user_id, "broadcast_confirm", {"broadcast_msg_id": broadcast_msg_id})
+                    # 🔥 FIX: Capture Original Buttons (if any)
+                    original_markup = message.get("reply_markup")
                     
-                    # 🔥 FIX: Copy WITHOUT adding extra buttons (Preview)
-                    await copy_message(chat_id, chat_id, broadcast_msg_id)
+                    await set_user_state(db, user_id, "broadcast_confirm", {
+                        "broadcast_msg_id": broadcast_msg_id,
+                        "broadcast_markup": original_markup # Save it to DB
+                    })
+                    
+                    # Echo back for confirmation (With original buttons)
+                    await copy_message(chat_id, chat_id, broadcast_msg_id, reply_markup=original_markup)
                     
                     kb = {
                         "inline_keyboard": [
@@ -346,7 +354,7 @@ async def process_telegram_update(data):
                             [{"text": "❌ Cancel (ተው)", "callback_data": "broadcast_cancel"}]
                         ]
                     }
-                    await send_message(chat_id, "👆 **ይሄ መልዕክት ለሁሉም ተጠቃሚዎች ይላክ?**\n\nConfirm to broadcast.", reply_markup=kb)
+                    await send_message(chat_id, "👆 **ይሄ መልዕክት (ከነ አዝራሮቹ) ለሁሉም ተጠቃሚዎች ይላክ?**\n\nConfirm to broadcast.", reply_markup=kb)
                     return
 
                 # Admin Only Upload
@@ -441,16 +449,21 @@ async def process_telegram_update(data):
                 msg_text, kb = await get_catalog_page(db, 1) 
                 await send_message(chat_id, msg_text, reply_markup=kb)
 
-            # Broadcast Handler (Reply based)
+            # Reply Broadcast Handler (Fallback)
             elif text and text.startswith("/broadcast") and str(user_id) == str(ADMIN_ID):
                 if "reply_to_message" in message:
-                    reply_msg_id = message["reply_to_message"]["message_id"]
+                    reply_msg = message["reply_to_message"]
+                    reply_msg_id = reply_msg["message_id"]
+                    # 🔥 FIX: Capture markup
+                    orig_markup = reply_msg.get("reply_markup")
+                    
                     users_cursor = db.users.find({})
                     count = 0
                     await send_message(chat_id, "🚀 Broadcasting started...")
                     async for user in users_cursor:
                         try:
-                            await copy_message(user["_id"], chat_id, reply_msg_id)
+                            # Send WITH buttons
+                            await copy_message(user["_id"], chat_id, reply_msg_id, reply_markup=orig_markup)
                             count += 1
                             await asyncio.sleep(0.05) 
                         except: pass
@@ -458,22 +471,19 @@ async def process_telegram_update(data):
                 else:
                     await send_message(chat_id, "⚠️ ለማስታወቂያ፣ መላክ ለሚፈልጉት መልዕክት Reply በማድረግ `/broadcast` ይበሉ።")
 
-            # Search Logic (Mono Text for easy copy)
+            # Search Logic
             elif text and not text.startswith("/"):
                 search_query = build_search_query(text)
                 doc = await db.files.find_one(search_query)
                 if doc:
                     if 'file_id' in doc:
                         short_id = str(doc['_id'])
-                        
-                        # Share Button added here too
                         kb = {
                             "inline_keyboard": [
                                 [{"text": "❤️ Add to Favorite", "callback_data": f"fav_{short_id}"}],
                                 [{"text": "↗️ Share", "switch_inline_query": ""}]
                             ]
                         }
-                        
                         await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
                         await increment_view(db, doc['file_id'])
                     else:
@@ -557,7 +567,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Broadcast Fix) 🚀'
+    return 'Al-Madih Bot Running (Full Broadcast Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
