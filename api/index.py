@@ -99,65 +99,17 @@ async def answer_callback_query(callback_query_id, text=None, show_alert=False):
             async with session.post(url, json=payload) as resp: return await resp.json()
         except: pass
 
-async def get_chat(chat_id):
-    """ቻናል መረጃ ለማግኘት (ለመጨመር)"""
-    if not BOT_TOKEN: return None
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChat"
-    params = {"chat_id": chat_id}
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url, params=params) as resp:
-                res = await resp.json()
-                if res.get("ok"): return res["result"]
-                return None
-        except: return None
-
-# --- Channel Management Helpers ---
-async def get_all_force_channels(db):
-    """ሁሉንም የግዴታ ቻናሎች (ከ ENV እና ከ DB) ያመጣል"""
-    # 1. Default (ENV)
-    channels = [{"username": FORCE_CHANNEL_USERNAME, "url": FORCE_CHANNEL_URL, "title": "Main Channel"}]
-    
-    # 2. Extra (DB)
-    settings = await db.settings.find_one({"_id": "config"})
-    if settings and "force_channels" in settings:
-        channels.extend(settings["force_channels"])
-    
-    return channels
-
-async def add_force_channel(db, username, url, title):
-    await db.settings.update_one(
-        {"_id": "config"},
-        {"$addToSet": {"force_channels": {"username": username.replace("@", ""), "url": url, "title": title}}},
-        upsert=True
-    )
-
-async def remove_force_channel(db, username):
-    await db.settings.update_one(
-        {"_id": "config"},
-        {"$pull": {"force_channels": {"username": username.replace("@", "")}}}
-    )
-
-async def check_membership_single(user_id, channel_username):
+async def check_membership(user_id):
     if not BOT_TOKEN: return True
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
-    params = {"chat_id": f"@{channel_username}", "user_id": user_id}
+    params = {"chat_id": f"@{FORCE_CHANNEL_USERNAME}", "user_id": user_id}
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(url, params=params) as resp:
                 res = await resp.json()
-                if not res.get("ok"): return True # Error ከሆነ ዝም ብሎ ይለፍ (እንዳይዘጋ)
+                if not res.get("ok"): return True 
                 return res["result"]["status"] in ["creator", "administrator", "member"]
         except: return True
-
-async def get_missing_channels(user_id, db):
-    """ተጠቃሚው ያልገባባቸውን ቻናሎች ዝርዝር ይመልሳል"""
-    all_channels = await get_all_force_channels(db)
-    missing = []
-    for ch in all_channels:
-        if not await check_membership_single(user_id, ch["username"]):
-            missing.append(ch)
-    return missing
 
 async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=0):
     if not BOT_TOKEN: return
@@ -262,7 +214,7 @@ async def get_catalog_page(db, page):
     total_docs = await db.files.count_documents({"file_id": {"$exists": True}})
     total_pages = (total_docs + limit - 1) // limit
     cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).skip(skip).limit(limit)
-    msg_text = f"📂 **የመንዙማዎች ዝርዝር (ገጽ {page}/{total_pages})**\n\n💡 _የመንዙማውን ስም ሲነኩት ኮፒ (Copy) ይሆናል! ከዛ ለቦቱ መልሰው በመላክ ያዳምጡ።_\n\n"
+    msg_text = f"📂 **የመንዙማዎች ዝርዝር (ገጽ {page}/{total_pages})**\n\n💡 _ስሙን ሲነኩት ኮፒ ይሆናል፣ ከዛ ለቦቱ ይላኩት።_\n\n"
     idx = skip + 1
     async for doc in cursor:
         clean_name = doc.get("display_name", "Unknown").replace("`", "") 
@@ -270,9 +222,9 @@ async def get_catalog_page(db, page):
         idx += 1
     buttons = []
     nav_row = []
-    if page > 1: nav_row.append({"text": "⬅️ ወደኋላ", "callback_data": f"pg_{page-1}"})
+    if page > 1: nav_row.append({"text": "⬅️ Back", "callback_data": f"pg_{page-1}"})
     nav_row.append({"text": "❌ ዝጋ", "callback_data": "pg_close"})
-    if page < total_pages: nav_row.append({"text": "ወደፊት ➡️", "callback_data": f"pg_{page+1}"})
+    if page < total_pages: nav_row.append({"text": "Next ➡️", "callback_data": f"pg_{page+1}"})
     buttons.append(nav_row)
     return msg_text, {"inline_keyboard": buttons}
 
@@ -294,76 +246,53 @@ async def process_telegram_update(data):
             
             # 🔥 NEW: Verify Subscription Button
             if data_str == "check_subscription":
-                missing_channels = await get_missing_channels(user_id, db)
-                if not missing_channels:
-                    await answer_callback_query(cb_id, "✅ እንኳን ደህና መጡ! ተቀላቅለዋል።")
+                if await check_membership(user_id):
+                    await answer_callback_query(cb_id, "✅ ተቀላቅለዋል! እንኳን ደህና መጡ።")
                     welcome = (
                         "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
-                        "ይህ ቦት ከ **1,200** በላይ የተመረጡ መንዙማዎችን እና ነሺዳዎችን በነፃ ያቀርብልዎታል። 🎧\n\n"
-                        "👇 **ፈጣን አማራጮች:**"
+                        "ከ 1,200 በላይ መንዙማዎችን እዚህ ያገኛሉ።\n\n"
+                        "👇 **አጠቃቀም:**\n"
+                        "• ዝም ብለው ስም ይጻፉ (Direct).\n"
+                        "• `/list` ብለው ሙሉ ዝርዝር በገጽ ማየት ይችላሉ።"
                     )
                     kb = {
                         "inline_keyboard": [
                             [
-                                {"text": "🔥 ተወዳጅ (Trending)", "switch_inline_query_current_chat": "#trending"},
-                                {"text": "🆕 አዳዲስ (New)", "switch_inline_query_current_chat": "#new"}
+                                {"text": "🔥 Trending", "switch_inline_query_current_chat": "#trending"},
+                                {"text": "🆕 New", "switch_inline_query_current_chat": "#new"}
                             ],
                             [
-                                {"text": "❤️ የእኔ ምርጫ (Favorites)", "switch_inline_query_current_chat": "#favorites"},
-                                {"text": "📚 ማህደር (Catalog)", "callback_data": "pg_1"}
+                                {"text": "❤️ Favorites", "switch_inline_query_current_chat": "#favorites"},
+                                {"text": "📂 Catalog (List)", "callback_data": "pg_1"}
                             ],
-                            [{"text": "🔍 መንዙማ ይፈልጉ (Search)", "switch_inline_query_current_chat": ""}]
+                            [{"text": "🔍 Search Name", "switch_inline_query_current_chat": ""}]
                         ]
                     }
                     await edit_message_text(chat_id, message_id, welcome, reply_markup=kb)
                 else:
-                    await answer_callback_query(cb_id, "❌ አሁንም አልተቀላቀሉም! እባክዎ መጀመሪያ Join ይበሉ።", show_alert=True)
+                    await answer_callback_query(cb_id, "❌ አሁንም አልተቀላቀሉም! መጀመሪያ Join ይበሉ።", show_alert=True)
                 return
 
-            # --- Admin Channel Management Callbacks ---
-            if str(user_id) == str(ADMIN_ID):
-                if data_str == "add_channel":
-                    await set_user_state(db, user_id, "add_channel_wait")
-                    await send_message(chat_id, "➕ **ቻናል መጨመር**\n\nእባክዎ የሚጨምሩትን ቻናል Username (ምሳሌ: @Al_madih) ይላኩ።\n\n*(ቦቱ በዛ ቻናል ውስጥ Admin መሆን አለበት)*")
-                    await answer_callback_query(cb_id)
-                    return
-                elif data_str.startswith("rm_ch_"):
-                    ch_username = data_str.split("rm_ch_")[1]
-                    await remove_force_channel(db, ch_username)
-                    await answer_callback_query(cb_id, f"🗑 {ch_username} ተሰርዟል!")
-                    
-                    # Refresh list (Fix Markdown underscore error by escaping)
-                    all_chs = await get_all_force_channels(db)
-                    msg_text = "📢 **የግዴታ ቻናሎች ዝርዝር:**\n\n"
-                    kb_rows = []
-                    for ch in all_chs:
-                        # Escape underscore for Markdown
-                        safe_username = ch['username'].replace("_", "\\_")
-                        msg_text += f"• t.me/{safe_username}\n"
-                        if ch['username'] != FORCE_CHANNEL_USERNAME:
-                            kb_rows.append([{"text": f"🗑 አጥፋ (@{ch['username']})", "callback_data": f"rm_ch_{ch['username']}"}])
-                    kb_rows.append([{"text": "➕ አዲስ ጨምር", "callback_data": "add_channel"}])
-                    await edit_message_text(chat_id, message_id, msg_text, reply_markup={"inline_keyboard": kb_rows})
-                    return
-
-            # Report & Fav Logic
+            # 🔥 NEW: Report Broken File
             if data_str.startswith("report_"):
                 doc_id = data_str.split("report_")[1]
+                # Notify Admin
                 try:
                     file_doc = await db.files.find_one({"_id": ObjectId(doc_id)})
                     file_name = file_doc.get("display_name", "Unknown") if file_doc else "Unknown"
                     report_msg = (
-                        f"🚨 **የተበላሸ ፋይል ሪፖርት! (Broken File)** 🚨\n\n"
-                        f"👤 ጠቋሚ: `{user_id}`\n"
-                        f"📂 ፋይል: `{file_name}`\n"
-                        f"🆔 መታወቂያ: `{doc_id}`"
+                        f"🚨 **Broken File Report!** 🚨\n\n"
+                        f"👤 Reported By: `{user_id}`\n"
+                        f"📂 File: `{file_name}`\n"
+                        f"🆔 Doc ID: `{doc_id}`"
                     )
                     await send_message(ADMIN_ID, report_msg)
-                    await answer_callback_query(cb_id, "✅ ሪፖርትዎ ተልኳል! በቅርቡ እናስተካክለዋለን።", show_alert=True)
+                    await answer_callback_query(cb_id, "✅ ሪፖርት ተልኳል! እናስተካክለዋለን።", show_alert=True)
                 except:
-                    await answer_callback_query(cb_id, "Error")
+                    await answer_callback_query(cb_id, "Error reporting.")
                 return
 
+            # Broadcast Confirmation Logic
             if data_str == "broadcast_confirm":
                 if str(user_id) != str(ADMIN_ID): return
                 admin_data = await get_user_data(db, user_id)
@@ -374,7 +303,7 @@ async def process_telegram_update(data):
                     await answer_callback_query(cb_id, "⚠️ Error: Message not found.")
                     return
 
-                await edit_message_text(chat_id, message_id, "🚀 መልዕክቱ እየተላለፈ ነው (Broadcasting)...")
+                await edit_message_text(chat_id, message_id, "🚀 Broadcasting started...")
                 users_cursor = db.users.find({})
                 count = 0
                 async for user in users_cursor:
@@ -383,27 +312,29 @@ async def process_telegram_update(data):
                         count += 1
                         await asyncio.sleep(0.05) 
                     except: pass
-                await send_message(chat_id, f"✅ መልዕክቱ ለ **{count}** ተጠቃሚዎች በተሳካ ሁኔታ ተላልፏል።")
+                await send_message(chat_id, f"✅ Broadcast sent to {count} users.")
                 await set_user_state(db, user_id, "idle")
                 await answer_callback_query(cb_id)
                 return
 
             elif data_str == "broadcast_cancel":
                 if str(user_id) != str(ADMIN_ID): return
-                await edit_message_text(chat_id, message_id, "❌ መልዕክት ማስተላለፍ ተሰርዟል።")
+                await edit_message_text(chat_id, message_id, "❌ Broadcast cancelled.")
                 await set_user_state(db, user_id, "idle")
                 await answer_callback_query(cb_id)
                 return
 
+            # Pagination
             if data_str.startswith("pg_"):
                 if data_str == "pg_close":
-                    await edit_message_text(chat_id, message_id, "❌ ዝርዝሩ ተዘግቷል። `/list` በማለት እንደገና መክፈት ይችላሉ።")
+                    await edit_message_text(chat_id, message_id, "❌ ዝርዝሩ ተዘግቷል። /list በማለት እንደገና መክፈት ይችላሉ።")
                 else:
                     new_page = int(data_str.split("_")[1])
                     text, kb = await get_catalog_page(db, new_page)
                     await edit_message_text(chat_id, message_id, text, reply_markup=kb)
                 await answer_callback_query(cb_id)
                 
+            # Favorites
             elif data_str.startswith("fav_"):
                 doc_id = data_str.split("fav_")[1]
                 try:
@@ -411,21 +342,24 @@ async def process_telegram_update(data):
                     if file_doc:
                         file_id = file_doc['file_id']
                         is_fav = await toggle_favorite(db, user_id, file_id)
-                        text = "❤️ ተመዝግቧል" if is_fav else "💔 ተሰርዟል"
-                        new_text = "💔 ከምርጫዬ አጥፋ" if is_fav else "❤️ ወደ ምርጫዬ ጨምር"
+                        text = "❤️ Saved" if is_fav else "💔 Removed"
+                        new_text = "💔 Remove" if is_fav else "❤️ Add to Favorite"
+                        
+                        # Share & Report Buttons
                         kb = {
                             "inline_keyboard": [
                                 [{"text": new_text, "callback_data": f"fav_{doc_id}"}],
                                 [
-                                    {"text": "↗️ ለጓደኛ አጋራ (Share)", "switch_inline_query": ""},
-                                    {"text": "⚠️ ሪፖርት (Report)", "callback_data": f"report_{doc_id}"}
+                                    {"text": "↗️ Share", "switch_inline_query": ""},
+                                    {"text": "⚠️ Report", "callback_data": f"report_{doc_id}"}
                                 ]
                             ]
                         }
+                        
                         await answer_callback_query(cb_id, text)
                         await edit_message_reply_markup(chat_id, message_id, kb)
                     else:
-                        await answer_callback_query(cb_id, "⚠️ ፋይሉ አልተገኘም")
+                        await answer_callback_query(cb_id, "⚠️ File not found")
                 except:
                     await answer_callback_query(cb_id, "Error")
             return
@@ -445,30 +379,10 @@ async def process_telegram_update(data):
                 admin_data = await get_user_data(db, user_id)
                 state = admin_data.get("state")
                 
-                # Channel Add State
-                if state == "add_channel_wait":
-                    if text.startswith("@"):
-                        ch_username = text.replace("@", "").strip()
-                        # Verify Channel
-                        chat_info = await get_chat(f"@{ch_username}")
-                        if chat_info and chat_info.get("type") == "channel":
-                            safe_title = chat_info.get("title", ch_username).replace("_", "\\_")
-                            await add_force_channel(db, ch_username, f"https://t.me/{ch_username}", safe_title)
-                            await send_message(chat_id, f"✅ **{safe_title}** (@{ch_username.replace('_', '\\_')}) ተጨምሯል!")
-                            await set_user_state(db, user_id, "idle")
-                        else:
-                            await send_message(chat_id, "❌ ቻናሉ አልተገኘም ወይም ቦቱ አድሚን አይደለም። እባክዎ እንደገና ይሞክሩ።")
-                    elif text == "🔙 Back":
-                        await set_user_state(db, user_id, "idle")
-                        await send_message(chat_id, "ተሰርዟል።")
-                    else:
-                        await send_message(chat_id, "⚠️ እባክዎ በ @ የሚጀምር Username ይላኩ (ምሳሌ: @Al_madih)።")
-                    return
-
                 if state == "broadcast_wait":
-                    if text == "🔙 Back" or text == "🔙 ተመለስ":
+                    if text == "🔙 Back":
                         await set_user_state(db, user_id, "idle")
-                        await send_message(chat_id, "🔙 ወደ ዋናው ሜኑ ተመልሰዋል።")
+                        await send_message(chat_id, "🔙 Back to Menu.")
                         return
 
                     broadcast_msg_id = message["message_id"]
@@ -483,11 +397,11 @@ async def process_telegram_update(data):
                     
                     kb = {
                         "inline_keyboard": [
-                            [{"text": "✅ ላክ (Post)", "callback_data": "broadcast_confirm"}],
-                            [{"text": "❌ ተው (Cancel)", "callback_data": "broadcast_cancel"}]
+                            [{"text": "✅ Post (አስተላልፍ)", "callback_data": "broadcast_confirm"}],
+                            [{"text": "❌ Cancel (ተው)", "callback_data": "broadcast_cancel"}]
                         ]
                     }
-                    await send_message(chat_id, "👆 **ይሄ መልዕክት ለሁሉም ተጠቃሚዎች ይላክ?**\n\nከማረጋገጥዎ በፊት ጽሁፉን እና አዝራሩን በደንብ ይዩ።", reply_markup=kb)
+                    await send_message(chat_id, "👆 **ይሄ መልዕክት (ከነ አዝራሮቹ) ለሁሉም ተጠቃሚዎች ይላክ?**\n\nConfirm to broadcast.", reply_markup=kb)
                     return
 
                 # Admin Only Upload
@@ -504,109 +418,81 @@ async def process_telegram_update(data):
                             {"$set": {"file_id": file_id, "display_name": clean_name}},
                             upsert=True
                         )
-                        await send_message(chat_id, f"✅ **Admin Upload:** `{clean_name}` በተሳካ ሁኔታ ተመዝግቧል!")
+                        await send_message(chat_id, f"✅ **Admin Upload:** `{clean_name}` saved!")
                     return
 
-            # 🔥 MULTI-CHANNEL FORCE JOIN CHECK 🔥
-            missing_channels = await get_missing_channels(user_id, db)
-            if missing_channels:
-                msg = "🔒 **ይቅርታ! ቦቱን ለመጠቀም የሚከተሉትን ቻናሎች መቀላቀል አለብዎት።**\n\n"
-                kb_rows = []
-                for ch in missing_channels:
-                    kb_rows.append([{"text": f"📢 Join {ch.get('title', 'Channel')}", "url": ch['url']}])
-                
-                kb_rows.append([{"text": "✅ ተቀላቅያለሁ (Verify)", "callback_data": "check_subscription"}])
-                
-                await send_message(chat_id, msg, reply_markup={"inline_keyboard": kb_rows})
+            if not await check_membership(user_id):
+                msg = "**⚠️ ይቅርታ! ቦቱን ለመጠቀም መጀመሪያ ቻናላችንን ይቀላቀሉ።**"
+                kb = {
+                    "inline_keyboard": [
+                        [{"text": "Join Channel 📢", "url": FORCE_CHANNEL_URL}],
+                        [{"text": "✅ ተቀላቅያለሁ (Verify)", "callback_data": "check_subscription"}]
+                    ]
+                }
+                await send_message(chat_id, msg, reply_markup=kb)
                 return
 
             # --- ADMIN DASHBOARD ---
             if str(user_id) == str(ADMIN_ID):
-                if text == "/start" or text == "/admin" or text == "🔙 Back" or text == "🔙 ተመለስ":
-                    msg = "👑 **የአድሚን መቆጣጠሪያ (Admin Panel)**\n\nእንኳን ደህና መጡ አለቃ! 🫡\nከታች ባሉት አዝራሮች ቦቱን ይቆጣጠሩ።"
+                if text == "/start" or text == "/admin" or text == "🔙 Back":
+                    msg = "👋 **ሰላም አለቃ! (Admin Panel)**\n\nከታች ባሉት አዝራሮች ቦቱን ይቆጣጠሩ።"
                     admin_kb = {
                         "keyboard": [
-                            [{"text": "📊 ስታትስቲክስ"}, {"text": "📅 የዛሬ መረጃ"}],
-                            [{"text": "📢 መልዕክት ማስተላለፍ"}, {"text": "📢 ቻናሎች (Channels)"}], # New Button
-                            [{"text": "👥 የተጠቃሚ ብዛት"}, {"text": "📂 ጠቅላላ ፋይሎች"}]
+                            [{"text": "📊 Statistics"}, {"text": "📅 Daily Stats"}],
+                            [{"text": "📢 Broadcast"}, {"text": "👥 User Count"}],
+                            [{"text": "📂 Total Files"}]
                         ],
                         "resize_keyboard": True
                     }
                     await send_message(chat_id, msg, reply_markup=admin_kb)
                     return 
 
-                # 🔥 FIXED: Markdown underscore issue fixed by escaping
-                elif text == "📢 ቻናሎች (Channels)":
-                    all_chs = await get_all_force_channels(db)
-                    msg_text = "📢 **የግዴታ ቻናሎች ዝርዝር (Force Join):**\n\n"
-                    kb_rows = []
-                    for ch in all_chs:
-                        # Underscore Escape (ስህተቱን የሚያጠፋው ይሄ ነው)
-                        safe_username = ch['username'].replace("_", "\\_")
-                        msg_text += f"• t.me/{safe_username}\n"
-                        if ch['username'] != FORCE_CHANNEL_USERNAME: # ዋናውን ማጥፋት አይቻልም
-                            kb_rows.append([{"text": f"🗑 አጥፋ (@{ch['username']})", "callback_data": f"rm_ch_{ch['username']}"}])
-                    
-                    kb_rows.append([{"text": "➕ አዲስ ጨምር", "callback_data": "add_channel"}])
-                    await send_message(chat_id, msg_text, reply_markup={"inline_keyboard": kb_rows})
-                    return
-
-                elif text == "📊 ስታትስቲክስ":
+                elif text == "📊 Statistics":
                     users = await db.users.count_documents({})
                     files = await db.files.count_documents({})
-                    await send_message(chat_id, f"📊 **አጠቃላይ መረጃ:**\n\n👥 ጠቅላላ ተጠቃሚዎች: `{users}`\n📂 የተጫኑ መንዙማዎች: `{files}`")
+                    await send_message(chat_id, f"📊 **General Stats:**\n\n👥 Users: `{users}`\n📂 Files: `{files}`")
                     return
 
-                elif text == "📅 የዛሬ መረጃ":
+                elif text == "📅 Daily Stats":
                     stats_msg = await get_daily_stats(db)
                     await send_message(chat_id, stats_msg)
                     return
 
-                elif text == "📢 መልዕክት ማስተላለፍ":
+                elif text == "📢 Broadcast":
                     await set_user_state(db, user_id, "broadcast_wait")
-                    msg = (
-                        "📢 **የመልዕክት ማስተላለፊያ (Broadcast Mode)**\n\n"
-                        "ለተጠቃሚዎች መልዕክት ለማስተላለፍ:\n"
-                        "1. መላክ የሚፈልጉትን (ጽሁፍ፣ ፎቶ፣ ድምፅ) ወደዚህ ይላኩ።\n"
-                        "2. ለዛ መልዕክት **Reply** በማድረግ `/broadcast` ብለው ይዘዙ።\n\n"
-                        "*(ለመተው '🔙 ተመለስ' የሚለውን ይጫኑ)*"
-                    )
-                    await send_message(chat_id, msg)
+                    await send_message(chat_id, "📢 **Broadcast Mode**\n\nለተጠቃሚዎች መላክ የሚፈልጉትን መልዕክት (ጽሁፍ፣ ፎቶ፣ ድምፅ) **አሁን ይላኩ**።\n\n(ለመተው '🔙 Back' ይበሉ)")
                     return
 
-                elif text == "👥 የተጠቃሚ ብዛት":
+                elif text == "👥 User Count":
                     users = await db.users.count_documents({})
-                    await send_message(chat_id, f"👥 አሁን ያሉ ተጠቃሚዎች: `{users}`")
+                    await send_message(chat_id, f"👥 አጠቃላይ ተጠቃሚዎች: `{users}`")
                     return
                 
-                elif text == "📂 ጠቅላላ ፋይሎች":
+                elif text == "📂 Total Files":
                     files = await db.files.count_documents({})
-                    await send_message(chat_id, f"📂 በመረጃ ቋቱ ውስጥ ያሉ መንዙማዎች: `{files}`")
+                    await send_message(chat_id, f"📂 የተጫኑ መንዙማዎች: `{files}`")
                     return
 
             # --- USER COMMANDS ---
             if text == "/start":
                 welcome = (
-                    "🌙 **እንኳን ወደ አል-ማዲህ (Al-Madih) የመንዙማ ቦት በደህና መጡ!** 🌙\n\n"
-                    "ይህ ቦት ከ **1,200** በላይ የተመረጡ መንዙማዎችን እና ነሺዳዎችን በነፃ ያቀርብልዎታል። 🎧\n\n"
-                    "🚀 **ቦቱን እንዴት ይጠቀሙበታል?**\n\n"
-                    "1️⃣ **ቀጥታ ፍለጋ (Direct Search):**\n"
-                    "   ዝም ብለው የመንዙማውን ወይም የማዲሁን ስም ይጻፉ።\n\n"
-                    "2️⃣ **ለጓደኛዎ ለመላክ (Inline Search):**\n"
-                    "   ማንኛውም ቻት ላይ `@Almadihbot` ብለው ስፔስ ሲሰጡ ዝርዝር ይመጣልዎታል።\n\n"
-                    "👇 **ፈጣን አማራጮች:**"
+                    "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
+                    "ከ 1,200 በላይ መንዙማዎችን እዚህ ያገኛሉ።\n\n"
+                    "👇 **አጠቃቀም:**\n"
+                    "• ዝም ብለው ስም ይጻፉ (Direct).\n"
+                    "• `/list` ብለው ሙሉ ዝርዝር በገጽ ማየት ይችላሉ።"
                 )
                 kb = {
                     "inline_keyboard": [
                         [
-                            {"text": "🔥 ተወዳጅ (Trending)", "switch_inline_query_current_chat": "#trending"},
-                            {"text": "🆕 አዳዲስ (New)", "switch_inline_query_current_chat": "#new"}
+                            {"text": "🔥 Trending", "switch_inline_query_current_chat": "#trending"},
+                            {"text": "🆕 New", "switch_inline_query_current_chat": "#new"}
                         ],
                         [
-                            {"text": "❤️ የእኔ ምርጫ (Favorites)", "switch_inline_query_current_chat": "#favorites"},
-                            {"text": "📚 ማህደር (Catalog)", "callback_data": "pg_1"}
+                            {"text": "❤️ Favorites", "switch_inline_query_current_chat": "#favorites"},
+                            {"text": "📂 Catalog (List)", "callback_data": "pg_1"}
                         ],
-                        [{"text": "🔍 መንዙማ ይፈልጉ (Search)", "switch_inline_query_current_chat": ""}]
+                        [{"text": "🔍 Search Name", "switch_inline_query_current_chat": ""}]
                     ]
                 }
                 await send_message(chat_id, welcome, reply_markup=kb)
@@ -622,14 +508,14 @@ async def process_telegram_update(data):
                     orig_markup = message.get("reply_markup")
                     users_cursor = db.users.find({})
                     count = 0
-                    await send_message(chat_id, "🚀 መልዕክቱ እየተላለፈ ነው (Broadcasting)...")
+                    await send_message(chat_id, "🚀 Broadcasting started...")
                     async for user in users_cursor:
                         try:
                             await copy_message(user["_id"], chat_id, reply_msg_id, reply_markup=orig_markup)
                             count += 1
                             await asyncio.sleep(0.05) 
                         except: pass
-                    await send_message(chat_id, f"✅ መልዕክቱ ለ **{count}** ተጠቃሚዎች ተዳርሷል።")
+                    await send_message(chat_id, f"✅ Broadcast sent to {count} users.")
                 else:
                     await send_message(chat_id, "⚠️ ለማስታወቂያ፣ መላክ ለሚፈልጉት መልዕክት Reply በማድረግ `/broadcast` ይበሉ።")
 
@@ -641,13 +527,13 @@ async def process_telegram_update(data):
                     if 'file_id' in doc:
                         short_id = str(doc['_id'])
                         
-                        # Share & Report Buttons
+                        # 🔥 NEW: Report Button Added
                         kb = {
                             "inline_keyboard": [
-                                [{"text": "❤️ ወደ ምርጫዬ ጨምር", "callback_data": f"fav_{short_id}"}],
+                                [{"text": "❤️ Add to Favorite", "callback_data": f"fav_{short_id}"}],
                                 [
-                                    {"text": "↗️ ለጓደኛ አጋራ (Share)", "switch_inline_query": ""},
-                                    {"text": "⚠️ ሪፖርት (Report)", "callback_data": f"report_{short_id}"}
+                                    {"text": "↗️ Share", "switch_inline_query": ""},
+                                    {"text": "⚠️ Report", "callback_data": f"report_{short_id}"}
                                 ]
                             ]
                         }
@@ -655,9 +541,9 @@ async def process_telegram_update(data):
                         await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
                         await increment_view(db, doc['file_id'])
                     else:
-                        await send_message(chat_id, "⚠️ ይቅርታ! የዚህ መንዙማ ኦዲዮ ፋይል ጠፍቷል።")
+                        await send_message(chat_id, "⚠️ ፋይሉ ተገኝቷል ግን ኦዲዮው ጠፍቷል።")
                 else:
-                    await send_message(chat_id, "😔 ይቅርታ፣ ይህ መንዙማ አልተገኘም። እባክዎ ስሙን አስተካክለው ይሞክሩ።")
+                    await send_message(chat_id, "😔 ይቅርታ፣ አልተገኘም።")
 
         # 3. Inline Query
         elif "inline_query" in data:
@@ -669,10 +555,8 @@ async def process_telegram_update(data):
 
             await track_user(db, user_id, first_name)
 
-            # Inline Membership Check
-            missing_channels = await get_missing_channels(user_id, db)
-            if missing_channels:
-                await answer_inline_query(query_id, [], "⚠️ መጀመሪያ ቻናሉን ይቀላቀሉ!", "start")
+            if not await check_membership(user_id):
+                await answer_inline_query(query_id, [], "⚠️ Join Channel First", "start")
                 return
 
             cursor = None
@@ -737,7 +621,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Channel Fix) 🚀'
+    return 'Al-Madih Bot Running (Full Broadcast Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
