@@ -24,6 +24,8 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 FORCE_CHANNEL_USERNAME = "Al_madih" 
 FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
+ITEMS_PER_PAGE = 10 # በአንድ ገጽ ስንት መንዙማ ይታይ?
+
 # --- Helpers ---
 def run_async(coro):
     loop = asyncio.new_event_loop()
@@ -61,26 +63,17 @@ async def send_audio(chat_id, audio_file_id, caption, reply_markup=None):
                 return res
         except: pass
 
-async def send_document(chat_id, file_path, caption=None):
-    """ጽሁፍ ፋይል (Text File) ለመላክ"""
+async def edit_message_text(chat_id, message_id, text, reply_markup=None):
     if not BOT_TOKEN: return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    data = aiohttp.FormData()
-    data.add_field('chat_id', str(chat_id))
-    if caption: data.add_field('caption', caption)
-    data.add_field('document', open(file_path, 'rb'))
-    
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post(url, data=data) as resp:
-                return await resp.json()
-        except: pass
-
-async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
-    if not BOT_TOKEN: return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
-    async with aiohttp.ClientSession() as session:
-        payload = {"chat_id": chat_id, "from_chat_id": from_chat_id, "message_id": message_id}
+        payload = {
+            "chat_id": chat_id, 
+            "message_id": message_id, 
+            "text": text, 
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True
+        }
         if reply_markup: payload["reply_markup"] = reply_markup
         try:
             async with session.post(url, json=payload) as resp: return await resp.json()
@@ -125,6 +118,16 @@ async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_
         payload["switch_pm_text"] = switch_pm_text
         payload["switch_pm_parameter"] = switch_pm_param
     async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, json=payload) as resp: return await resp.json()
+        except: pass
+
+async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
+    if not BOT_TOKEN: return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
+    async with aiohttp.ClientSession() as session:
+        payload = {"chat_id": chat_id, "from_chat_id": from_chat_id, "message_id": message_id}
+        if reply_markup: payload["reply_markup"] = reply_markup
         try:
             async with session.post(url, json=payload) as resp: return await resp.json()
         except: pass
@@ -183,6 +186,42 @@ async def get_daily_stats(db):
         return f"📅 **Daily Statistics (24h)**\n\n🆕 New Users: `{new_users}`\n⚡ Active Users: `{active_users}`\n\n👥 Total Users: `{total_users}`\n📂 Total Files: `{total_files}`"
     except: return "Error"
 
+# --- 🔥 PAGINATION HELPER 🔥 ---
+async def get_catalog_page(db, page):
+    limit = ITEMS_PER_PAGE
+    skip = (page - 1) * limit
+    
+    # ጠቅላላ ፋይል ብዛት
+    total_docs = await db.files.count_documents({"file_id": {"$exists": True}})
+    total_pages = (total_docs + limit - 1) // limit
+    
+    # ፋይሎችን ማምጣት (Newest first)
+    cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).skip(skip).limit(limit)
+    
+    msg_text = f"📂 **የመንዙማዎች ዝርዝር (ገጽ {page}/{total_pages})**\n\n💡 _ስሙን ሲነኩት ኮፒ ይሆናል፣ ከዛ ለቦቱ ይላኩት።_\n\n"
+    
+    idx = skip + 1
+    async for doc in cursor:
+        clean_name = doc.get("display_name", "Unknown").replace("`", "") # Backticks ካለ ማጥፋት
+        msg_text += f"{idx}. `{clean_name}`\n"
+        idx += 1
+        
+    # Buttons
+    buttons = []
+    nav_row = []
+    
+    if page > 1:
+        nav_row.append({"text": "⬅️ Back", "callback_data": f"pg_{page-1}"})
+        
+    nav_row.append({"text": "❌ ዝጋ", "callback_data": "pg_close"})
+    
+    if page < total_pages:
+        nav_row.append({"text": "Next ➡️", "callback_data": f"pg_{page+1}"})
+        
+    buttons.append(nav_row)
+    
+    return msg_text, {"inline_keyboard": buttons}
+
 # --- Main Logic ---
 async def process_telegram_update(data):
     if not MONGO_URL or not BOT_TOKEN: return
@@ -190,14 +229,29 @@ async def process_telegram_update(data):
     db = db_client["MenzumaDB"]
 
     try:
-        # 1. Callback Query
+        # 1. Callback Query (Buttons)
         if "callback_query" in data:
             cb = data["callback_query"]
             user_id = cb["from"]["id"]
             cb_id = cb["id"]
             data_str = cb.get("data", "")
+            chat_id = cb["message"]["chat"]["id"]
+            message_id = cb["message"]["message_id"]
             
-            if data_str.startswith("fav_"):
+            # --- Pagination Logic ---
+            if data_str.startswith("pg_"):
+                if data_str == "pg_close":
+                    # መልዕክቱን ማጥፋት (Delete) ማድረግ ይቻላል፣ ወይም "ተዘግቷል" ማለት
+                    await edit_message_text(chat_id, message_id, "❌ ዝርዝሩ ተዘግቷል። /list በማለት እንደገና መክፈት ይችላሉ።")
+                else:
+                    new_page = int(data_str.split("_")[1])
+                    text, kb = await get_catalog_page(db, new_page)
+                    await edit_message_text(chat_id, message_id, text, reply_markup=kb)
+                
+                await answer_callback_query(cb_id)
+                
+            # --- Favorites Logic ---
+            elif data_str.startswith("fav_"):
                 doc_id = data_str.split("fav_")[1]
                 try:
                     file_doc = await db.files.find_one({"_id": ObjectId(doc_id)})
@@ -208,7 +262,7 @@ async def process_telegram_update(data):
                         new_text = "💔 Remove" if is_fav else "❤️ Add to Favorite"
                         kb = {"inline_keyboard": [[{"text": new_text, "callback_data": f"fav_{doc_id}"}]]}
                         await answer_callback_query(cb_id, text)
-                        await edit_message_reply_markup(cb["message"]["chat"]["id"], cb["message"]["message_id"], kb)
+                        await edit_message_reply_markup(chat_id, message_id, kb)
                     else:
                         await answer_callback_query(cb_id, "⚠️ File not found")
                 except:
@@ -296,7 +350,7 @@ async def process_telegram_update(data):
                     "ከ 1,200 በላይ መንዙማዎችን እዚህ ያገኛሉ።\n\n"
                     "👇 **አጠቃቀም:**\n"
                     "• ዝም ብለው ስም ይጻፉ (Direct).\n"
-                    "• `/list` ብለው ሙሉ ዝርዝር ማግኘት ይችላሉ።"
+                    "• `/list` ብለው ሙሉ ዝርዝር በገጽ ማየት ይችላሉ።"
                 )
                 kb = {
                     "inline_keyboard": [
@@ -306,30 +360,17 @@ async def process_telegram_update(data):
                         ],
                         [
                             {"text": "🎲 Random", "switch_inline_query_current_chat": "#random"},
-                            {"text": "❤️ Favorites", "switch_inline_query_current_chat": "#favorites"}
+                            {"text": "📂 Catalog (List)", "callback_data": "pg_1"}
                         ],
                         [{"text": "🔍 Search Name", "switch_inline_query_current_chat": ""}]
                     ]
                 }
                 await send_message(chat_id, welcome, reply_markup=kb)
 
-            # 🔥 NEW: /list command (Sends a text file with all titles)
-            elif text == "/list":
-                cursor = db.files.find({}, {"display_name": 1}).sort("_id", -1)
-                lines = []
-                async for doc in cursor:
-                    lines.append(doc.get("display_name", "Unknown"))
-                
-                if lines:
-                    content = "\n".join(lines)
-                    file_path = "/tmp/menzuma_list.txt"
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(content)
-                    
-                    await send_document(chat_id, file_path, "📂 **የሁሉም መንዙማዎች ዝርዝር (Catalog)**\n\nየሚፈልጉትን ስም ኮፒ አድርገው ለቦቱ ይላኩ።")
-                    os.remove(file_path)
-                else:
-                    await send_message(chat_id, "📭 እስካሁን የተመዘገበ መንዙማ የለም።")
+            # 🔥 NEW: /list command (Pagination Mode)
+            elif text == "/list" or text == "📂 Catalog (List)":
+                msg_text, kb = await get_catalog_page(db, 1) # Start at page 1
+                await send_message(chat_id, msg_text, reply_markup=kb)
 
             # Broadcast Handler (Reply based)
             elif text and text.startswith("/broadcast") and str(user_id) == str(ADMIN_ID):
@@ -439,7 +480,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Catalog Feature) 🚀'
+    return 'Al-Madih Bot Running (Pagination Added) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
