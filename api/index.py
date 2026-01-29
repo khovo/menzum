@@ -292,7 +292,7 @@ async def process_telegram_update(data):
             chat_id = cb["message"]["chat"]["id"]
             message_id = cb["message"]["message_id"]
             
-            # 🔥 Verify Subscription Button
+            # 🔥 NEW: Verify Subscription Button
             if data_str == "check_subscription":
                 missing_channels = await get_missing_channels(user_id, db)
                 if not missing_channels:
@@ -317,7 +317,7 @@ async def process_telegram_update(data):
                     }
                     await edit_message_text(chat_id, message_id, welcome, reply_markup=kb)
                 else:
-                    await answer_callback_query(cb_id, "❌ አሁንም አልተቀላቀሉም! ሁሉንም ቻናሎች ይቀላቀሉ።", show_alert=True)
+                    await answer_callback_query(cb_id, "❌ አሁንም አልተቀላቀሉም! እባክዎ መጀመሪያ Join ይበሉ።", show_alert=True)
                 return
 
             # --- Admin Channel Management Callbacks ---
@@ -331,13 +331,16 @@ async def process_telegram_update(data):
                     ch_username = data_str.split("rm_ch_")[1]
                     await remove_force_channel(db, ch_username)
                     await answer_callback_query(cb_id, f"🗑 {ch_username} ተሰርዟል!")
-                    # Refresh list
+                    
+                    # Refresh list (Fix Markdown underscore error by escaping)
                     all_chs = await get_all_force_channels(db)
                     msg_text = "📢 **የግዴታ ቻናሎች ዝርዝር:**\n\n"
                     kb_rows = []
                     for ch in all_chs:
-                        msg_text += f"• t.me/{ch['username']}\n"
-                        if ch['username'] != FORCE_CHANNEL_USERNAME: # ዋናውን ማጥፋት አይቻልም
+                        # Escape underscore for Markdown
+                        safe_username = ch['username'].replace("_", "\\_")
+                        msg_text += f"• t.me/{safe_username}\n"
+                        if ch['username'] != FORCE_CHANNEL_USERNAME:
                             kb_rows.append([{"text": f"🗑 አጥፋ (@{ch['username']})", "callback_data": f"rm_ch_{ch['username']}"}])
                     kb_rows.append([{"text": "➕ አዲስ ጨምር", "callback_data": "add_channel"}])
                     await edit_message_text(chat_id, message_id, msg_text, reply_markup={"inline_keyboard": kb_rows})
@@ -449,8 +452,9 @@ async def process_telegram_update(data):
                         # Verify Channel
                         chat_info = await get_chat(f"@{ch_username}")
                         if chat_info and chat_info.get("type") == "channel":
-                            await add_force_channel(db, ch_username, f"https://t.me/{ch_username}", chat_info.get("title", ch_username))
-                            await send_message(chat_id, f"✅ **{chat_info.get('title')}** (@{ch_username}) ተጨምሯል!")
+                            safe_title = chat_info.get("title", ch_username).replace("_", "\\_")
+                            await add_force_channel(db, ch_username, f"https://t.me/{ch_username}", safe_title)
+                            await send_message(chat_id, f"✅ **{safe_title}** (@{ch_username.replace('_', '\\_')}) ተጨምሯል!")
                             await set_user_state(db, user_id, "idle")
                         else:
                             await send_message(chat_id, "❌ ቻናሉ አልተገኘም ወይም ቦቱ አድሚን አይደለም። እባክዎ እንደገና ይሞክሩ።")
@@ -531,13 +535,15 @@ async def process_telegram_update(data):
                     await send_message(chat_id, msg, reply_markup=admin_kb)
                     return 
 
-                # 🔥 FIXED: The missing logic for the Channels button
+                # 🔥 FIXED: Markdown underscore issue fixed by escaping
                 elif text == "📢 ቻናሎች (Channels)":
                     all_chs = await get_all_force_channels(db)
                     msg_text = "📢 **የግዴታ ቻናሎች ዝርዝር (Force Join):**\n\n"
                     kb_rows = []
                     for ch in all_chs:
-                        msg_text += f"• t.me/{ch['username']}\n"
+                        # Underscore Escape (ስህተቱን የሚያጠፋው ይሄ ነው)
+                        safe_username = ch['username'].replace("_", "\\_")
+                        msg_text += f"• t.me/{safe_username}\n"
                         if ch['username'] != FORCE_CHANNEL_USERNAME: # ዋናውን ማጥፋት አይቻልም
                             kb_rows.append([{"text": f"🗑 አጥፋ (@{ch['username']})", "callback_data": f"rm_ch_{ch['username']}"}])
                     
@@ -663,7 +669,7 @@ async def process_telegram_update(data):
 
             await track_user(db, user_id, first_name)
 
-            # Inline Membership Check (Blocks access if not joined)
+            # Inline Membership Check
             missing_channels = await get_missing_channels(user_id, db)
             if missing_channels:
                 await answer_inline_query(query_id, [], "⚠️ መጀመሪያ ቻናሉን ይቀላቀሉ!", "start")
@@ -731,7 +737,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Amharic & Polish Update) 🚀'
+    return 'Al-Madih Bot Running (Channel Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
