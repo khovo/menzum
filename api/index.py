@@ -61,6 +61,21 @@ async def send_audio(chat_id, audio_file_id, caption, reply_markup=None):
                 return res
         except: pass
 
+async def send_document(chat_id, file_path, caption=None):
+    """ጽሁፍ ፋይል (Text File) ለመላክ"""
+    if not BOT_TOKEN: return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    data = aiohttp.FormData()
+    data.add_field('chat_id', str(chat_id))
+    if caption: data.add_field('caption', caption)
+    data.add_field('document', open(file_path, 'rb'))
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, data=data) as resp:
+                return await resp.json()
+        except: pass
+
 async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
@@ -181,6 +196,7 @@ async def process_telegram_update(data):
             user_id = cb["from"]["id"]
             cb_id = cb["id"]
             data_str = cb.get("data", "")
+            
             if data_str.startswith("fav_"):
                 doc_id = data_str.split("fav_")[1]
                 try:
@@ -195,7 +211,8 @@ async def process_telegram_update(data):
                         await edit_message_reply_markup(cb["message"]["chat"]["id"], cb["message"]["message_id"], kb)
                     else:
                         await answer_callback_query(cb_id, "⚠️ File not found")
-                except: await answer_callback_query(cb_id, "Error")
+                except:
+                    await answer_callback_query(cb_id, "Error")
             return
 
         # 2. Message Handling
@@ -208,7 +225,7 @@ async def process_telegram_update(data):
             
             await track_user(db, user_id, first_name)
 
-            # 🔥 ADMIN ONLY UPLOAD 🔥
+            # ADMIN ONLY UPLOAD
             if "audio" in message or "voice" in message:
                 if str(user_id) != str(ADMIN_ID): return 
                 file_obj = message.get("audio") or message.get("voice")
@@ -226,16 +243,14 @@ async def process_telegram_update(data):
                     await send_message(chat_id, f"✅ **Admin Upload:** `{clean_name}` saved!")
                 return
 
-            # Force Subscribe
             if not await check_membership(user_id):
                 msg = "**⚠️ ይቅርታ! ቦቱን ለመጠቀም መጀመሪያ ቻናላችንን ይቀላቀሉ።**"
                 kb = {"inline_keyboard": [[{"text": "Join Channel 📢", "url": FORCE_CHANNEL_URL}]]}
                 await send_message(chat_id, msg, reply_markup=kb)
                 return
 
-            # --- 🔥 ADMIN DASHBOARD (KEYBOARD BUTTONS) 🔥 ---
+            # --- ADMIN DASHBOARD ---
             if str(user_id) == str(ADMIN_ID):
-                # አድሚኑ /start ሲል ቀጥታ የ አድሚን ኪቦርድ ይመጣለታል
                 if text == "/start" or text == "/admin" or text == "🔙 Back":
                     msg = "👋 **ሰላም አለቃ! (Admin Panel)**\n\nከታች ባሉት አዝራሮች ቦቱን ይቆጣጠሩ።"
                     admin_kb = {
@@ -247,9 +262,8 @@ async def process_telegram_update(data):
                         "resize_keyboard": True
                     }
                     await send_message(chat_id, msg, reply_markup=admin_kb)
-                    return # አድሚን ከሆነ የ User start አይላክለት
+                    return 
 
-                # Handle Admin Button Clicks
                 elif text == "📊 Statistics":
                     users = await db.users.count_documents({})
                     files = await db.files.count_documents({})
@@ -275,14 +289,14 @@ async def process_telegram_update(data):
                     await send_message(chat_id, f"📂 የተጫኑ መንዙማዎች: `{files}`")
                     return
 
-            # --- NORMAL USER START ---
+            # --- USER COMMANDS ---
             if text == "/start":
                 welcome = (
                     "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
                     "ከ 1,200 በላይ መንዙማዎችን እዚህ ያገኛሉ።\n\n"
                     "👇 **አጠቃቀም:**\n"
                     "• ዝም ብለው ስም ይጻፉ (Direct).\n"
-                    "• ለጓደኛዎ ለመላክ `Search` የሚለውን ይጫኑ።"
+                    "• `/list` ብለው ሙሉ ዝርዝር ማግኘት ይችላሉ።"
                 )
                 kb = {
                     "inline_keyboard": [
@@ -298,6 +312,24 @@ async def process_telegram_update(data):
                     ]
                 }
                 await send_message(chat_id, welcome, reply_markup=kb)
+
+            # 🔥 NEW: /list command (Sends a text file with all titles)
+            elif text == "/list":
+                cursor = db.files.find({}, {"display_name": 1}).sort("_id", -1)
+                lines = []
+                async for doc in cursor:
+                    lines.append(doc.get("display_name", "Unknown"))
+                
+                if lines:
+                    content = "\n".join(lines)
+                    file_path = "/tmp/menzuma_list.txt"
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    
+                    await send_document(chat_id, file_path, "📂 **የሁሉም መንዙማዎች ዝርዝር (Catalog)**\n\nየሚፈልጉትን ስም ኮፒ አድርገው ለቦቱ ይላኩ።")
+                    os.remove(file_path)
+                else:
+                    await send_message(chat_id, "📭 እስካሁን የተመዘገበ መንዙማ የለም።")
 
             # Broadcast Handler (Reply based)
             elif text and text.startswith("/broadcast") and str(user_id) == str(ADMIN_ID):
@@ -316,7 +348,7 @@ async def process_telegram_update(data):
                 else:
                     await send_message(chat_id, "⚠️ ለማስታወቂያ፣ መላክ ለሚፈልጉት መልዕክት Reply በማድረግ `/broadcast` ይበሉ።")
 
-            # Search Logic
+            # Search Logic (Mono Text for easy copy)
             elif text and not text.startswith("/"):
                 search_query = build_search_query(text)
                 doc = await db.files.find_one(search_query)
@@ -407,7 +439,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Admin Keyboard Mode) 🚀'
+    return 'Al-Madih Bot Running (Catalog Feature) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
