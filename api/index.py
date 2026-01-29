@@ -88,11 +88,12 @@ async def edit_message_reply_markup(chat_id, message_id, reply_markup):
             async with session.post(url, json=payload) as resp: return await resp.json()
         except: pass
 
-async def answer_callback_query(callback_query_id, text=None):
+async def answer_callback_query(callback_query_id, text=None, show_alert=False):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
     payload = {"callback_query_id": callback_query_id}
     if text: payload["text"] = text
+    if show_alert: payload["show_alert"] = True
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(url, json=payload) as resp: return await resp.json()
@@ -244,12 +245,44 @@ async def process_telegram_update(data):
             chat_id = cb["message"]["chat"]["id"]
             message_id = cb["message"]["message_id"]
             
+            # 🔥 NEW: Verify Subscription Button
+            if data_str == "check_subscription":
+                if await check_membership(user_id):
+                    # User is now a member
+                    await answer_callback_query(cb_id, "✅ ተቀላቅለዋል! እንኳን ደህና መጡ።")
+                    
+                    # Replace the "Join" message with the Welcome menu
+                    welcome = (
+                        "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
+                        "ከ 1,200 በላይ መንዙማዎችን እዚህ ያገኛሉ።\n\n"
+                        "👇 **አጠቃቀም:**\n"
+                        "• ዝም ብለው ስም ይጻፉ (Direct).\n"
+                        "• `/list` ብለው ሙሉ ዝርዝር በገጽ ማየት ይችላሉ።"
+                    )
+                    kb = {
+                        "inline_keyboard": [
+                            [
+                                {"text": "🔥 Trending", "switch_inline_query_current_chat": "#trending"},
+                                {"text": "🆕 New", "switch_inline_query_current_chat": "#new"}
+                            ],
+                            [
+                                {"text": "❤️ Favorites", "switch_inline_query_current_chat": "#favorites"},
+                                {"text": "📂 Catalog (List)", "callback_data": "pg_1"}
+                            ],
+                            [{"text": "🔍 Search Name", "switch_inline_query_current_chat": ""}]
+                        ]
+                    }
+                    await edit_message_text(chat_id, message_id, welcome, reply_markup=kb)
+                else:
+                    # Still not a member - Alert them
+                    await answer_callback_query(cb_id, "❌ አሁንም አልተቀላቀሉም! መጀመሪያ Join ይበሉ።", show_alert=True)
+                return
+
             # Broadcast Confirmation Logic
             if data_str == "broadcast_confirm":
                 if str(user_id) != str(ADMIN_ID): return
                 admin_data = await get_user_data(db, user_id)
                 msg_id_to_copy = admin_data.get("broadcast_msg_id")
-                # 🔥 FIX: Retrieve original markup from DB
                 markup_to_copy = admin_data.get("broadcast_markup")
                 
                 if not msg_id_to_copy:
@@ -261,7 +294,6 @@ async def process_telegram_update(data):
                 count = 0
                 async for user in users_cursor:
                     try:
-                        # Pass the original markup!
                         await copy_message(user["_id"], chat_id, msg_id_to_copy, reply_markup=markup_to_copy)
                         count += 1
                         await asyncio.sleep(0.05) 
@@ -337,15 +369,13 @@ async def process_telegram_update(data):
                         return
 
                     broadcast_msg_id = message["message_id"]
-                    # 🔥 FIX: Capture Original Buttons (if any)
                     original_markup = message.get("reply_markup")
                     
                     await set_user_state(db, user_id, "broadcast_confirm", {
                         "broadcast_msg_id": broadcast_msg_id,
-                        "broadcast_markup": original_markup # Save it to DB
+                        "broadcast_markup": original_markup 
                     })
                     
-                    # Echo back for confirmation (With original buttons)
                     await copy_message(chat_id, chat_id, broadcast_msg_id, reply_markup=original_markup)
                     
                     kb = {
@@ -376,7 +406,13 @@ async def process_telegram_update(data):
 
             if not await check_membership(user_id):
                 msg = "**⚠️ ይቅርታ! ቦቱን ለመጠቀም መጀመሪያ ቻናላችንን ይቀላቀሉ።**"
-                kb = {"inline_keyboard": [[{"text": "Join Channel 📢", "url": FORCE_CHANNEL_URL}]]}
+                # 🔥 FIX: Added Verify Button
+                kb = {
+                    "inline_keyboard": [
+                        [{"text": "Join Channel 📢", "url": FORCE_CHANNEL_URL}],
+                        [{"text": "✅ ተቀላቅያለሁ (Verify)", "callback_data": "check_subscription"}]
+                    ]
+                }
                 await send_message(chat_id, msg, reply_markup=kb)
                 return
 
@@ -452,17 +488,13 @@ async def process_telegram_update(data):
             # Reply Broadcast Handler (Fallback)
             elif text and text.startswith("/broadcast") and str(user_id) == str(ADMIN_ID):
                 if "reply_to_message" in message:
-                    reply_msg = message["reply_to_message"]
-                    reply_msg_id = reply_msg["message_id"]
-                    # 🔥 FIX: Capture markup
-                    orig_markup = reply_msg.get("reply_markup")
-                    
+                    reply_msg_id = message["reply_to_message"]["message_id"]
+                    orig_markup = message.get("reply_markup")
                     users_cursor = db.users.find({})
                     count = 0
                     await send_message(chat_id, "🚀 Broadcasting started...")
                     async for user in users_cursor:
                         try:
-                            # Send WITH buttons
                             await copy_message(user["_id"], chat_id, reply_msg_id, reply_markup=orig_markup)
                             count += 1
                             await asyncio.sleep(0.05) 
