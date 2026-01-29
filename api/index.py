@@ -256,9 +256,15 @@ async def process_telegram_update(data):
                 await edit_message_text(chat_id, message_id, "🚀 Broadcasting started...")
                 users_cursor = db.users.find({})
                 count = 0
+                
+                # 🔥 FIX: Attach Join Channel Button to Broadcast
+                broadcast_kb = {
+                    "inline_keyboard": [[{"text": "📢 Join Channel", "url": FORCE_CHANNEL_URL}]]
+                }
+                
                 async for user in users_cursor:
                     try:
-                        await copy_message(user["_id"], chat_id, msg_id_to_copy)
+                        await copy_message(user["_id"], chat_id, msg_id_to_copy, reply_markup=broadcast_kb)
                         count += 1
                         await asyncio.sleep(0.05) 
                     except: pass
@@ -295,7 +301,7 @@ async def process_telegram_update(data):
                         text = "❤️ Saved" if is_fav else "💔 Removed"
                         new_text = "💔 Remove" if is_fav else "❤️ Add to Favorite"
                         
-                        # 🔥 UPDATE: Share Button added here too
+                        # Share Button added here too
                         kb = {
                             "inline_keyboard": [
                                 [{"text": new_text, "callback_data": f"fav_{doc_id}"}],
@@ -335,7 +341,12 @@ async def process_telegram_update(data):
 
                     broadcast_msg_id = message["message_id"]
                     await set_user_state(db, user_id, "broadcast_confirm", {"broadcast_msg_id": broadcast_msg_id})
-                    await copy_message(chat_id, chat_id, broadcast_msg_id)
+                    
+                    # 🔥 FIX: Show preview with button
+                    broadcast_kb = {
+                        "inline_keyboard": [[{"text": "📢 Join Channel", "url": FORCE_CHANNEL_URL}]]
+                    }
+                    await copy_message(chat_id, chat_id, broadcast_msg_id, reply_markup=broadcast_kb)
                     
                     kb = {
                         "inline_keyboard": [
@@ -343,7 +354,7 @@ async def process_telegram_update(data):
                             [{"text": "❌ Cancel (ተው)", "callback_data": "broadcast_cancel"}]
                         ]
                     }
-                    await send_message(chat_id, "👆 **ይሄ መልዕክት ለሁሉም ተጠቃሚዎች ይላክ?**\n\nConfirm to broadcast.", reply_markup=kb)
+                    await send_message(chat_id, "👆 **ይሄ መልዕክት ለሁሉም ተጠቃሚዎች ይላክ?**\n\n(ከስር Join Channel የሚል አዝራር አብሮ ይሄዳል)", reply_markup=kb)
                     return
 
                 # Admin Only Upload
@@ -445,9 +456,15 @@ async def process_telegram_update(data):
                     users_cursor = db.users.find({})
                     count = 0
                     await send_message(chat_id, "🚀 Broadcasting started...")
+                    
+                    # Add Button to Reply Broadcast
+                    broadcast_kb = {
+                        "inline_keyboard": [[{"text": "📢 Join Channel", "url": FORCE_CHANNEL_URL}]]
+                    }
+                    
                     async for user in users_cursor:
                         try:
-                            await copy_message(user["_id"], chat_id, reply_msg_id)
+                            await copy_message(user["_id"], chat_id, reply_msg_id, reply_markup=broadcast_kb)
                             count += 1
                             await asyncio.sleep(0.05) 
                         except: pass
@@ -463,7 +480,7 @@ async def process_telegram_update(data):
                     if 'file_id' in doc:
                         short_id = str(doc['_id'])
                         
-                        # 🔥 NEW: Added Share Button
+                        # Share Button added here too
                         kb = {
                             "inline_keyboard": [
                                 [{"text": "❤️ Add to Favorite", "callback_data": f"fav_{short_id}"}],
@@ -554,7 +571,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Share Added) 🚀'
+    return 'Al-Madih Bot Running (Broadcast Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
