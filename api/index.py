@@ -21,7 +21,6 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URL = os.environ.get("MONGO_URL")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 
-# ዋናው (የማይጠፋ) ቻናል
 FORCE_CHANNEL_USERNAME = "Al_madih" 
 FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
@@ -293,7 +292,7 @@ async def process_telegram_update(data):
             chat_id = cb["message"]["chat"]["id"]
             message_id = cb["message"]["message_id"]
             
-            # 🔥 NEW: Verify Subscription Button
+            # 🔥 Verify Subscription Button
             if data_str == "check_subscription":
                 missing_channels = await get_missing_channels(user_id, db)
                 if not missing_channels:
@@ -532,6 +531,7 @@ async def process_telegram_update(data):
                     await send_message(chat_id, msg, reply_markup=admin_kb)
                     return 
 
+                # 🔥 FIXED: The missing logic for the Channels button
                 elif text == "📢 ቻናሎች (Channels)":
                     all_chs = await get_all_force_channels(db)
                     msg_text = "📢 **የግዴታ ቻናሎች ዝርዝር (Force Join):**\n\n"
@@ -634,6 +634,8 @@ async def process_telegram_update(data):
                 if doc:
                     if 'file_id' in doc:
                         short_id = str(doc['_id'])
+                        
+                        # Share & Report Buttons
                         kb = {
                             "inline_keyboard": [
                                 [{"text": "❤️ ወደ ምርጫዬ ጨምር", "callback_data": f"fav_{short_id}"}],
@@ -643,6 +645,7 @@ async def process_telegram_update(data):
                                 ]
                             ]
                         }
+                        
                         await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
                         await increment_view(db, doc['file_id'])
                     else:
