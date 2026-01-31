@@ -117,10 +117,17 @@ async def check_membership(user_id):
             logger.error(f"Membership Check Net Error: {e}")
             return True
 
-async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=0):
+# 🔥 UPDATE: Added 'next_offset' for infinite scrolling
+async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=0, next_offset=""):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
-    payload = {"inline_query_id": query_id, "results": results, "cache_time": cache_time, "is_personal": True}
+    payload = {
+        "inline_query_id": query_id, 
+        "results": results, 
+        "cache_time": cache_time, 
+        "is_personal": True,
+        "next_offset": next_offset # This enables scrolling!
+    }
     if switch_pm_text:
         payload["switch_pm_text"] = switch_pm_text
         payload["switch_pm_parameter"] = switch_pm_param
@@ -210,18 +217,14 @@ def build_search_query(query_text):
 
 async def get_daily_stats(db):
     try:
-        # DB Health Check
-        files_count = await db.files.count_documents({})
-        users_count = await db.users.count_documents({})
-        
-        return (
-            f"📊 **System Status**\n\n"
-            f"✅ Database: Connected\n"
-            f"📂 Files: `{files_count}`\n"
-            f"👥 Users: `{users_count}`"
-        )
-    except Exception as e:
-        return f"⚠️ **DB Error:** `{str(e)}`"
+        now = datetime.now()
+        last_24h = now - timedelta(hours=24)
+        new_users = await db.users.count_documents({"joined_at": {"$gte": last_24h}})
+        active_users = await db.users.count_documents({"last_active": {"$gte": last_24h}})
+        total_users = await db.users.count_documents({})
+        total_files = await db.files.count_documents({})
+        return f"📅 **Daily Statistics (24h)**\n\n🆕 New Users: `{new_users}`\n⚡ Active Users: `{active_users}`\n\n👥 Total Users: `{total_users}`\n📂 Total Files: `{total_files}`"
+    except: return "Error"
 
 async def get_catalog_page(db, page):
     limit = ITEMS_PER_PAGE
@@ -246,12 +249,11 @@ async def get_catalog_page(db, page):
 # --- Main Logic ---
 async def process_telegram_update(data):
     if not MONGO_URL or not BOT_TOKEN: return
-    # Timeout 5s for fast failure report
-    db_client = AsyncIOMotorClient(MONGO_URL, serverSelectionTimeoutMS=5000)
+    db_client = AsyncIOMotorClient(MONGO_URL)
     db = db_client["MenzumaDB"]
 
     try:
-        # 1. Callback Query
+        # 1. Callback Query (Buttons)
         if "callback_query" in data:
             cb = data["callback_query"]
             user_id = cb["from"]["id"]
@@ -425,7 +427,6 @@ async def process_telegram_update(data):
             elif text and not text.startswith("/"):
                 # Direct Search (Back to Regex to ensure finding it)
                 search_query = build_search_query(text)
-                # 🔥 FIX: Ensure file_id exists for robustness
                 search_query["file_id"] = {"$exists": True}
                 doc = await db.files.find_one(search_query)
                 if doc:
@@ -436,12 +437,14 @@ async def process_telegram_update(data):
                 else:
                     await send_message(chat_id, "😔 ይቅርታ፣ አልተገኘም።")
 
-        # 3. Inline Query
+        # 3. Inline Query (Pagination Support Added)
         elif "inline_query" in data:
             iq = data["inline_query"]
             query_id = iq["id"]
             user_id = iq.get("from", {}).get("id")
+            first_name = iq.get("from", {}).get("first_name", "User")
             query = iq.get("query", "").strip().lower()
+            offset = iq.get("offset", "") # Get offset for pagination
 
             await track_user(db, user_id, user_id)
 
@@ -449,39 +452,34 @@ async def process_telegram_update(data):
                 await answer_inline_query(query_id, [], "⚠️ Join Channel First", "start")
                 return
 
+            # Determine Skip based on Offset
+            skip = int(offset) if offset and offset.isdigit() else 0
+            limit = 50 
+
             cursor = None
             results = []
             
-            # 🔥 Fix for Empty Results
             if query.startswith("#"):
                  if query.startswith("#random"):
+                     # Random can't really paginate consistently, so just sample 50
                      pipeline = [{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": 50}}]
                      cursor = db.files.aggregate(pipeline)
                  elif query.startswith("#trending"):
-                     # 🔥 FIX: Aggregation for trending to handle missing views
-                     pipeline = [
-                        {"$match": {"file_id": {"$exists": True}}},
-                        {"$addFields": {"views_safe": {"$ifNull": ["$views", 0]}}}, 
-                        {"$sort": {"views_safe": -1, "_id": -1}}, 
-                        {"$limit": 50}
-                     ]
-                     cursor = db.files.aggregate(pipeline)
+                     cursor = db.files.find({"file_id": {"$exists": True}}).sort("views", -1).skip(skip).limit(limit)
                  elif query.startswith("#new"):
-                     cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).limit(50)
+                     cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).skip(skip).limit(limit)
                  elif query.startswith("#favorites"):
                      user = await db.users.find_one({"_id": user_id})
                      if user and user.get("favorites"):
-                         cursor = db.files.find({"file_id": {"$in": user["favorites"]}}).limit(50)
+                         cursor = db.files.find({"file_id": {"$in": user["favorites"]}}).skip(skip).limit(limit)
             else:
                 search_filter = {"file_id": {"$exists": True}}
                 if query:
-                    # 🔥 Revert to Regex for broad search (Text Search might be strict)
                     search_filter["display_name"] = {"$regex": re.escape(query), "$options": "i"}
-                
-                cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
+                cursor = db.files.find(search_filter).sort("_id", -1).skip(skip).limit(limit)
 
             if cursor:
-                docs = await cursor.to_list(length=50)
+                docs = await cursor.to_list(length=limit)
                 for doc in docs:
                     if doc.get('file_id'):
                         results.append({
@@ -490,8 +488,11 @@ async def process_telegram_update(data):
                             "audio_file_id": doc["file_id"],
                             "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
                         })
+            
+            # Calculate Next Offset
+            next_offset = str(skip + limit) if len(results) == limit else ""
 
-            await answer_inline_query(query_id, results, cache_time=0)
+            await answer_inline_query(query_id, results, cache_time=0, next_offset=next_offset)
 
     except Exception as e:
         logger.error(f"Logic Error: {e}")
@@ -507,7 +508,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Logic Fixed) 🚀'
+    return 'Al-Madih Bot Running (Pagination Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
