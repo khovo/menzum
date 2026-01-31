@@ -199,8 +199,14 @@ def build_search_query(query_text):
     query_text = query_text.strip()
     if query_text.startswith("#"): return {} 
     
-    # 🔥 Use Text Index Search for Query
-    return {"$text": {"$search": query_text}}
+    if len(query_text) == 1:
+        return {"display_name": {"$regex": re.escape(query_text), "$options": "i"}}
+    
+    words = query_text.split()
+    regex_pattern = ""
+    for word in words:
+        regex_pattern += f"(?=.*{re.escape(word)})"
+    return {"display_name": {"$regex": f"^{regex_pattern}", "$options": "i"}}
 
 async def get_daily_stats(db):
     try:
@@ -417,13 +423,11 @@ async def process_telegram_update(data):
                 await send_message(chat_id, msg_text, reply_markup=kb)
 
             elif text and not text.startswith("/"):
-                # 🔥 Direct Search using TEXT INDEX (Fast!)
-                doc = await db.files.find_one({"$text": {"$search": text}})
-                
-                # Fallback to Regex if Text Search fails
-                if not doc:
-                     doc = await db.files.find_one({"display_name": {"$regex": re.escape(text.strip()), "$options": "i"}})
-
+                # Direct Search (Back to Regex to ensure finding it)
+                search_query = build_search_query(text)
+                # 🔥 FIX: Ensure file_id exists for robustness
+                search_query["file_id"] = {"$exists": True}
+                doc = await db.files.find_one(search_query)
                 if doc:
                     short_id = str(doc['_id'])
                     kb = {"inline_keyboard": [[{"text": "❤️ Add", "callback_data": f"fav_{short_id}"}], [{"text": "↗️ Share", "switch_inline_query": ""}, {"text": "⚠️ Report", "callback_data": f"report_{short_id}"}]]}
@@ -454,7 +458,14 @@ async def process_telegram_update(data):
                      pipeline = [{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": 50}}]
                      cursor = db.files.aggregate(pipeline)
                  elif query.startswith("#trending"):
-                     cursor = db.files.find({"file_id": {"$exists": True}}).sort("views", -1).limit(50)
+                     # 🔥 FIX: Aggregation for trending to handle missing views
+                     pipeline = [
+                        {"$match": {"file_id": {"$exists": True}}},
+                        {"$addFields": {"views_safe": {"$ifNull": ["$views", 0]}}}, 
+                        {"$sort": {"views_safe": -1, "_id": -1}}, 
+                        {"$limit": 50}
+                     ]
+                     cursor = db.files.aggregate(pipeline)
                  elif query.startswith("#new"):
                      cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).limit(50)
                  elif query.startswith("#favorites"):
@@ -464,11 +475,10 @@ async def process_telegram_update(data):
             else:
                 search_filter = {"file_id": {"$exists": True}}
                 if query:
-                    # 🔥 USE TEXT SEARCH HERE TOO
-                    search_filter["$text"] = {"$search": query}
-                    cursor = db.files.find(search_filter).limit(50)
-                else:
-                    cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
+                    # 🔥 Revert to Regex for broad search (Text Search might be strict)
+                    search_filter["display_name"] = {"$regex": re.escape(query), "$options": "i"}
+                
+                cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
 
             if cursor:
                 docs = await cursor.to_list(length=50)
@@ -497,7 +507,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Text Search Mode) 🚀'
+    return 'Al-Madih Bot Running (Logic Fixed) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
