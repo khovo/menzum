@@ -515,8 +515,12 @@ async def process_telegram_update(data):
             results = []
             
             # --- FIX: Handle Empty Query Correctly ---
-            if not query or query.startswith("#random"):
-                 # If query is empty OR explicitly #random, show 50 random files (Variety!)
+            # If query is empty, use FIND instead of AGGREGATE to ensure reliability
+            if not query or query == "":
+                 cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).limit(50)
+            
+            elif query.startswith("#random"):
+                 # Keep random for explicit requests
                  pipeline = [{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": 50}}]
                  cursor = db.files.aggregate(pipeline)
             
@@ -546,7 +550,7 @@ async def process_telegram_update(data):
             else:
                 # Text Search - Force file_id check to avoid empty results
                 search_criteria = build_search_query(query)
-                search_criteria["file_id"] = {"$exists": True} # <--- CRITICAL FIX
+                search_criteria["file_id"] = {"$exists": True} # Ensure files exist
                 cursor = db.files.find(search_criteria).sort("_id", -1).limit(50)
 
             if cursor:
@@ -560,7 +564,7 @@ async def process_telegram_update(data):
                             "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
                         })
 
-            await answer_inline_query(query_id, results, cache_time=300)
+            await answer_inline_query(query_id, results, cache_time=10) # Reduced cache to see updates faster
 
     except Exception as e:
         logger.error(f"Logic Error: {e}")
