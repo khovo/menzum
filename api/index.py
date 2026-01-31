@@ -514,9 +514,12 @@ async def process_telegram_update(data):
             cursor = None
             results = []
             
-            if query.startswith("#random"):
-                pipeline = [{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": 50}}]
-                cursor = db.files.aggregate(pipeline)
+            # --- FIX: Handle Empty Query Correctly ---
+            if not query or query.startswith("#random"):
+                 # If query is empty OR explicitly #random, show 50 random files (Variety!)
+                 pipeline = [{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": 50}}]
+                 cursor = db.files.aggregate(pipeline)
+            
             elif query.startswith("#trending"):
                 filter_text = query.replace("#trending", "").strip()
                 match_stage = {"file_id": {"$exists": True}}
@@ -524,11 +527,13 @@ async def process_telegram_update(data):
                     match_stage["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
                 pipeline = [{"$match": match_stage}, {"$addFields": {"views_safe": {"$ifNull": ["$views", 0]}}}, {"$sort": {"views_safe": -1, "_id": -1}}, {"$limit": 50}]
                 cursor = db.files.aggregate(pipeline)
+            
             elif query.startswith("#new"):
                 filter_text = query.replace("#new", "").strip()
                 search_filter = {"file_id": {"$exists": True}}
                 if filter_text: search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
                 cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
+            
             elif query.startswith("#favorites"):
                 user = await db.users.find_one({"_id": user_id})
                 fav_ids = user.get("favorites", []) if user else []
@@ -537,10 +542,11 @@ async def process_telegram_update(data):
                     search_filter = {"file_id": {"$in": fav_ids}}
                     if filter_text: search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
                     cursor = db.files.find(search_filter).limit(50)
+            
             else:
-                # FIX: Handle empty queries by returning latest (Allow empty dict)
-                search_criteria = build_search_query(query) if query else {}
-                # Ensure we have a valid criteria OR it is empty (which means find all)
+                # Text Search - Force file_id check to avoid empty results
+                search_criteria = build_search_query(query)
+                search_criteria["file_id"] = {"$exists": True} # <--- CRITICAL FIX
                 cursor = db.files.find(search_criteria).sort("_id", -1).limit(50)
 
             if cursor:
@@ -554,7 +560,7 @@ async def process_telegram_update(data):
                             "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
                         })
 
-            await answer_inline_query(query_id, results, cache_time=300) # Increased Cache Time
+            await answer_inline_query(query_id, results, cache_time=300)
 
     except Exception as e:
         logger.error(f"Logic Error: {e}")
