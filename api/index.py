@@ -570,7 +570,6 @@ async def process_telegram_update(data):
             await track_user(db, user_id, first_name)
 
             if not await check_membership(user_id):
-                # Provide a button to switch to PM to start the bot
                 await answer_inline_query(query_id, [], "⚠️ Join Channel First", "start")
                 return
 
@@ -606,9 +605,10 @@ async def process_telegram_update(data):
                     if filter_text: search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
                     cursor = db.files.find(search_filter).limit(50)
             else:
-                search_criteria = build_search_query(query) if query else {}
-                if search_criteria:
-                    cursor = db.files.find(search_criteria).sort("_id", -1).limit(50)
+                # --- THIS IS THE FIXED PART ---
+                search_criteria = build_search_query(query)
+                search_criteria["file_id"] = {"$exists": True} # Only show results with audio
+                cursor = db.files.find(search_criteria).sort("_id", -1).limit(50)
 
             if cursor:
                 docs = await cursor.to_list(length=50)
