@@ -107,9 +107,15 @@ async def check_membership(user_id):
         try:
             async with session.get(url, params=params) as resp:
                 res = await resp.json()
-                if not res.get("ok"): return True 
-                return res["result"]["status"] in ["creator", "administrator", "member"]
-        except: return True
+                if not res.get("ok"): 
+                    logger.warning(f"Membership Check API Error: {res}")
+                    return True 
+                
+                status = res["result"]["status"]
+                return status in ["creator", "administrator", "member"]
+        except Exception as e:
+            logger.error(f"Membership Check Net Error: {e}")
+            return True
 
 async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=0):
     if not BOT_TOKEN: return
@@ -118,10 +124,13 @@ async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_
     if switch_pm_text:
         payload["switch_pm_text"] = switch_pm_text
         payload["switch_pm_parameter"] = switch_pm_param
+    
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(url, json=payload) as resp: return await resp.json()
-        except: pass
+            async with session.post(url, json=payload) as resp: 
+                return await resp.json()
+        except Exception as e:
+            logger.error(f"Inline Answer Net Error: {e}")
 
 async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
     if not BOT_TOKEN: return
@@ -190,15 +199,8 @@ def build_search_query(query_text):
     query_text = query_text.strip()
     if query_text.startswith("#"): return {} 
     
-    # 🔥 FIX: Remove startswith anchor (^) so it searches ANYWHERE in the name
-    if len(query_text) == 1:
-        return {"display_name": {"$regex": re.escape(query_text), "$options": "i"}}
-    
-    words = query_text.split()
-    regex_pattern = ""
-    for word in words:
-        regex_pattern += f"(?=.*{re.escape(word)})"
-    return {"display_name": {"$regex": f"^{regex_pattern}", "$options": "i"}}
+    # 🔥 Use Text Index Search for Query
+    return {"$text": {"$search": query_text}}
 
 async def get_daily_stats(db):
     try:
@@ -266,8 +268,7 @@ async def process_telegram_update(data):
                                 {"text": "❤️ የእኔ ምርጫ", "switch_inline_query_current_chat": "#favorites"},
                                 {"text": "📚 ማህደር", "callback_data": "pg_1"}
                             ],
-                            [{"text": "🔍 መንዙማ ይፈልጉ", "switch_inline_query_current_chat": ""}]
-                        ]
+                            [{"text": "🔍 መንዙማ ይፈልጉ", "switch_inline_query_current_chat": ""}]]
                     }
                     await edit_message_text(chat_id, message_id, welcome, reply_markup=kb)
                 else:
@@ -416,11 +417,13 @@ async def process_telegram_update(data):
                 await send_message(chat_id, msg_text, reply_markup=kb)
 
             elif text and not text.startswith("/"):
-                # Direct Search (Relaxed Regex)
-                search_query = build_search_query(text)
-                # 🔥 FIX: Ensure file_id exists for robustness
-                search_query["file_id"] = {"$exists": True}
-                doc = await db.files.find_one(search_query)
+                # 🔥 Direct Search using TEXT INDEX (Fast!)
+                doc = await db.files.find_one({"$text": {"$search": text}})
+                
+                # Fallback to Regex if Text Search fails
+                if not doc:
+                     doc = await db.files.find_one({"display_name": {"$regex": re.escape(text.strip()), "$options": "i"}})
+
                 if doc:
                     short_id = str(doc['_id'])
                     kb = {"inline_keyboard": [[{"text": "❤️ Add", "callback_data": f"fav_{short_id}"}], [{"text": "↗️ Share", "switch_inline_query": ""}, {"text": "⚠️ Report", "callback_data": f"report_{short_id}"}]]}
@@ -436,7 +439,7 @@ async def process_telegram_update(data):
             user_id = iq.get("from", {}).get("id")
             query = iq.get("query", "").strip().lower()
 
-            await track_user(db, user_id, user_id) # Using ID as name if missing
+            await track_user(db, user_id, user_id)
 
             if not await check_membership(user_id):
                 await answer_inline_query(query_id, [], "⚠️ Join Channel First", "start")
@@ -461,9 +464,11 @@ async def process_telegram_update(data):
             else:
                 search_filter = {"file_id": {"$exists": True}}
                 if query:
-                    # Relaxed Regex (Removed ^)
-                    search_filter["display_name"] = {"$regex": re.escape(query), "$options": "i"}
-                cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
+                    # 🔥 USE TEXT SEARCH HERE TOO
+                    search_filter["$text"] = {"$search": query}
+                    cursor = db.files.find(search_filter).limit(50)
+                else:
+                    cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
 
             if cursor:
                 docs = await cursor.to_list(length=50)
@@ -492,7 +497,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Diagnostic Fix) 🚀'
+    return 'Al-Madih Bot Running (Text Search Mode) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
