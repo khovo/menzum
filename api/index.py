@@ -190,8 +190,12 @@ def build_search_query(query_text):
     if not query_text: return {}
     query_text = query_text.strip()
     if query_text.startswith("#"): return {} 
+    
+    # አንድ ፊደል ብቻ ከሆነ (Starts with) - Case Insensitive
     if len(query_text) == 1:
         return {"display_name": {"$regex": f"^{re.escape(query_text)}", "$options": "i"}}
+    
+    # ቃላትን መነጣጠል (AND Logic)
     words = query_text.split()
     regex_pattern = ""
     for word in words:
@@ -245,10 +249,10 @@ async def process_telegram_update(data):
             chat_id = cb["message"]["chat"]["id"]
             message_id = cb["message"]["message_id"]
             
-            # 🔥 NEW: Verify Subscription Button
+            # 🔥 Verify Subscription
             if data_str == "check_subscription":
                 if await check_membership(user_id):
-                    await answer_callback_query(cb_id, "✅ እንኳን ደህና መጡ! ተቀላቅለዋል።")
+                    await answer_callback_query(cb_id, "✅ ተቀላቅለዋል! እንኳን ደህና መጡ።")
                     welcome = (
                         "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
                         "ከ 1,200 በላይ መንዙማዎችን እዚህ ያገኛሉ።\n\n"
@@ -259,14 +263,14 @@ async def process_telegram_update(data):
                     kb = {
                         "inline_keyboard": [
                             [
-                                {"text": "🔥 Trending", "switch_inline_query_current_chat": "#trending"},
-                                {"text": "🆕 New", "switch_inline_query_current_chat": "#new"}
+                                {"text": "🔥 ተወዳጅ (Trending)", "switch_inline_query_current_chat": "#trending"},
+                                {"text": "🆕 አዳዲስ (New)", "switch_inline_query_current_chat": "#new"}
                             ],
                             [
-                                {"text": "❤️ Favorites", "switch_inline_query_current_chat": "#favorites"},
-                                {"text": "📂 Catalog (List)", "callback_data": "pg_1"}
+                                {"text": "❤️ የእኔ ምርጫ (Favorites)", "switch_inline_query_current_chat": "#favorites"},
+                                {"text": "📚 ማህደር (Catalog)", "callback_data": "pg_1"}
                             ],
-                            [{"text": "🔍 Search Name", "switch_inline_query_current_chat": ""}]
+                            [{"text": "🔍 መንዙማ ይፈልጉ (Search)", "switch_inline_query_current_chat": ""}]
                         ]
                     }
                     await edit_message_text(chat_id, message_id, welcome, reply_markup=kb)
@@ -274,29 +278,25 @@ async def process_telegram_update(data):
                     await answer_callback_query(cb_id, "❌ አሁንም አልተቀላቀሉም! እባክዎ መጀመሪያ Join ይበሉ።", show_alert=True)
                 return
 
-            # 🔥 NEW: Report Broken File Feature
+            # Report Feature
             if data_str.startswith("report_"):
                 doc_id = data_str.split("report_")[1]
                 try:
                     file_doc = await db.files.find_one({"_id": ObjectId(doc_id)})
                     file_name = file_doc.get("display_name", "Unknown") if file_doc else "Unknown"
-                    
-                    # Notify Admin
                     report_msg = (
-                        f"🚨 **የተበላሸ ፋይል ሪፖርት! (Broken File)**\n\n"
-                        f"📂 ፋይል: `{file_name}`\n"
-                        f"🆔 Doc ID: `{doc_id}`\n"
-                        f"👤 Report By: `{user_id}`"
+                        f"🚨 **Broken File Report!**\n\n"
+                        f"👤: `{user_id}`\n"
+                        f"📂: `{file_name}`\n"
+                        f"🆔: `{doc_id}`"
                     )
                     await send_message(ADMIN_ID, report_msg)
-                    
-                    # Notify User
-                    await answer_callback_query(cb_id, "✅ ሪፖርትዎ ተልኳል! እናስተካክለዋለን።", show_alert=True)
+                    await answer_callback_query(cb_id, "✅ ሪፖርት ተልኳል!", show_alert=True)
                 except:
-                    await answer_callback_query(cb_id, "Error sending report.")
+                    await answer_callback_query(cb_id, "Error")
                 return
 
-            # Broadcast Confirmation Logic
+            # Broadcast Logic
             if data_str == "broadcast_confirm":
                 if str(user_id) != str(ADMIN_ID): return
                 admin_data = await get_user_data(db, user_id)
@@ -347,9 +347,8 @@ async def process_telegram_update(data):
                         file_id = file_doc['file_id']
                         is_fav = await toggle_favorite(db, user_id, file_id)
                         text = "❤️ Saved" if is_fav else "💔 Removed"
-                        new_text = "💔 Remove" if is_fav else "❤️ Add to Favorite"
+                        new_text = "💔 ከምርጫዬ አጥፋ" if is_fav else "❤️ ወደ ምርጫዬ ጨምር"
                         
-                        # Share & Report Buttons (Added here for favorites update too)
                         kb = {
                             "inline_keyboard": [
                                 [{"text": new_text, "callback_data": f"fav_{doc_id}"}],
@@ -359,7 +358,6 @@ async def process_telegram_update(data):
                                 ]
                             ]
                         }
-                        
                         await answer_callback_query(cb_id, text)
                         await edit_message_reply_markup(chat_id, message_id, kb)
                     else:
@@ -384,7 +382,7 @@ async def process_telegram_update(data):
                 state = admin_data.get("state")
                 
                 if state == "broadcast_wait":
-                    if text == "🔙 Back":
+                    if text == "🔙 Back" or text == "🔙 ተመለስ":
                         await set_user_state(db, user_id, "idle")
                         await send_message(chat_id, "🔙 Back to Menu.")
                         return
@@ -401,11 +399,11 @@ async def process_telegram_update(data):
                     
                     kb = {
                         "inline_keyboard": [
-                            [{"text": "✅ Post (አስተላልፍ)", "callback_data": "broadcast_confirm"}],
-                            [{"text": "❌ Cancel (ተው)", "callback_data": "broadcast_cancel"}]
+                            [{"text": "✅ ላክ (Post)", "callback_data": "broadcast_confirm"}],
+                            [{"text": "❌ ተው (Cancel)", "callback_data": "broadcast_cancel"}]
                         ]
                     }
-                    await send_message(chat_id, "👆 **ይሄ መልዕክት (ከነ አዝራሮቹ) ለሁሉም ተጠቃሚዎች ይላክ?**\n\nConfirm to broadcast.", reply_markup=kb)
+                    await send_message(chat_id, "👆 **ይሄ መልዕክት ለሁሉም ተጠቃሚዎች ይላክ?**\n\nConfirm to broadcast.", reply_markup=kb)
                     return
 
                 # Admin Only Upload
@@ -438,41 +436,41 @@ async def process_telegram_update(data):
 
             # --- ADMIN DASHBOARD ---
             if str(user_id) == str(ADMIN_ID):
-                if text == "/start" or text == "/admin" or text == "🔙 Back":
-                    msg = "👋 **ሰላም አለቃ! (Admin Panel)**\n\nከታች ባሉት አዝራሮች ቦቱን ይቆጣጠሩ።"
+                if text == "/start" or text == "/admin" or text == "🔙 Back" or text == "🔙 ተመለስ":
+                    msg = "👋 **ሰላም አለቃ! (Admin Panel)**"
                     admin_kb = {
                         "keyboard": [
-                            [{"text": "📊 Statistics"}, {"text": "📅 Daily Stats"}],
-                            [{"text": "📢 Broadcast"}, {"text": "👥 User Count"}],
-                            [{"text": "📂 Total Files"}]
+                            [{"text": "📊 ስታትስቲክስ"}, {"text": "📅 የዛሬ መረጃ"}],
+                            [{"text": "📢 መልዕክት ማስተላለፍ"}, {"text": "👥 የተጠቃሚ ብዛት"}],
+                            [{"text": "📂 ጠቅላላ ፋይሎች"}]
                         ],
                         "resize_keyboard": True
                     }
                     await send_message(chat_id, msg, reply_markup=admin_kb)
                     return 
 
-                elif text == "📊 Statistics":
+                elif text == "📊 ስታትስቲክስ":
                     users = await db.users.count_documents({})
                     files = await db.files.count_documents({})
                     await send_message(chat_id, f"📊 **General Stats:**\n\n👥 Users: `{users}`\n📂 Files: `{files}`")
                     return
 
-                elif text == "📅 Daily Stats":
+                elif text == "📅 የዛሬ መረጃ":
                     stats_msg = await get_daily_stats(db)
                     await send_message(chat_id, stats_msg)
                     return
 
-                elif text == "📢 Broadcast":
+                elif text == "📢 መልዕክት ማስተላለፍ":
                     await set_user_state(db, user_id, "broadcast_wait")
-                    await send_message(chat_id, "📢 **Broadcast Mode**\n\nለተጠቃሚዎች መላክ የሚፈልጉትን መልዕክት (ጽሁፍ፣ ፎቶ፣ ድምፅ) **አሁን ይላኩ**።\n\n(ለመተው '🔙 Back' ይበሉ)")
+                    await send_message(chat_id, "📢 **Broadcast Mode**\n\nመልዕክትዎን ይላኩ። (ለመተው '🔙 ተመለስ' ይበሉ)")
                     return
 
-                elif text == "👥 User Count":
+                elif text == "👥 የተጠቃሚ ብዛት":
                     users = await db.users.count_documents({})
-                    await send_message(chat_id, f"👥 አጠቃላይ ተጠቃሚዎች: `{users}`")
+                    await send_message(chat_id, f"👥 አሁን ያሉ ተጠቃሚዎች: `{users}`")
                     return
                 
-                elif text == "📂 Total Files":
+                elif text == "📂 ጠቅላላ ፋይሎች":
                     files = await db.files.count_documents({})
                     await send_message(chat_id, f"📂 የተጫኑ መንዙማዎች: `{files}`")
                     return
@@ -530,8 +528,6 @@ async def process_telegram_update(data):
                 if doc:
                     if 'file_id' in doc:
                         short_id = str(doc['_id'])
-                        
-                        # 🔥 NEW: Share & Report Button Added
                         kb = {
                             "inline_keyboard": [
                                 [{"text": "❤️ Add to Favorite", "callback_data": f"fav_{short_id}"}],
@@ -541,13 +537,12 @@ async def process_telegram_update(data):
                                 ]
                             ]
                         }
-                        
                         await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
                         await increment_view(db, doc['file_id'])
                     else:
-                        await send_message(chat_id, "⚠️ ፋይሉ ተገኝቷል ግን ኦዲዮው ጠፍቷል።")
+                        await send_message(chat_id, "⚠️ ይቅርታ! የዚህ መንዙማ ኦዲዮ ፋይል ጠፍቷል።")
                 else:
-                    await send_message(chat_id, "😔 ይቅርታ፣ አልተገኘም።")
+                    await send_message(chat_id, "😔 ይቅርታ፣ ይህ መንዙማ አልተገኘም። እባክዎ ስሙን አስተካክለው ይሞክሩ።")
 
         # 3. Inline Query
         elif "inline_query" in data:
@@ -560,27 +555,22 @@ async def process_telegram_update(data):
             await track_user(db, user_id, first_name)
 
             if not await check_membership(user_id):
-                await answer_inline_query(query_id, [], "⚠️ Join Channel First", "start")
+                await answer_inline_query(query_id, [], "⚠️ መጀመሪያ ቻናሉን ይቀላቀሉ!", "start")
                 return
 
             cursor = None
             results = []
             
+            # 🔥 FIX: Simple .find() for everything (Fastest on Vercel Free)
             if query.startswith("#random"):
                 pipeline = [{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": 50}}]
                 cursor = db.files.aggregate(pipeline)
             elif query.startswith("#trending"):
+                # Simple Sort
                 filter_text = query.replace("#trending", "").strip()
-                match_stage = {"file_id": {"$exists": True}}
-                if filter_text:
-                    match_stage["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
-                pipeline = [
-                    {"$match": match_stage},
-                    {"$addFields": {"views_safe": {"$ifNull": ["$views", 0]}}}, 
-                    {"$sort": {"views_safe": -1, "_id": -1}}, 
-                    {"$limit": 50}
-                ]
-                cursor = db.files.aggregate(pipeline)
+                search_filter = {"file_id": {"$exists": True}}
+                if filter_text: search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
+                cursor = db.files.find(search_filter).sort("views", -1).limit(50)
             elif query.startswith("#new"):
                 filter_text = query.replace("#new", "").strip()
                 search_filter = {"file_id": {"$exists": True}}
@@ -598,6 +588,7 @@ async def process_telegram_update(data):
                 search_criteria = build_search_query(query) if query else {}
                 cursor = db.files.find(search_criteria).sort("_id", -1).limit(50)
 
+            # 🔥 FIX: Force cursor to list to avoid "Event loop closed" error
             if cursor:
                 docs = await cursor.to_list(length=50)
                 for doc in docs:
@@ -625,7 +616,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Full Broadcast Fix) 🚀'
+    return 'Al-Madih Bot Running (Ultimate Final) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
