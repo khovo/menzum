@@ -97,7 +97,6 @@ async def process_update(data):
             results = []
             
             if db is None:
-                # DB Error Feedback
                 results.append({
                     "type": "article",
                     "id": "error",
@@ -110,9 +109,10 @@ async def process_update(data):
                 # Search Logic
                 if query.startswith("#"):
                      if query.startswith("#new"):
-                         cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).skip(skip).limit(limit)
+                         # Optimize: Remove exists check for speed, filter in loop
+                         cursor = db.files.find({}).sort("_id", -1).skip(skip).limit(limit)
                      elif query.startswith("#trending"):
-                         cursor = db.files.find({"file_id": {"$exists": True}}).sort("views", -1).skip(skip).limit(limit)
+                         cursor = db.files.find({"views": {"$gt": 0}}).sort("views", -1).skip(skip).limit(limit)
                      elif query.startswith("#random"):
                          cursor = db.files.aggregate([{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": limit}}])
                      elif query.startswith("#favorites"):
@@ -120,28 +120,30 @@ async def process_update(data):
                          if user and user.get("favorites"):
                              cursor = db.files.find({"file_id": {"$in": user["favorites"]}}).skip(skip).limit(limit)
                 else:
-                    # Empty or Text Search
-                    search_filter = {"file_id": {"$exists": True}}
+                    # Text Search or Empty (Show All)
                     if query:
-                        search_filter["display_name"] = {"$regex": re.escape(query), "$options": "i"}
-                    
-                    cursor = db.files.find(search_filter).sort("_id", -1).skip(skip).limit(limit)
+                        # Text search needs filter
+                        search_filter = {"display_name": {"$regex": re.escape(query), "$options": "i"}}
+                        cursor = db.files.find(search_filter).limit(limit)
+                    else:
+                        # 🔥 FASTEST SHOW ALL: No filter, just sort by newest
+                        cursor = db.files.find({}).sort("_id", -1).skip(skip).limit(limit)
 
                 # Process Results
                 if cursor:
                     count = 0
                     for doc in cursor:
+                        # Python side filtering for broken files
                         if doc.get('file_id'):
                             results.append({
                                 "type": "audio",
                                 "id": str(doc["_id"]),
                                 "audio_file_id": doc["file_id"],
                                 "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                                "title": doc.get('display_name', 'Menzuma Audio') # 🔥 ADDED TITLE HERE
+                                "title": doc.get('display_name', 'Menzuma Audio')
                             })
                             count += 1
                     
-                    # If empty result on first page, show feedback
                     if count == 0 and skip == 0:
                          results.append({
                             "type": "article",
