@@ -136,7 +136,8 @@ async def process_update(data):
                                 "type": "audio",
                                 "id": str(doc["_id"]),
                                 "audio_file_id": doc["file_id"],
-                                "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
+                                "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
+                                "title": doc.get('display_name', 'Menzuma Audio') # 🔥 ADDED TITLE HERE
                             })
                             count += 1
                     
@@ -162,20 +163,29 @@ async def process_update(data):
             })
             return
 
-        # 2. Callback & Message Handling (Simplified for brevity)
+        # 2. Callback & Message Handling
         if "callback_query" in data:
             cb = data["callback_query"]
             data_str = cb.get("data", "")
             chat_id = cb["message"]["chat"]["id"]
             msg_id = cb["message"]["message_id"]
             
-            # ... (Existing Callback Logic: Fav, Pagination, etc.) ...
-            # For now, just answer to keep it alive
             await telegram_request("answerCallbackQuery", {"callback_query_id": cb["id"]})
             
             if data_str.startswith("fav_"):
-                 # Simple Fav Toggle (Add your full logic here if needed)
-                 pass 
+                 # Simple Fav Toggle
+                 doc_id = data_str.split("fav_")[1]
+                 try:
+                    file_doc = db.files.find_one({"_id": ObjectId(doc_id)})
+                    if file_doc:
+                        user = db.users.find_one({"_id": cb["from"]["id"]})
+                        favs = user.get("favorites", []) if user else []
+                        file_id = file_doc['file_id']
+                        if file_id in favs:
+                            db.users.update_one({"_id": cb["from"]["id"]}, {"$pull": {"favorites": file_id}})
+                        else:
+                            db.users.update_one({"_id": cb["from"]["id"]}, {"$addToSet": {"favorites": file_id}}, upsert=True)
+                 except: pass
 
         if "message" in data:
             msg = data["message"]
