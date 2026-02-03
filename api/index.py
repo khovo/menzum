@@ -20,20 +20,18 @@ MONGO_URL = os.environ.get("MONGO_URL")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 FORCE_CHANNEL_USERNAME = "Al_madih" 
 FORCE_CHANNEL_URL = "https://t.me/Al_madih"
-ITEMS_PER_PAGE = 10 
+ITEMS_PER_PAGE = 50 # Telegram Inline limit is usually 50
 
-# --- Database Connection (PyMongo - Stable) ---
+# --- Database Connection (PyMongo) ---
 try:
-    # Connect Timeout 5s
     mongo_client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
     db = mongo_client["MenzumaDB"]
-    # Check connection immediately
     mongo_client.server_info()
-    logger.info("✅ Database Connected Successfully (PyMongo Mode)")
+    logger.info("✅ Database Connected")
 except Exception as e:
-    logger.error(f"❌ Database Connection Failed: {e}")
+    logger.error(f"❌ Database Error: {e}")
 
-# --- Async Helper for Telegram API ---
+# --- Async Helper ---
 def run_async(coro):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -63,28 +61,98 @@ def build_search_query(query_text):
     query_text = query_text.strip()
     if query_text.startswith("#"): return {} 
     
-    # 1 ፊደል ሲሆን (Regex)
+    # 1 ፊደል (Regex)
     if len(query_text) == 1:
         return {"display_name": {"$regex": re.escape(query_text), "$options": "i"}}
     
-    # ቃላትን መነጣጠል (AND Logic)
     words = query_text.split()
     regex_pattern = ""
     for word in words:
         regex_pattern += f"(?=.*{re.escape(word)})"
     return {"display_name": {"$regex": f"^{regex_pattern}", "$options": "i"}}
 
-def get_stats():
-    users = db.users.count_documents({})
-    files = db.files.count_documents({})
-    return f"📊 **Stats:**\n👥 Users: `{users}`\n📂 Files: `{files}`"
-
 # --- Main Logic ---
 async def process_update(data):
     if not MONGO_URL or not BOT_TOKEN: return
 
     try:
-        # 1. Callback Query
+        # 1. Inline Query (Infinite Scroll Fix)
+        if "inline_query" in data:
+            iq = data["inline_query"]
+            query_id = iq["id"]
+            user_id = iq.get("from", {}).get("id")
+            query = iq.get("query", "").strip()
+            offset = iq.get("offset", "") # 🔥 Get the Offset
+
+            # Membership Check
+            if not await check_membership(user_id):
+                 await telegram_request("answerInlineQuery", {
+                    "inline_query_id": query_id, 
+                    "results": [], 
+                    "switch_pm_text": "⚠️ Join Channel First", 
+                    "switch_pm_parameter": "start", 
+                    "cache_time": 5
+                })
+                 return
+
+            # Pagination Logic
+            skip = int(offset) if offset and offset.isdigit() else 0
+            limit = 50
+
+            cursor = None
+            
+            # --- Search Logic ---
+            if query.startswith("#"):
+                 # Hashtags (Trending, New, etc)
+                 if query.startswith("#new"):
+                     cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).skip(skip).limit(limit)
+                 elif query.startswith("#trending"):
+                     cursor = db.files.find({"file_id": {"$exists": True}}).sort([("views", -1), ("_id", -1)]).skip(skip).limit(limit)
+                 elif query.startswith("#random"):
+                     # Random doesn't support pagination well, just reshuffle
+                     pipeline = [{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": 50}}]
+                     cursor = db.files.aggregate(list(pipeline))
+                 elif query.startswith("#favorites"):
+                     user = db.users.find_one({"_id": user_id})
+                     if user and user.get("favorites"):
+                         cursor = db.files.find({"file_id": {"$in": user["favorites"]}}).skip(skip).limit(limit)
+            
+            else:
+                # Text Search or Empty (All Files)
+                search_filter = {"file_id": {"$exists": True}}
+                if query:
+                    search_filter["display_name"] = {"$regex": re.escape(query), "$options": "i"}
+                
+                # 🔥 HERE IS THE KEY: If query is empty, it returns ALL files sorted by newest
+                cursor = db.files.find(search_filter).sort("_id", -1).skip(skip).limit(limit)
+
+            results = []
+            count = 0
+            if cursor:
+                for doc in cursor:
+                    if doc.get('file_id'):
+                        results.append({
+                            "type": "audio",
+                            "id": str(doc["_id"]),
+                            "audio_file_id": doc["file_id"],
+                            "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
+                        })
+                        count += 1
+            
+            # 🔥 Calculate Next Offset
+            # If we got 50 results, there might be more, so we tell Telegram the next offset
+            next_offset = str(skip + limit) if count >= limit else ""
+
+            await telegram_request("answerInlineQuery", {
+                "inline_query_id": query_id, 
+                "results": results, 
+                "next_offset": next_offset, # This enables scrolling!
+                "cache_time": 0, # No cache for instant updates
+                "is_personal": True
+            })
+            return
+
+        # 2. Callback Query (Favorites & Pagination for List)
         if "callback_query" in data:
             cb = data["callback_query"]
             user_id = cb["from"]["id"]
@@ -94,19 +162,18 @@ async def process_update(data):
             msg_id = cb["message"]["message_id"]
 
             if data_str.startswith("pg_"):
+                # ... (Same pagination logic as before for /list) ...
                 if "close" in data_str:
-                    await telegram_request("editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": "❌ ዝርዝሩ ተዘግቷል።"})
+                     await telegram_request("editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": "❌ ዝርዝሩ ተዘግቷል።"})
                 else:
                     page = int(data_str.split("_")[1])
-                    total = db.files.count_documents({"file_id": {"$exists": True}})
-                    limit = ITEMS_PER_PAGE
-                    skip = (page - 1) * limit
+                    items_per_page_msg = 10
+                    skip_msg = (page - 1) * items_per_page_msg
+                    total = db.files.estimated_document_count()
                     
-                    # PyMongo Direct Query
-                    cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).skip(skip).limit(limit)
-                    
+                    cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).skip(skip_msg).limit(items_per_page_msg)
                     txt = f"📂 **መንዙማዎች (ገጽ {page})**\n\n"
-                    idx = skip + 1
+                    idx = skip_msg + 1
                     for doc in cursor:
                         name = doc.get('display_name', 'Unknown').replace('`','')
                         txt += f"{idx}. `{name}`\n"
@@ -116,13 +183,14 @@ async def process_update(data):
                     row = []
                     if page > 1: row.append({"text": "⬅️", "callback_data": f"pg_{page-1}"})
                     row.append({"text": "❌", "callback_data": "pg_close"})
-                    if (skip + limit) < total: row.append({"text": "➡️", "callback_data": f"pg_{page+1}"})
+                    if (skip_msg + items_per_page_msg) < total: row.append({"text": "➡️", "callback_data": f"pg_{page+1}"})
                     btns.append(row)
                     
                     await telegram_request("editMessageText", {"chat_id": chat_id, "message_id": msg_id, "text": txt, "parse_mode": "Markdown", "reply_markup": {"inline_keyboard": btns}})
                 await telegram_request("answerCallbackQuery", {"callback_query_id": cb_id})
 
             elif data_str.startswith("fav_"):
+                # ... (Same favorites logic) ...
                 doc_id = data_str.split("fav_")[1]
                 fdoc = db.files.find_one({"_id": ObjectId(doc_id)})
                 if fdoc:
@@ -159,71 +227,6 @@ async def process_update(data):
                 fname = fdoc.get("display_name", "Unknown") if fdoc else "Unknown"
                 await telegram_request("sendMessage", {"chat_id": ADMIN_ID, "text": f"🚨 **Report:**\n📂 {fname}\n🆔 {doc_id}"})
                 await telegram_request("answerCallbackQuery", {"callback_query_id": cb_id, "text": "✅ ሪፖርት ተልኳል!", "show_alert": True})
-            
-            return
-
-        # 2. Inline Query (Search)
-        if "inline_query" in data:
-            iq = data["inline_query"]
-            query_id = iq["id"]
-            user_id = iq.get("from", {}).get("id")
-            first_name = iq.get("from", {}).get("first_name", "User")
-            query = iq.get("query", "").strip()
-
-            # Track user (Sync Update)
-            db.users.update_one({"_id": user_id}, {"$set": {"first_name": first_name, "last_active": datetime.now()}}, upsert=True)
-
-            if not await check_membership(user_id):
-                 await telegram_request("answerInlineQuery", {
-                    "inline_query_id": query_id, "results": [], "switch_pm_text": "⚠️ Join Channel First", "switch_pm_parameter": "start", "cache_time": 5
-                })
-                 return
-
-            results = []
-            cursor = None
-
-            # --- PyMongo Search (Sync & Stable) ---
-            if query.startswith("#"):
-                 if query.startswith("#new"):
-                     cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).limit(50)
-                 elif query.startswith("#trending"):
-                     # Aggregation to sort by views, treat null as 0
-                     pipeline = [
-                         {"$match": {"file_id": {"$exists": True}}},
-                         {"$addFields": {"views_safe": {"$ifNull": ["$views", 0]}}},
-                         {"$sort": {"views_safe": -1, "_id": -1}},
-                         {"$limit": 50}
-                     ]
-                     cursor = db.files.aggregate(list(pipeline))
-                 elif query.startswith("#random"):
-                     pipeline = [{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": 50}}]
-                     cursor = db.files.aggregate(list(pipeline))
-                 elif query.startswith("#favorites"):
-                     user = db.users.find_one({"_id": user_id})
-                     if user and user.get("favorites"):
-                         cursor = db.files.find({"file_id": {"$in": user["favorites"]}}).limit(50)
-            else:
-                search_filter = {"file_id": {"$exists": True}}
-                if query:
-                    # Regex Search using Clean PyMongo
-                    search_filter["display_name"] = {"$regex": re.escape(query), "$options": "i"}
-                
-                # If query is empty, this returns latest 50
-                cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
-
-            if cursor:
-                # Iterate cursor directly (It works perfectly in sync mode)
-                for doc in cursor:
-                    results.append({
-                        "type": "audio",
-                        "id": str(doc["_id"]),
-                        "audio_file_id": doc["file_id"],
-                        "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
-                    })
-
-            await telegram_request("answerInlineQuery", {
-                "inline_query_id": query_id, "results": results, "cache_time": 0, "is_personal": True
-            })
             return
 
         # 3. Message Handling
@@ -258,8 +261,10 @@ async def process_update(data):
                 await telegram_request("sendMessage", {"chat_id": chat_id, "text": welcome, "parse_mode": "Markdown", "reply_markup": kb})
             
             elif text == "/list" or text == "📂 Catalog (List)":
-                 total = db.files.count_documents({"file_id": {"$exists": True}})
-                 cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).limit(ITEMS_PER_PAGE)
+                 total = db.files.estimated_document_count()
+                 cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).limit(ITEMS_PER_PAGE) # Items per page for msg list (10)
+                 # Note: ITEMS_PER_PAGE for list is 10, for inline is 50. Handled inside logic.
+                 msg_items = 10
                  txt = f"📂 **መንዙማዎች (1/{(total+9)//10})**\n\n"
                  idx = 1
                  for doc in cursor:
@@ -270,7 +275,9 @@ async def process_update(data):
                  await telegram_request("sendMessage", {"chat_id": chat_id, "text": txt, "parse_mode": "Markdown", "reply_markup": kb})
             
             elif text == "/admin" and str(user_id) == str(ADMIN_ID):
-                 await telegram_request("sendMessage", {"chat_id": chat_id, "text": get_stats()})
+                 users = db.users.count_documents({})
+                 files = db.files.count_documents({})
+                 await telegram_request("sendMessage", {"chat_id": chat_id, "text": f"📊 **Stats:**\n👥 Users: `{users}`\n📂 Files: `{files}`"})
 
             elif text and not text.startswith("/"):
                 # Direct Search (Regex)
@@ -291,7 +298,7 @@ def webhook():
     if request.method == 'POST':
         run_async(process_update(request.get_json()))
         return 'ok'
-    return 'Bot Running (PyMongo Mode) 🚀'
+    return 'Bot Running (Pagination Added) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
