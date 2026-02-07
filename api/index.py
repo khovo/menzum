@@ -563,7 +563,11 @@ async def process_telegram_update(data):
             results = []
             
             if query.startswith("#random"):
-                pipeline = [{"$match": {"file_id": {"$exists": True}}}, {"$sample": {"size": 50}}]
+                pipeline = [
+                    {"$match": {"file_id": {"$exists": True}}}, 
+                    {"$sample": {"size": 20}},
+                    {"$project": {"file_id": 1, "display_name": 1, "_id": 1}}
+                ]
                 cursor = db.files.aggregate(pipeline)
             elif query.startswith("#trending"):
                 filter_text = query.replace("#trending", "").strip()
@@ -574,14 +578,16 @@ async def process_telegram_update(data):
                     {"$match": match_stage},
                     {"$addFields": {"views_safe": {"$ifNull": ["$views", 0]}}}, 
                     {"$sort": {"views_safe": -1, "_id": -1}}, 
-                    {"$limit": 50}
+                    {"$limit": 20},
+                    {"$project": {"file_id": 1, "display_name": 1, "_id": 1}}
                 ]
                 cursor = db.files.aggregate(pipeline)
             elif query.startswith("#new"):
                 filter_text = query.replace("#new", "").strip()
                 search_filter = {"file_id": {"$exists": True}}
                 if filter_text: search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
-                cursor = db.files.find(search_filter).sort("_id", -1).limit(50)
+                # OPTIMIZATION: Projection + Limit 20
+                cursor = db.files.find(search_filter, {"file_id": 1, "display_name": 1, "_id": 1}).sort("_id", -1).limit(20)
             elif query.startswith("#favorites"):
                 user = await db.users.find_one({"_id": user_id})
                 fav_ids = user.get("favorites", []) if user else []
@@ -589,7 +595,8 @@ async def process_telegram_update(data):
                     filter_text = query.replace("#favorites", "").strip()
                     search_filter = {"file_id": {"$in": fav_ids}}
                     if filter_text: search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
-                    cursor = db.files.find(search_filter).limit(50)
+                    # OPTIMIZATION: Projection + Limit 20
+                    cursor = db.files.find(search_filter, {"file_id": 1, "display_name": 1, "_id": 1}).limit(20)
             else:
                 # --- FIX #1: Handle Empty Query Correctly ---
                 # መፍትሄ፡ Query ባዶ ከሆነ፣ በቅርብ የገቡትን እና ኦዲዮ ያላቸውን ፋይሎች ብቻ እናሳያለን።
@@ -600,10 +607,11 @@ async def process_telegram_update(data):
                     # በፍለጋ ጊዜም ቢሆን ኦዲዮ የሌላቸውን እንዳያመጣ
                     search_criteria["file_id"] = {"$exists": True}
                 
-                cursor = db.files.find(search_criteria).sort("_id", -1).limit(50)
+                # OPTIMIZATION: Projection + Limit 20
+                cursor = db.files.find(search_criteria, {"file_id": 1, "display_name": 1, "_id": 1}).sort("_id", -1).limit(20)
 
             if cursor:
-                docs = await cursor.to_list(length=50)
+                docs = await cursor.to_list(length=20)
                 for doc in docs:
                     if doc.get('file_id'):
                         results.append({
