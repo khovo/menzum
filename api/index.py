@@ -570,24 +570,24 @@ async def process_telegram_update(data):
                 ]
                 cursor = db.files.aggregate(pipeline)
             elif query.startswith("#trending"):
-                filter_text = query.replace("#trending", "").strip()
-                match_stage = {"file_id": {"$exists": True}}
-                if filter_text:
-                    match_stage["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
-                pipeline = [
-                    {"$match": match_stage},
-                    {"$addFields": {"views_safe": {"$ifNull": ["$views", 0]}}}, 
-                    {"$sort": {"views_safe": -1, "_id": -1}}, 
-                    {"$limit": 20},
-                    {"$project": {"file_id": 1, "display_name": 1, "_id": 1}}
-                ]
-                cursor = db.files.aggregate(pipeline)
+                # --- FIX: Removed Aggregation, use simple FIND for speed ---
+                # እይታ ያላቸውን ብቻ አምጣና በብዛት ደርድር (Simple & Fast)
+                cursor = db.files.find(
+                    {"views": {"$gt": 0}}, 
+                    {"file_id": 1, "display_name": 1, "_id": 1}
+                ).sort("views", -1).limit(20)
+
             elif query.startswith("#new"):
                 filter_text = query.replace("#new", "").strip()
-                search_filter = {"file_id": {"$exists": True}}
-                if filter_text: search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
-                # OPTIMIZATION: Projection + Limit 20
-                cursor = db.files.find(search_filter, {"file_id": 1, "display_name": 1, "_id": 1}).sort("_id", -1).limit(20)
+                search_filter = {} # --- FIX: Removed file_id exists check for speed ---
+                if filter_text: 
+                    search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
+                
+                cursor = db.files.find(
+                    search_filter, 
+                    {"file_id": 1, "display_name": 1, "_id": 1}
+                ).sort("_id", -1).limit(50) # Fetch 50, we filter in loop
+                
             elif query.startswith("#favorites"):
                 user = await db.users.find_one({"_id": user_id})
                 fav_ids = user.get("favorites", []) if user else []
@@ -598,21 +598,23 @@ async def process_telegram_update(data):
                     # OPTIMIZATION: Projection + Limit 20
                     cursor = db.files.find(search_filter, {"file_id": 1, "display_name": 1, "_id": 1}).limit(20)
             else:
-                # --- FIX #1: Handle Empty Query Correctly ---
-                # መፍትሄ፡ Query ባዶ ከሆነ፣ በቅርብ የገቡትን እና ኦዲዮ ያላቸውን ፋይሎች ብቻ እናሳያለን።
+                # --- FIX: Empty Query Speedup ---
                 if not query:
-                    search_criteria = {"file_id": {"$exists": True}}
+                    search_criteria = {} # --- FIX: Removed file_id exists check ---
                 else:
                     search_criteria = build_search_query(query)
-                    # በፍለጋ ጊዜም ቢሆን ኦዲዮ የሌላቸውን እንዳያመጣ
-                    search_criteria["file_id"] = {"$exists": True}
                 
-                # OPTIMIZATION: Projection + Limit 20
-                cursor = db.files.find(search_criteria, {"file_id": 1, "display_name": 1, "_id": 1}).sort("_id", -1).limit(20)
+                # ዝም ብሎ ሁሉንም አምጣ (በጣም ፈጣን)
+                cursor = db.files.find(
+                    search_criteria, 
+                    {"file_id": 1, "display_name": 1, "_id": 1}
+                ).sort("_id", -1).limit(50)
 
             if cursor:
-                docs = await cursor.to_list(length=20)
+                docs = await cursor.to_list(length=50)
+                count = 0
                 for doc in docs:
+                    # Python ላይ ማጣራት (Valid File ID መኖሩን)
                     if doc.get('file_id'):
                         results.append({
                             "type": "audio",
@@ -620,6 +622,8 @@ async def process_telegram_update(data):
                             "audio_file_id": doc["file_id"],
                             "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
                         })
+                        count += 1
+                        if count >= 20: break # 20 ውጤት ከሞላ አቁም
 
             await answer_inline_query(query_id, results, cache_time=0)
 
