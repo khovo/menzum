@@ -591,7 +591,15 @@ async def process_telegram_update(data):
                     if filter_text: search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
                     cursor = db.files.find(search_filter).limit(50)
             else:
-                search_criteria = build_search_query(query) if query else {}
+                # --- FIX #1: Handle Empty Query Correctly ---
+                # መፍትሄ፡ Query ባዶ ከሆነ፣ በቅርብ የገቡትን እና ኦዲዮ ያላቸውን ፋይሎች ብቻ እናሳያለን።
+                if not query:
+                    search_criteria = {"file_id": {"$exists": True}}
+                else:
+                    search_criteria = build_search_query(query)
+                    # በፍለጋ ጊዜም ቢሆን ኦዲዮ የሌላቸውን እንዳያመጣ
+                    search_criteria["file_id"] = {"$exists": True}
+                
                 cursor = db.files.find(search_criteria).sort("_id", -1).limit(50)
 
             if cursor:
@@ -621,7 +629,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Full Broadcast Fix) 🚀'
+    return 'Al-Madih Bot Running (Empty Query Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
