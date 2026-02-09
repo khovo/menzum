@@ -561,8 +561,10 @@ async def process_telegram_update(data):
 
             results = []
             
-            # --- PYTHON-SIDE SORTING STRATEGY (FASTEST) ---
-            # DBን ከማጨናነቅ፣ ሁሉንም ዳታ አምጥተን Python ላይ እናጣራለን።
+            # --- TEKEKLGNA MEFTEHE (REAL SOLUTION) ---
+            # 1. DB Sort (Fastest) 
+            # 2. Strict Limit (20) to prevent Timeout
+            # 3. Explicit Filter (No bad data)
             
             if query.startswith("#random"):
                 pipeline = [
@@ -574,31 +576,25 @@ async def process_telegram_update(data):
                 docs = await cursor.to_list(length=20)
                 
             elif query.startswith("#trending"):
-                # 1. DB: Give me anything with views (FAST SCAN)
+                # Use DB Sort for Views (Fast if indexed or small limit)
                 cursor = db.files.find(
-                    {"views": {"$gt": 0}}, 
+                    {"views": {"$gt": 0}, "file_id": {"$exists": True}}, 
                     {"file_id": 1, "display_name": 1, "views": 1, "_id": 1}
-                ).limit(200) # Fetch up to 200 items to sort in memory
-                
-                docs = await cursor.to_list(length=200)
-                # 2. PYTHON: Sort by views manually (INSTANT)
-                docs.sort(key=lambda x: x.get('views', 0), reverse=True)
-                docs = docs[:20] # Keep top 20
+                ).sort("views", -1).limit(20)
+                docs = await cursor.to_list(length=20)
 
             elif query.startswith("#new"):
                 filter_text = query.replace("#new", "").strip()
-                search_filter = {}
+                search_filter = {"file_id": {"$exists": True}}
                 if filter_text: 
                     search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
                 
-                # 1. DB: Simple fetch with _id sort (Usually fast if indexed)
-                # If this fails, we can remove sort and do Python sort
+                # DB Sort by _id (Newest First) + Strict Limit
                 cursor = db.files.find(
                     search_filter, 
                     {"file_id": 1, "display_name": 1, "_id": 1}
-                ).sort("_id", -1).limit(50) 
-                
-                docs = await cursor.to_list(length=50)
+                ).sort("_id", -1).limit(20)
+                docs = await cursor.to_list(length=20)
 
             elif query.startswith("#favorites"):
                 user = await db.users.find_one({"_id": user_id})
@@ -614,23 +610,19 @@ async def process_telegram_update(data):
             else:
                 # --- EMPTY / NORMAL SEARCH ---
                 if not query:
-                    search_criteria = {}
+                    search_criteria = {"file_id": {"$exists": True}}
                 else:
                     search_criteria = build_search_query(query)
+                    search_criteria["file_id"] = {"$exists": True}
                 
-                # 1. DB: Fetch raw data (No Sort = Super Fast)
-                # We fetch 100 items to ensure we have enough "New" ones
+                # DB Sort by _id (Newest First) + Strict Limit
+                # This guarantees we get the NEWEST 20 items, not the oldest junk.
                 cursor = db.files.find(
                     search_criteria, 
                     {"file_id": 1, "display_name": 1, "_id": 1}
-                ).limit(100) 
+                ).sort("_id", -1).limit(20) 
 
-                docs = await cursor.to_list(length=100)
-                
-                # 2. PYTHON: Sort by _id (Newest First)
-                # _id contains timestamp, so sorting by it is sorting by time
-                docs.sort(key=lambda x: x['_id'], reverse=True)
-                docs = docs[:50]
+                docs = await cursor.to_list(length=20)
 
             # --- RESULT CONSTRUCTION ---
             for doc in docs:
@@ -658,7 +650,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Direct Lookup Simulation) 🚀'
+    return 'Al-Madih Bot Running (Tekeklgna Meftehe Applied) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
