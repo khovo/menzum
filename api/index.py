@@ -27,11 +27,9 @@ FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
 ITEMS_PER_PAGE = 10 
 
-# --- IN-MEMORY CACHE (The Secret Weapon) ---
-# ይህ ቦቱ የፈለገውን ነገር ለተወሰነ ጊዜ እንዲያስታውስ ያደርጋል።
-# Vercel ላይ እንኳን ቢሆን፣ አክቲቭ ሲሆን ፍጥነቱን እጥፍ ያደርገዋል።
+# --- IN-MEMORY CACHE ---
 CACHED_RESULTS = {}
-CACHE_TTL = 300  # 5 Minutes (300 seconds)
+CACHE_TTL = 300  # 5 Minutes
 
 # --- Helpers ---
 def run_async(coro):
@@ -157,8 +155,9 @@ async def send_document(chat_id, file_path, caption=None):
 async def track_user(db, user_id, first_name):
     try:
         now = datetime.now()
+        # Ensure consistent Integer ID storage
         await db.users.update_one(
-            {"_id": user_id},
+            {"_id": int(user_id)},
             {
                 "$set": {"first_name": first_name, "last_active": now},
                 "$setOnInsert": {"joined_at": now}
@@ -174,13 +173,19 @@ async def increment_view(db, file_id):
 
 async def toggle_favorite(db, user_id, file_id):
     try:
+        # Try finding user by Int first, then String (Safety Net)
         user = await db.users.find_one({"_id": user_id})
+        if not user:
+            user = await db.users.find_one({"_id": str(user_id)})
+            
+        target_id = user["_id"] if user else user_id # Use the ID that actually exists
+        
         favorites = user.get("favorites", []) if user else []
         if file_id in favorites:
-            await db.users.update_one({"_id": user_id}, {"$pull": {"favorites": file_id}})
+            await db.users.update_one({"_id": target_id}, {"$pull": {"favorites": file_id}})
             return False
         else:
-            await db.users.update_one({"_id": user_id}, {"$addToSet": {"favorites": file_id}})
+            await db.users.update_one({"_id": target_id}, {"$addToSet": {"favorites": file_id}})
             return True
     except: return False
 
@@ -252,7 +257,6 @@ async def process_telegram_update(data):
             chat_id = cb["message"]["chat"]["id"]
             message_id = cb["message"]["message_id"]
             
-            # 🔥 NEW: Verify Subscription Button
             if data_str == "check_subscription":
                 if await check_membership(user_id):
                     await answer_callback_query(cb_id, "✅ ተቀላቅለዋል! እንኳን ደህና መጡ።")
@@ -281,10 +285,8 @@ async def process_telegram_update(data):
                     await answer_callback_query(cb_id, "❌ አሁንም አልተቀላቀሉም! መጀመሪያ Join ይበሉ።", show_alert=True)
                 return
 
-            # 🔥 NEW: Report Broken File
             if data_str.startswith("report_"):
                 doc_id = data_str.split("report_")[1]
-                # Notify Admin
                 try:
                     file_doc = await db.files.find_one({"_id": ObjectId(doc_id)})
                     file_name = file_doc.get("display_name", "Unknown") if file_doc else "Unknown"
@@ -300,7 +302,6 @@ async def process_telegram_update(data):
                     await answer_callback_query(cb_id, "Error reporting.")
                 return
 
-            # Broadcast Confirmation Logic
             if data_str == "broadcast_confirm":
                 if str(user_id) != str(ADMIN_ID): return
                 admin_data = await get_user_data(db, user_id)
@@ -332,7 +333,6 @@ async def process_telegram_update(data):
                 await answer_callback_query(cb_id)
                 return
 
-            # Pagination
             if data_str.startswith("pg_"):
                 if data_str == "pg_close":
                     await edit_message_text(chat_id, message_id, "❌ ዝርዝሩ ተዘግቷል። /list በማለት እንደገና መክፈት ይችላሉ።")
@@ -342,7 +342,6 @@ async def process_telegram_update(data):
                     await edit_message_text(chat_id, message_id, text, reply_markup=kb)
                 await answer_callback_query(cb_id)
                 
-            # Favorites
             elif data_str.startswith("fav_"):
                 doc_id = data_str.split("fav_")[1]
                 try:
@@ -353,7 +352,6 @@ async def process_telegram_update(data):
                         text = "❤️ Saved" if is_fav else "💔 Removed"
                         new_text = "💔 Remove" if is_fav else "❤️ Add to Favorite"
                         
-                        # Share & Report Buttons
                         kb = {
                             "inline_keyboard": [
                                 [{"text": new_text, "callback_data": f"fav_{doc_id}"}],
@@ -382,7 +380,6 @@ async def process_telegram_update(data):
             
             await track_user(db, user_id, first_name)
 
-            # --- ADMIN LOGIC ---
             if str(user_id) == str(ADMIN_ID):
                 admin_data = await get_user_data(db, user_id)
                 state = admin_data.get("state")
@@ -412,7 +409,6 @@ async def process_telegram_update(data):
                     await send_message(chat_id, "👆 **ይሄ መልዕክት (ከነ አዝራሮቹ) ለሁሉም ተጠቃሚዎች ይላክ?**\n\nConfirm to broadcast.", reply_markup=kb)
                     return
 
-                # Admin Only Upload
                 if "audio" in message or "voice" in message:
                     file_obj = message.get("audio") or message.get("voice")
                     file_id = file_obj.get("file_id")
@@ -440,7 +436,6 @@ async def process_telegram_update(data):
                 await send_message(chat_id, msg, reply_markup=kb)
                 return
 
-            # --- ADMIN DASHBOARD ---
             if str(user_id) == str(ADMIN_ID):
                 if text == "/start" or text == "/admin" or text == "🔙 Back":
                     msg = "👋 **ሰላም አለቃ! (Admin Panel)**\n\nከታች ባሉት አዝራሮች ቦቱን ይቆጣጠሩ።"
@@ -481,7 +476,6 @@ async def process_telegram_update(data):
                     await send_message(chat_id, f"📂 የተጫኑ መንዙማዎች: `{files}`")
                     return
 
-            # --- USER COMMANDS ---
             if text == "/start":
                 welcome = (
                     "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*\n\n"
@@ -509,7 +503,6 @@ async def process_telegram_update(data):
                 msg_text, kb = await get_catalog_page(db, 1) 
                 await send_message(chat_id, msg_text, reply_markup=kb)
 
-            # Reply Broadcast Handler (Fallback)
             elif text and text.startswith("/broadcast") and str(user_id) == str(ADMIN_ID):
                 if "reply_to_message" in message:
                     reply_msg_id = message["reply_to_message"]["message_id"]
@@ -527,7 +520,6 @@ async def process_telegram_update(data):
                 else:
                     await send_message(chat_id, "⚠️ ለማስታወቂያ፣ መላክ ለሚፈልጉት መልዕክት Reply በማድረግ `/broadcast` ይበሉ።")
 
-            # Search Logic
             elif text and not text.startswith("/"):
                 search_query = build_search_query(text)
                 doc = await db.files.find_one(search_query)
@@ -535,7 +527,6 @@ async def process_telegram_update(data):
                     if 'file_id' in doc:
                         short_id = str(doc['_id'])
                         
-                        # 🔥 NEW: Report Button Added
                         kb = {
                             "inline_keyboard": [
                                 [{"text": "❤️ Add to Favorite", "callback_data": f"fav_{short_id}"}],
@@ -567,29 +558,21 @@ async def process_telegram_update(data):
                 await answer_inline_query(query_id, [], "⚠️ Join Channel First", "start")
                 return
             
-            # --- CACHING LAYER (CACHE CHECK) ---
-            # Check if we have this result in memory to avoid DB hit
-            # This makes "Trending" and "New" instant for subsequent users
+            # --- CACHING LAYER ---
+            # Don't cache favorites to avoid personalized data leak
             cache_key = f"{query}"
             current_time = time.time()
+            is_favorites_query = query.startswith("#favorites")
             
-            if cache_key in CACHED_RESULTS:
+            if not is_favorites_query and cache_key in CACHED_RESULTS:
                 cached_data, timestamp = CACHED_RESULTS[cache_key]
-                # If cache is fresh (less than 5 mins old), use it!
                 if current_time - timestamp < CACHE_TTL:
-                    # Return cached result instantly
                     await answer_inline_query(query_id, cached_data, cache_time=300)
                     return
                 else:
-                    # Cache expired, clean it up
                     del CACHED_RESULTS[cache_key]
 
             results = []
-            
-            # --- TEKEKLGNA MEFTEHE (REAL SOLUTION) ---
-            # 1. DB Sort (Fastest) 
-            # 2. Strict Limit (20) to prevent Timeout
-            # 3. Explicit Filter (No bad data)
             
             if query.startswith("#random"):
                 pipeline = [
@@ -601,7 +584,6 @@ async def process_telegram_update(data):
                 docs = await cursor.to_list(length=20)
                 
             elif query.startswith("#trending"):
-                # Use DB Sort for Views (Fast if indexed or small limit)
                 cursor = db.files.find(
                     {"views": {"$gt": 0}, "file_id": {"$exists": True}}, 
                     {"file_id": 1, "display_name": 1, "views": 1, "_id": 1}
@@ -614,7 +596,6 @@ async def process_telegram_update(data):
                 if filter_text: 
                     search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
                 
-                # DB Sort by _id (Newest First) + Strict Limit
                 cursor = db.files.find(
                     search_filter, 
                     {"file_id": 1, "display_name": 1, "_id": 1}
@@ -622,7 +603,12 @@ async def process_telegram_update(data):
                 docs = await cursor.to_list(length=20)
 
             elif query.startswith("#favorites"):
+                # FIX FOR USER ID: Try Integer First, then String
                 user = await db.users.find_one({"_id": user_id})
+                if not user:
+                    # Fallback for old string-based IDs
+                    user = await db.users.find_one({"_id": str(user_id)})
+                    
                 fav_ids = user.get("favorites", []) if user else []
                 if fav_ids:
                     filter_text = query.replace("#favorites", "").strip()
@@ -632,16 +618,21 @@ async def process_telegram_update(data):
                     docs = await cursor.to_list(length=20)
                 else:
                     docs = []
+                    # SHOW EMPTY STATE (So user knows it worked but is empty)
+                    results.append({
+                        "type": "article",
+                        "id": "empty_favs",
+                        "title": "No Favorites Yet",
+                        "description": "የመረጡት መንዙማ የለም።",
+                        "input_message_content": {"message_text": "አል-ማዲህ ቦት:\nየመረጡት መንዙማ የለም። `Add to Favorite` የሚለውን በመጫን ያስቀምጡ።"}
+                    })
             else:
-                # --- EMPTY / NORMAL SEARCH ---
                 if not query:
                     search_criteria = {"file_id": {"$exists": True}}
                 else:
                     search_criteria = build_search_query(query)
                     search_criteria["file_id"] = {"$exists": True}
                 
-                # DB Sort by _id (Newest First) + Strict Limit
-                # This guarantees we get the NEWEST 20 items, not the oldest junk.
                 cursor = db.files.find(
                     search_criteria, 
                     {"file_id": 1, "display_name": 1, "_id": 1}
@@ -649,7 +640,6 @@ async def process_telegram_update(data):
 
                 docs = await cursor.to_list(length=20)
 
-            # --- RESULT CONSTRUCTION ---
             for doc in docs:
                 if doc.get('file_id'):
                     results.append({
@@ -659,10 +649,8 @@ async def process_telegram_update(data):
                         "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
                     })
 
-            # --- SAVE TO CACHE (Store result in memory) ---
-            # Don't cache favorites or search queries (too dynamic)
-            # Only cache global lists like #trending, #new, #random, or empty query
-            if query.startswith("#trending") or query.startswith("#new") or query.startswith("#random") or not query:
+            # CACHE RESULT (Excluding favorites)
+            if not is_favorites_query and results:
                 CACHED_RESULTS[cache_key] = (results, time.time())
 
             await answer_inline_query(query_id, results, cache_time=300)
@@ -681,7 +669,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Cached Version) 🚀'
+    return 'Al-Madih Bot Running (User ID Type Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
