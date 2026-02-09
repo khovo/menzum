@@ -8,6 +8,7 @@ import traceback
 import aiohttp 
 import re
 import random
+import time
 from datetime import datetime, timedelta
 
 # Logging
@@ -25,6 +26,12 @@ FORCE_CHANNEL_USERNAME = "Al_madih"
 FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
 ITEMS_PER_PAGE = 10 
+
+# --- IN-MEMORY CACHE (The Secret Weapon) ---
+# ይህ ቦቱ የፈለገውን ነገር ለተወሰነ ጊዜ እንዲያስታውስ ያደርጋል።
+# Vercel ላይ እንኳን ቢሆን፣ አክቲቭ ሲሆን ፍጥነቱን እጥፍ ያደርገዋል።
+CACHED_RESULTS = {}
+CACHE_TTL = 300  # 5 Minutes (300 seconds)
 
 # --- Helpers ---
 def run_async(coro):
@@ -111,9 +118,10 @@ async def check_membership(user_id):
                 return res["result"]["status"] in ["creator", "administrator", "member"]
         except: return True
 
-async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=0):
+async def answer_inline_query(query_id, results, switch_pm_text=None, switch_pm_param=None, cache_time=300):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerInlineQuery"
+    # cache_time=300 means Telegram itself will cache the result for 5 minutes on the user's device!
     payload = {"inline_query_id": query_id, "results": results, "cache_time": cache_time, "is_personal": True}
     if switch_pm_text:
         payload["switch_pm_text"] = switch_pm_text
@@ -558,6 +566,23 @@ async def process_telegram_update(data):
             if not await check_membership(user_id):
                 await answer_inline_query(query_id, [], "⚠️ Join Channel First", "start")
                 return
+            
+            # --- CACHING LAYER (CACHE CHECK) ---
+            # Check if we have this result in memory to avoid DB hit
+            # This makes "Trending" and "New" instant for subsequent users
+            cache_key = f"{query}"
+            current_time = time.time()
+            
+            if cache_key in CACHED_RESULTS:
+                cached_data, timestamp = CACHED_RESULTS[cache_key]
+                # If cache is fresh (less than 5 mins old), use it!
+                if current_time - timestamp < CACHE_TTL:
+                    # Return cached result instantly
+                    await answer_inline_query(query_id, cached_data, cache_time=300)
+                    return
+                else:
+                    # Cache expired, clean it up
+                    del CACHED_RESULTS[cache_key]
 
             results = []
             
@@ -634,7 +659,13 @@ async def process_telegram_update(data):
                         "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
                     })
 
-            await answer_inline_query(query_id, results, cache_time=0)
+            # --- SAVE TO CACHE (Store result in memory) ---
+            # Don't cache favorites or search queries (too dynamic)
+            # Only cache global lists like #trending, #new, #random, or empty query
+            if query.startswith("#trending") or query.startswith("#new") or query.startswith("#random") or not query:
+                CACHED_RESULTS[cache_key] = (results, time.time())
+
+            await answer_inline_query(query_id, results, cache_time=300)
 
     except Exception as e:
         logger.error(f"Logic Error: {e}")
@@ -650,7 +681,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Tekeklgna Meftehe Applied) 🚀'
+    return 'Al-Madih Bot Running (Cached Version) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
