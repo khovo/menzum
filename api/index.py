@@ -559,8 +559,10 @@ async def process_telegram_update(data):
                 await answer_inline_query(query_id, [], "⚠️ Join Channel First", "start")
                 return
 
-            cursor = None
             results = []
+            
+            # --- PYTHON-SIDE SORTING STRATEGY (FASTEST) ---
+            # DBን ከማጨናነቅ፣ ሁሉንም ዳታ አምጥተን Python ላይ እናጣራለን።
             
             if query.startswith("#random"):
                 pipeline = [
@@ -569,25 +571,35 @@ async def process_telegram_update(data):
                     {"$project": {"file_id": 1, "display_name": 1, "_id": 1}}
                 ]
                 cursor = db.files.aggregate(pipeline)
+                docs = await cursor.to_list(length=20)
+                
             elif query.startswith("#trending"):
-                # --- FIX: Removed Aggregation, use simple FIND for speed ---
-                # እይታ ያላቸውን ብቻ አምጣና በብዛት ደርድር (Simple & Fast)
+                # 1. DB: Give me anything with views (FAST SCAN)
                 cursor = db.files.find(
                     {"views": {"$gt": 0}}, 
-                    {"file_id": 1, "display_name": 1, "_id": 1}
-                ).sort("views", -1).limit(20)
+                    {"file_id": 1, "display_name": 1, "views": 1, "_id": 1}
+                ).limit(200) # Fetch up to 200 items to sort in memory
+                
+                docs = await cursor.to_list(length=200)
+                # 2. PYTHON: Sort by views manually (INSTANT)
+                docs.sort(key=lambda x: x.get('views', 0), reverse=True)
+                docs = docs[:20] # Keep top 20
 
             elif query.startswith("#new"):
                 filter_text = query.replace("#new", "").strip()
-                search_filter = {} # --- FIX: Removed file_id exists check for speed ---
+                search_filter = {}
                 if filter_text: 
                     search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
                 
+                # 1. DB: Simple fetch with _id sort (Usually fast if indexed)
+                # If this fails, we can remove sort and do Python sort
                 cursor = db.files.find(
                     search_filter, 
                     {"file_id": 1, "display_name": 1, "_id": 1}
-                ).sort("_id", -1).limit(50) # Fetch 50, we filter in loop
+                ).sort("_id", -1).limit(50) 
                 
+                docs = await cursor.to_list(length=50)
+
             elif query.startswith("#favorites"):
                 user = await db.users.find_one({"_id": user_id})
                 fav_ids = user.get("favorites", []) if user else []
@@ -595,35 +607,40 @@ async def process_telegram_update(data):
                     filter_text = query.replace("#favorites", "").strip()
                     search_filter = {"file_id": {"$in": fav_ids}}
                     if filter_text: search_filter["display_name"] = {"$regex": re.escape(filter_text), "$options": "i"}
-                    # OPTIMIZATION: Projection + Limit 20
                     cursor = db.files.find(search_filter, {"file_id": 1, "display_name": 1, "_id": 1}).limit(20)
+                    docs = await cursor.to_list(length=20)
+                else:
+                    docs = []
             else:
-                # --- FIX: Empty Query Speedup ---
+                # --- EMPTY / NORMAL SEARCH ---
                 if not query:
-                    search_criteria = {} # --- FIX: Removed file_id exists check ---
+                    search_criteria = {}
                 else:
                     search_criteria = build_search_query(query)
                 
-                # ዝም ብሎ ሁሉንም አምጣ (በጣም ፈጣን)
+                # 1. DB: Fetch raw data (No Sort = Super Fast)
+                # We fetch 100 items to ensure we have enough "New" ones
                 cursor = db.files.find(
                     search_criteria, 
                     {"file_id": 1, "display_name": 1, "_id": 1}
-                ).sort("_id", -1).limit(50)
+                ).limit(100) 
 
-            if cursor:
-                docs = await cursor.to_list(length=50)
-                count = 0
-                for doc in docs:
-                    # Python ላይ ማጣራት (Valid File ID መኖሩን)
-                    if doc.get('file_id'):
-                        results.append({
-                            "type": "audio",
-                            "id": str(doc["_id"]),
-                            "audio_file_id": doc["file_id"],
-                            "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
-                        })
-                        count += 1
-                        if count >= 20: break # 20 ውጤት ከሞላ አቁም
+                docs = await cursor.to_list(length=100)
+                
+                # 2. PYTHON: Sort by _id (Newest First)
+                # _id contains timestamp, so sorting by it is sorting by time
+                docs.sort(key=lambda x: x['_id'], reverse=True)
+                docs = docs[:50]
+
+            # --- RESULT CONSTRUCTION ---
+            for doc in docs:
+                if doc.get('file_id'):
+                    results.append({
+                        "type": "audio",
+                        "id": str(doc["_id"]),
+                        "audio_file_id": doc["file_id"],
+                        "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
+                    })
 
             await answer_inline_query(query_id, results, cache_time=0)
 
@@ -641,7 +658,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Empty Query Fix) 🚀'
+    return 'Al-Madih Bot Running (Direct Lookup Simulation) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
