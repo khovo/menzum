@@ -1,5 +1,4 @@
 flask
-motor
-dnspython
 pymongo
-aiohttp
+dnspython
+requests
