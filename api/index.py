@@ -25,24 +25,6 @@ FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
 ITEMS_PER_PAGE = 10 
 
-# ==========================================
-# 🔥 HARDCODED BEST 50 MENZUMAS (በጣም ፈጣን)
-# ==========================================
-# እዚህ ጋር የምትፈልጋቸውን መንዙማዎች file_id እና ስም አስገባ።
-# ቦቱ ዝም ብሎ ሲጠራ እነዚህን ነው የሚያመጣው።
-
-BEST_MENZUMAS = [
-    {
-        "file_id": "CQACAgQAAxkBAAJ4G2mLk56zMK_nt6lPzuPY6xglNPm5AAIdGwACDYywU7f-6zo6HrwYOgQ",  # <-- የፋይሉን ID እዚህ ጋር (Example)
-        "name": " (ትልቁ ሰው)አዲስ የህብረት ነሺዳ NEW NESHID TILKU SEW/ MUAZ HABIB MUHAMMED… (Example 1)" # <-- የሚታየው ስም
-    },
-    {
-        "file_id": "CQACAgQAAxkBAAJ4GGmLkyK4wtGWeeiSHf_OQ5tYORzsAAKuIQACIi-RU07ORdJOMuerOgQ", 
-        "name": "ሸይኽ አማን ኬራጎ ሙሃመድ ሰላም ዐለይኩም"
-    },
-    # ... ሌሎችንም እዚህ ጋር ቀጥል (እስከ 50 መሙላት ትችላለህ)
-]
-
 # --- Helpers ---
 def run_async(coro):
     loop = asyncio.new_event_loop()
@@ -137,6 +119,18 @@ async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
             async with session.post(url, json=payload) as resp: return await resp.json()
         except: pass
 
+async def send_document(chat_id, file_path, caption=None):
+    if not BOT_TOKEN: return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    data = aiohttp.FormData()
+    data.add_field('chat_id', str(chat_id))
+    if caption: data.add_field('caption', caption)
+    data.add_field('document', open(file_path, 'rb'))
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, data=data) as resp: return await resp.json()
+        except: pass
+
 # --- DB Helpers ---
 async def track_user(db, user_id, first_name):
     try:
@@ -207,6 +201,17 @@ async def get_catalog_page(db, page):
     buttons.append(nav_row)
     return msg_text, {"inline_keyboard": buttons}
 
+async def get_daily_stats(db):
+    try:
+        now = datetime.now()
+        last_24h = now - timedelta(hours=24)
+        new_users = await db.users.count_documents({"joined_at": {"$gte": last_24h}})
+        active_users = await db.users.count_documents({"last_active": {"$gte": last_24h}})
+        total_users = await db.users.count_documents({})
+        total_files = await db.files.count_documents({})
+        return f"📅 **Daily Statistics (24h)**\n\n🆕 New Users: `{new_users}`\n⚡ Active Users: `{active_users}`\n\n👥 Total Users: `{total_users}`\n📂 Total Files: `{total_files}`"
+    except: return "Error"
+
 # --- Main Logic ---
 async def process_telegram_update(data):
     if not MONGO_URL or not BOT_TOKEN: return
@@ -230,10 +235,6 @@ async def process_telegram_update(data):
                     kb = {
                         "inline_keyboard": [
                             [
-                                {"text": "🔥 Trending", "switch_inline_query_current_chat": "#trending"},
-                                {"text": "🆕 New", "switch_inline_query_current_chat": "#new"}
-                            ],
-                            [
                                 {"text": "❤️ Favorites", "switch_inline_query_current_chat": "#favorites"},
                                 {"text": "📂 Catalog (List)", "callback_data": "pg_1"}
                             ],
@@ -247,7 +248,6 @@ async def process_telegram_update(data):
 
             if data_str.startswith("fav_"):
                 doc_id = data_str.split("fav_")[1]
-                # Try simple update first
                 try:
                     # If it's an object ID from DB search
                     if len(doc_id) == 24:
@@ -260,14 +260,11 @@ async def process_telegram_update(data):
                         else:
                             await answer_callback_query(cb_id, "⚠️ File not found")
                     else:
-                        # If it's a direct file_id from Hardcoded list
-                        is_fav = await toggle_favorite(db, user_id, doc_id)
-                        text = "❤️ Saved" if is_fav else "💔 Removed"
-                        await answer_callback_query(cb_id, text)
+                        await answer_callback_query(cb_id, "⚠️ Invalid ID")
                 except:
                     await answer_callback_query(cb_id, "Error")
             
-            # Handle Pagination & Other callbacks (Same as before)
+            # Handle Pagination
             if data_str.startswith("pg_"):
                  if data_str == "pg_close":
                     await edit_message_text(chat_id, message_id, "❌ ዝርዝሩ ተዘግቷል። /list በማለት እንደገና መክፈት ይችላሉ።")
@@ -277,9 +274,44 @@ async def process_telegram_update(data):
                     await edit_message_text(chat_id, message_id, text, reply_markup=kb)
                  await answer_callback_query(cb_id)
 
+            # Report Logic
+            if data_str.startswith("report_"):
+                doc_id = data_str.split("report_")[1]
+                try:
+                    file_doc = await db.files.find_one({"_id": ObjectId(doc_id)})
+                    file_name = file_doc.get("display_name", "Unknown") if file_doc else "Unknown"
+                    report_msg = f"🚨 **Broken File Report!** 🚨\n\n👤 Reported By: `{user_id}`\n📂 File: `{file_name}`\n🆔 Doc ID: `{doc_id}`"
+                    await send_message(ADMIN_ID, report_msg)
+                    await answer_callback_query(cb_id, "✅ ሪፖርት ተልኳል!", show_alert=True)
+                except:
+                    await answer_callback_query(cb_id, "Error")
+
+            # Broadcast Logic
+            if data_str == "broadcast_confirm" and str(user_id) == str(ADMIN_ID):
+                admin_data = await get_user_data(db, user_id)
+                msg_id_to_copy = admin_data.get("broadcast_msg_id")
+                markup_to_copy = admin_data.get("broadcast_markup")
+                if msg_id_to_copy:
+                    await edit_message_text(chat_id, message_id, "🚀 Broadcasting started...")
+                    users_cursor = db.users.find({})
+                    count = 0
+                    async for user in users_cursor:
+                        try:
+                            await copy_message(user["_id"], chat_id, msg_id_to_copy, reply_markup=markup_to_copy)
+                            count += 1
+                            await asyncio.sleep(0.05) 
+                        except: pass
+                    await send_message(chat_id, f"✅ Broadcast sent to {count} users.")
+                    await set_user_state(db, user_id, "idle")
+                await answer_callback_query(cb_id)
+            elif data_str == "broadcast_cancel" and str(user_id) == str(ADMIN_ID):
+                await edit_message_text(chat_id, message_id, "❌ Broadcast cancelled.")
+                await set_user_state(db, user_id, "idle")
+                await answer_callback_query(cb_id)
+
             return
 
-        # 2. Message Handling (Same as before - Simplified for brevity)
+        # 2. Message Handling
         if "message" in data:
             message = data["message"]
             chat_id = message.get("chat", {}).get("id")
@@ -289,18 +321,106 @@ async def process_telegram_update(data):
             
             await track_user(db, user_id, first_name)
 
-            # ... (Existing Admin & User commands logic remains here) ...
+            # Admin Logic
+            if str(user_id) == str(ADMIN_ID):
+                admin_data = await get_user_data(db, user_id)
+                state = admin_data.get("state")
+                
+                if state == "broadcast_wait":
+                    if text == "🔙 Back":
+                        await set_user_state(db, user_id, "idle")
+                        await send_message(chat_id, "🔙 Back to Menu.")
+                        return
+                    
+                    broadcast_msg_id = message["message_id"]
+                    original_markup = message.get("reply_markup")
+                    await set_user_state(db, user_id, "broadcast_confirm", {"broadcast_msg_id": broadcast_msg_id, "broadcast_markup": original_markup})
+                    await copy_message(chat_id, chat_id, broadcast_msg_id, reply_markup=original_markup)
+                    kb = {"inline_keyboard": [[{"text": "✅ Post", "callback_data": "broadcast_confirm"}], [{"text": "❌ Cancel", "callback_data": "broadcast_cancel"}]]}
+                    await send_message(chat_id, "Confirm broadcast?", reply_markup=kb)
+                    return
+
+                if "audio" in message or "voice" in message:
+                    file_obj = message.get("audio") or message.get("voice")
+                    file_id = file_obj.get("file_id")
+                    caption = message.get("caption") or ""
+                    clean_name = caption.split('\n')[0].strip() if caption else (file_obj.get("file_name", "Unknown Audio"))
+                    clean_search = clean_name.replace("@Almadihbot", "").strip()
+                    if len(clean_search) > 3:
+                        await db.files.update_one(
+                            {"display_name": {"$regex": re.escape(clean_search), "$options": "i"}},
+                            {"$set": {"file_id": file_id, "display_name": clean_name}},
+                            upsert=True
+                        )
+                        await send_message(chat_id, f"✅ **Admin Upload:** `{clean_name}` saved!")
+                    return
+                
+                if text == "/admin":
+                    admin_kb = {"keyboard": [[{"text": "📊 Statistics"}, {"text": "📅 Daily Stats"}], [{"text": "📢 Broadcast"}, {"text": "👥 User Count"}], [{"text": "📂 Total Files"}]], "resize_keyboard": True}
+                    await send_message(chat_id, "👋 Admin Panel", reply_markup=admin_kb)
+                    return
+                elif text == "📊 Statistics":
+                    users = await db.users.count_documents({})
+                    files = await db.files.count_documents({})
+                    await send_message(chat_id, f"Users: `{users}`\nFiles: `{files}`")
+                    return
+                elif text == "📢 Broadcast":
+                    await set_user_state(db, user_id, "broadcast_wait")
+                    await send_message(chat_id, "Send message to broadcast or '🔙 Back'.")
+                    return
+                elif text == "📅 Daily Stats":
+                    msg = await get_daily_stats(db)
+                    await send_message(chat_id, msg)
+                    return
+
+            if not await check_membership(user_id):
+                msg = "**⚠️ ይቅርታ! ቦቱን ለመጠቀም መጀመሪያ ቻናላችንን ይቀላቀሉ።**"
+                kb = {
+                    "inline_keyboard": [
+                        [{"text": "Join Channel 📢", "url": FORCE_CHANNEL_URL}],
+                        [{"text": "✅ ተቀላቅያለሁ (Verify)", "callback_data": "check_subscription"}]
+                    ]
+                }
+                await send_message(chat_id, msg, reply_markup=kb)
+                return
+
             if text == "/start":
                 welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
                 kb = {
                     "inline_keyboard": [
-                        [{"text": "🔥 Trending", "switch_inline_query_current_chat": ""}], # Empty query = Hardcoded List
-                        [{"text": "❤️ Favorites", "switch_inline_query_current_chat": "#favorites"}]
+                        [
+                            {"text": "❤️ Favorites", "switch_inline_query_current_chat": "#favorites"},
+                            {"text": "📂 Catalog (List)", "callback_data": "pg_1"}
+                        ],
+                        [{"text": "🔍 Search Name", "switch_inline_query_current_chat": ""}]
                     ]
                 }
                 await send_message(chat_id, welcome, reply_markup=kb)
 
-        # 3. Inline Query (THE MAIN FIX)
+            elif text == "/list" or text == "📂 Catalog (List)":
+                msg_text, kb = await get_catalog_page(db, 1) 
+                await send_message(chat_id, msg_text, reply_markup=kb)
+
+            elif text and not text.startswith("/"):
+                search_query = build_search_query(text)
+                doc = await db.files.find_one(search_query)
+                if doc:
+                    if 'file_id' in doc:
+                        short_id = str(doc['_id'])
+                        kb = {
+                            "inline_keyboard": [
+                                [{"text": "❤️ Fav", "callback_data": f"fav_{short_id}"}],
+                                [{"text": "↗️ Share", "switch_inline_query": ""}, {"text": "⚠️ Report", "callback_data": f"report_{short_id}"}]
+                            ]
+                        }
+                        await send_audio(chat_id, doc['file_id'], f"{doc.get('display_name')}\n\n@Almadihbot", kb)
+                        await increment_view(db, doc['file_id'])
+                    else:
+                        await send_message(chat_id, "⚠️ Audio missing.")
+                else:
+                    await send_message(chat_id, "😔 አልተገኘም።")
+
+        # 3. Inline Query (Simplified Logic)
         elif "inline_query" in data:
             iq = data["inline_query"]
             query_id = iq["id"]
@@ -317,39 +437,16 @@ async def process_telegram_update(data):
             results = []
 
             # ==========================================
-            # 🚀 MODE 1: HARDCODED LIST (Ultra Fast)
+            # 🔍 FAVORITES SEARCH
             # ==========================================
-            # ባዶ ሲሆን ወይም #trending ወይም #new ሲባል - ኮዱ ላይ ያለውን ዝርዝር አምጣ
-            if not query or query == "#trending" or query == "#new":
-                for index, item in enumerate(BEST_MENZUMAS):
-                    results.append({
-                        "type": "audio",
-                        "id": f"static_{index}", # Unique ID for static items
-                        "audio_file_id": item["file_id"],
-                        "caption": f"{item['name']}\n\n@Almadihbot",
-                        "reply_markup": {
-                            "inline_keyboard": [[
-                                {"text": "❤️ Fav", "callback_data": f"fav_{item['file_id']}"}
-                            ]]
-                        }
-                    })
-                
-                # Cache this result on Telegram side for 10 minutes (600s)
-                await answer_inline_query(query_id, results, cache_time=600)
-                return
-
-            # ==========================================
-            # 🔍 MODE 2: FAVORITES (Database Search)
-            # ==========================================
-            elif query.startswith("#favorites"):
+            if query.startswith("#favorites"):
                 user = await db.users.find_one({"_id": user_id})
                 if not user: user = await db.users.find_one({"_id": str(user_id)})
                 
                 fav_ids = user.get("favorites", []) if user else []
                 
                 if fav_ids:
-                    # Search DB for file details if we stored ID, OR just construct if we have info
-                    # Assuming we need to fetch details from DB based on File ID
+                    # Fetch valid favorite files
                     cursor = db.files.find({"file_id": {"$in": fav_ids}}).limit(50)
                     docs = await cursor.to_list(length=50)
                     
@@ -373,16 +470,22 @@ async def process_telegram_update(data):
                     })
 
             # ==========================================
-            # 🔎 MODE 3: SPECIFIC SEARCH (Database Search)
+            # 🔎 GENERAL SEARCH (Empty or Text)
             # ==========================================
             else:
-                search_criteria = build_search_query(query)
-                search_criteria["file_id"] = {"$exists": True}
+                if not query:
+                    # Empty Query: Show most recent 20 files
+                    search_criteria = {"file_id": {"$exists": True}}
+                else:
+                    # Text Search
+                    search_criteria = build_search_query(query)
+                    search_criteria["file_id"] = {"$exists": True}
                 
+                # Use _id sort for speed and Limit 20 to prevent Timeout
                 cursor = db.files.find(
                     search_criteria, 
                     {"file_id": 1, "display_name": 1, "_id": 1}
-                ).limit(20) 
+                ).sort("_id", -1).limit(20) 
 
                 docs = await cursor.to_list(length=20)
                 for doc in docs:
@@ -396,7 +499,7 @@ async def process_telegram_update(data):
                         }
                     })
 
-            await answer_inline_query(query_id, results, cache_time=300)
+            await answer_inline_query(query_id, results, cache_time=10) # Short cache for search
 
     except Exception as e:
         logger.error(f"Logic Error: {e}")
@@ -412,7 +515,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Hardcoded Mode) 🚀'
+    return 'Al-Madih Bot Running (Simple Search Mode) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
