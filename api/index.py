@@ -33,12 +33,12 @@ ITEMS_PER_PAGE = 10
 
 BEST_MENZUMAS = [
     {
-        "file_id": "CQACAgQAAxkBAAID1GZK...",  # <-- የፋይሉን ID እዚህ ጋር (Example)
-        "name": "Muaz Habib - Yemoded (Example 1)" # <-- የሚታየው ስም
+        "file_id": "CQACAgQAAxkBAAJ4G2mLk56zMK_nt6lPzuPY6xglNPm5AAIdGwACDYywU7f-6zo6HrwYOgQ",  # <-- የፋይሉን ID እዚህ ጋር (Example)
+        "name": " (ትልቁ ሰው)አዲስ የህብረት ነሺዳ NEW NESHID TILKU SEW/ MUAZ HABIB MUHAMMED… (Example 1)" # <-- የሚታየው ስም
     },
     {
-        "file_id": "CQACAgQAAxkBAAID2ZK...", 
-        "name": "Engurguro - Menzuma (Example 2)"
+        "file_id": "CQACAgQAAxkBAAJ4GGmLkyK4wtGWeeiSHf_OQ5tYORzsAAKuIQACIi-RU07ORdJOMuerOgQ", 
+        "name": "ሸይኽ አማን ኬራጎ ሙሃመድ ሰላም ዐለይኩም"
     },
     # ... ሌሎችንም እዚህ ጋር ቀጥል (እስከ 50 መሙላት ትችላለህ)
 ]
