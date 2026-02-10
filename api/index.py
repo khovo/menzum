@@ -135,7 +135,6 @@ async def send_document(chat_id, file_path, caption=None):
 async def track_user(db, user_id, first_name):
     try:
         now = datetime.now()
-        # Force Integer ID for consistency
         await db.users.update_one(
             {"_id": int(user_id)},
             {
@@ -153,12 +152,10 @@ async def increment_view(db, file_id):
 
 async def toggle_favorite(db, user_id, file_id):
     try:
-        # Try finding user by Int first, then String (Safety Net)
         user = await db.users.find_one({"_id": user_id})
         if not user:
             user = await db.users.find_one({"_id": str(user_id)})
         
-        # If user found, use that ID, otherwise fallback to input
         target_id = user["_id"] if user else int(user_id)
         
         favorites = user.get("favorites", []) if user else []
@@ -171,7 +168,6 @@ async def toggle_favorite(db, user_id, file_id):
     except: return False
 
 async def get_user_data(db, user_id):
-    # Robust fetch: Try Int first (Standard), then Str (Legacy)
     try:
         data = await db.users.find_one({"_id": int(user_id)})
         if data: return data
@@ -180,7 +176,6 @@ async def get_user_data(db, user_id):
     return await db.users.find_one({"_id": str(user_id)})
 
 async def set_user_state(db, user_id, state, meta=None):
-    # Force Integer ID for admin states to ensure persistence matches track_user
     update = {"$set": {"state": state}}
     if meta:
         update["$set"].update(meta)
@@ -188,12 +183,13 @@ async def set_user_state(db, user_id, state, meta=None):
 
 def build_search_query(query_text):
     if not query_text: return {}
-    query_text = query_text.strip()
-    words = query_text.split()
-    regex_pattern = ""
-    for word in words:
-        regex_pattern += f"(?=.*{re.escape(word)})"
-    return {"display_name": {"$regex": f"^{regex_pattern}", "$options": "i"}}
+    # Use simpler AND logic for performance
+    words = query_text.strip().split()
+    conditions = [{"display_name": {"$regex": re.escape(word), "$options": "i"}} for word in words]
+    if not conditions: return {}
+    if len(conditions) == 1:
+        return conditions[0]
+    return {"$and": conditions}
 
 async def get_catalog_page(db, page):
     limit = ITEMS_PER_PAGE
@@ -297,10 +293,8 @@ async def process_telegram_update(data):
                 except:
                     await answer_callback_query(cb_id, "Error")
 
-            # Broadcast Logic
             if data_str == "broadcast_confirm" and str(user_id) == str(ADMIN_ID):
                 admin_data = await get_user_data(db, user_id)
-                # SAFE NAVIGATION: Check if admin_data exists
                 msg_id_to_copy = (admin_data or {}).get("broadcast_msg_id")
                 markup_to_copy = (admin_data or {}).get("broadcast_markup")
                 
@@ -310,15 +304,12 @@ async def process_telegram_update(data):
                     count = 0
                     async for user in users_cursor:
                         try:
-                            # Use CopyMessage (More robust)
                             await copy_message(user["_id"], chat_id, msg_id_to_copy, reply_markup=markup_to_copy)
                             count += 1
                             await asyncio.sleep(0.05) 
                         except: pass
                     await send_message(chat_id, f"✅ Broadcast sent to {count} users.")
                     await set_user_state(db, user_id, "idle")
-                else:
-                    await answer_callback_query(cb_id, "⚠️ Session expired. Try again.")
                 await answer_callback_query(cb_id)
             elif data_str == "broadcast_cancel" and str(user_id) == str(ADMIN_ID):
                 await edit_message_text(chat_id, message_id, "❌ Broadcast cancelled.")
@@ -418,7 +409,9 @@ async def process_telegram_update(data):
                 await send_message(chat_id, msg_text, reply_markup=kb)
 
             elif text and not text.startswith("/"):
+                # DIRECT SEARCH: Using simple Find (No sort logic to avoid delay)
                 search_query = build_search_query(text)
+                # Remove sort for speed
                 doc = await db.files.find_one(search_query)
                 if doc:
                     if 'file_id' in doc:
@@ -452,29 +445,20 @@ async def process_telegram_update(data):
 
             results = []
 
-            # ==========================================
-            # 🔍 FAVORITES SEARCH
-            # ==========================================
+            # FAVORITES
             if query.startswith("#favorites"):
-                # Use robust fetch for user
                 user = await get_user_data(db, user_id)
-                
                 fav_ids = user.get("favorites", []) if user else []
-                
                 if fav_ids:
-                    # Fetch valid favorite files
                     cursor = db.files.find({"file_id": {"$in": fav_ids}}).limit(50)
                     docs = await cursor.to_list(length=50)
-                    
                     for doc in docs:
                         results.append({
                             "type": "audio",
                             "id": str(doc["_id"]),
                             "audio_file_id": doc["file_id"],
                             "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                            "reply_markup": {
-                                "inline_keyboard": [[{"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}" }]]
-                            }
+                            "reply_markup": {"inline_keyboard": [[{"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}" }]]}
                         })
                 else:
                      results.append({
@@ -485,22 +469,17 @@ async def process_telegram_update(data):
                         "input_message_content": {"message_text": "የመረጡት መንዙማ የለም።"}
                     })
 
-            # ==========================================
-            # 🔎 GENERAL SEARCH (Empty or Text)
-            # ==========================================
+            # GENERAL SEARCH
             else:
                 if not query:
-                    # Empty Query: Show most recent 20 files
-                    search_criteria = {"file_id": {"$exists": True}}
+                    # Empty Query: Sort by ID is fine here as it uses Index/Natural order
+                    cursor = db.files.find({"file_id": {"$exists": True}}).sort("_id", -1).limit(20)
                 else:
-                    # Text Search
+                    # Text Search: DO NOT SORT BY ID. IT KILLS PERFORMANCE.
                     search_criteria = build_search_query(query)
                     search_criteria["file_id"] = {"$exists": True}
-                
-                cursor = db.files.find(
-                    search_criteria, 
-                    {"file_id": 1, "display_name": 1, "_id": 1}
-                ).sort("_id", -1).limit(20) 
+                    # JUST FIND MATCHES.
+                    cursor = db.files.find(search_criteria).limit(20)
 
                 docs = await cursor.to_list(length=20)
                 for doc in docs:
@@ -509,9 +488,7 @@ async def process_telegram_update(data):
                         "id": str(doc["_id"]),
                         "audio_file_id": doc["file_id"],
                         "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                         "reply_markup": {
-                            "inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]
-                        }
+                         "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]}
                     })
 
             await answer_inline_query(query_id, results, cache_time=10)
