@@ -7,7 +7,7 @@ import logging
 import aiohttp 
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -135,7 +135,7 @@ async def send_document(chat_id, file_path, caption=None):
 async def track_user(db, user_id, first_name):
     try:
         now = datetime.now()
-        # Ensure consistent Integer ID storage
+        # Force Integer ID for consistency
         await db.users.update_one(
             {"_id": int(user_id)},
             {
@@ -157,8 +157,9 @@ async def toggle_favorite(db, user_id, file_id):
         user = await db.users.find_one({"_id": user_id})
         if not user:
             user = await db.users.find_one({"_id": str(user_id)})
-            
-        target_id = user["_id"] if user else user_id
+        
+        # If user found, use that ID, otherwise fallback to input
+        target_id = user["_id"] if user else int(user_id)
         
         favorites = user.get("favorites", []) if user else []
         if file_id in favorites:
@@ -170,7 +171,20 @@ async def toggle_favorite(db, user_id, file_id):
     except: return False
 
 async def get_user_data(db, user_id):
-    return await db.users.find_one({"_id": user_id})
+    # Robust fetch: Try Int first (Standard), then Str (Legacy)
+    try:
+        data = await db.users.find_one({"_id": int(user_id)})
+        if data: return data
+    except: pass
+    
+    return await db.users.find_one({"_id": str(user_id)})
+
+async def set_user_state(db, user_id, state, meta=None):
+    # Force Integer ID for admin states to ensure persistence matches track_user
+    update = {"$set": {"state": state}}
+    if meta:
+        update["$set"].update(meta)
+    await db.users.update_one({"_id": int(user_id)}, update, upsert=True)
 
 def build_search_query(query_text):
     if not query_text: return {}
@@ -249,7 +263,6 @@ async def process_telegram_update(data):
             if data_str.startswith("fav_"):
                 doc_id = data_str.split("fav_")[1]
                 try:
-                    # If it's an object ID from DB search
                     if len(doc_id) == 24:
                         file_doc = await db.files.find_one({"_id": ObjectId(doc_id)})
                         if file_doc:
@@ -264,7 +277,6 @@ async def process_telegram_update(data):
                 except:
                     await answer_callback_query(cb_id, "Error")
             
-            # Handle Pagination
             if data_str.startswith("pg_"):
                  if data_str == "pg_close":
                     await edit_message_text(chat_id, message_id, "❌ ዝርዝሩ ተዘግቷል። /list በማለት እንደገና መክፈት ይችላሉ።")
@@ -274,7 +286,6 @@ async def process_telegram_update(data):
                     await edit_message_text(chat_id, message_id, text, reply_markup=kb)
                  await answer_callback_query(cb_id)
 
-            # Report Logic
             if data_str.startswith("report_"):
                 doc_id = data_str.split("report_")[1]
                 try:
@@ -289,20 +300,25 @@ async def process_telegram_update(data):
             # Broadcast Logic
             if data_str == "broadcast_confirm" and str(user_id) == str(ADMIN_ID):
                 admin_data = await get_user_data(db, user_id)
-                msg_id_to_copy = admin_data.get("broadcast_msg_id")
-                markup_to_copy = admin_data.get("broadcast_markup")
+                # SAFE NAVIGATION: Check if admin_data exists
+                msg_id_to_copy = (admin_data or {}).get("broadcast_msg_id")
+                markup_to_copy = (admin_data or {}).get("broadcast_markup")
+                
                 if msg_id_to_copy:
                     await edit_message_text(chat_id, message_id, "🚀 Broadcasting started...")
                     users_cursor = db.users.find({})
                     count = 0
                     async for user in users_cursor:
                         try:
+                            # Use CopyMessage (More robust)
                             await copy_message(user["_id"], chat_id, msg_id_to_copy, reply_markup=markup_to_copy)
                             count += 1
                             await asyncio.sleep(0.05) 
                         except: pass
                     await send_message(chat_id, f"✅ Broadcast sent to {count} users.")
                     await set_user_state(db, user_id, "idle")
+                else:
+                    await answer_callback_query(cb_id, "⚠️ Session expired. Try again.")
                 await answer_callback_query(cb_id)
             elif data_str == "broadcast_cancel" and str(user_id) == str(ADMIN_ID):
                 await edit_message_text(chat_id, message_id, "❌ Broadcast cancelled.")
@@ -324,7 +340,7 @@ async def process_telegram_update(data):
             # Admin Logic
             if str(user_id) == str(ADMIN_ID):
                 admin_data = await get_user_data(db, user_id)
-                state = admin_data.get("state")
+                state = (admin_data or {}).get("state")
                 
                 if state == "broadcast_wait":
                     if text == "🔙 Back":
@@ -420,7 +436,7 @@ async def process_telegram_update(data):
                 else:
                     await send_message(chat_id, "😔 አልተገኘም።")
 
-        # 3. Inline Query (Simplified Logic)
+        # 3. Inline Query
         elif "inline_query" in data:
             iq = data["inline_query"]
             query_id = iq["id"]
@@ -440,8 +456,8 @@ async def process_telegram_update(data):
             # 🔍 FAVORITES SEARCH
             # ==========================================
             if query.startswith("#favorites"):
-                user = await db.users.find_one({"_id": user_id})
-                if not user: user = await db.users.find_one({"_id": str(user_id)})
+                # Use robust fetch for user
+                user = await get_user_data(db, user_id)
                 
                 fav_ids = user.get("favorites", []) if user else []
                 
@@ -481,7 +497,6 @@ async def process_telegram_update(data):
                     search_criteria = build_search_query(query)
                     search_criteria["file_id"] = {"$exists": True}
                 
-                # Use _id sort for speed and Limit 20 to prevent Timeout
                 cursor = db.files.find(
                     search_criteria, 
                     {"file_id": 1, "display_name": 1, "_id": 1}
@@ -499,7 +514,7 @@ async def process_telegram_update(data):
                         }
                     })
 
-            await answer_inline_query(query_id, results, cache_time=10) # Short cache for search
+            await answer_inline_query(query_id, results, cache_time=10)
 
     except Exception as e:
         logger.error(f"Logic Error: {e}")
@@ -515,7 +530,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Simple Search Mode) 🚀'
+    return 'Al-Madih Bot Running (Simple Search & Admin Fix) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
