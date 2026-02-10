@@ -3,9 +3,10 @@ from pymongo import MongoClient
 from bson import ObjectId
 import os
 import logging
-import requests # Replaces aiohttp for sync requests
+import requests
 import re
 import time
+import certifi  # <--- NEW IMPORT
 from datetime import datetime, timedelta
 
 # Logging
@@ -24,11 +25,14 @@ FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 
 ITEMS_PER_PAGE = 10 
 
-# --- GLOBAL DB CONNECTION (PYMONGO - STABLE) ---
-# PyMongo handles connection pooling automatically. Safe for Vercel.
+# --- GLOBAL DB CONNECTION (SSL FIX) ---
 try:
-    client = MongoClient(MONGO_URL)
+    # ca=certifi.where() is CRITICAL for Vercel
+    client = MongoClient(MONGO_URL, tlsCAFile=certifi.where())
     db = client["MenzumaDB"]
+    # Test connection immediately to fail fast if broken
+    client.admin.command('ping')
+    logger.info("MongoDB Connected Successfully!")
 except Exception as e:
     logger.error(f"DB Connection Error: {e}")
     db = None
@@ -135,10 +139,11 @@ def build_search_query(query_text):
     return conditions[0] if len(conditions) == 1 else {"$and": conditions}
 
 def get_catalog_page(page):
-    if not db: return "Error", {}
+    if not db: return "Error: DB Disconnected", {}
     skip = (page - 1) * ITEMS_PER_PAGE
     cursor = db.files.find({"file_id": {"$exists": True}}, {"display_name": 1}).sort("_id", -1).skip(skip).limit(ITEMS_PER_PAGE)
     
+    # Estimate total
     total_docs = 1400 
     total_pages = (total_docs + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     
@@ -201,7 +206,9 @@ def get_daily_stats():
 
 # --- Main Logic (Synchronous) ---
 def process_telegram_update(data):
-    if not db: return 
+    if not db: 
+        logger.error("DB NOT CONNECTED")
+        return 
 
     try:
         # 1. Callback Query
@@ -321,12 +328,9 @@ def process_telegram_update(data):
                 return
 
             if data.get("callback_query"): # Late check for broadcast buttons
-                # Logic handled above in callback section, but broadcast relies on buttons
                 pass 
 
-            # Broadcast Confirm Logic (handled in callback section mostly, but text responses trigger above)
-            
-            # Text Search
+            # Text Search (Faster Direct)
             if text and not text.startswith("/"):
                 query = build_search_query(text)
                 doc = db.files.find_one(query, {"file_id": 1, "display_name": 1})
@@ -411,7 +415,7 @@ def telegram_webhook():
             process_telegram_update(data)
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Sync PyMongo Mode) 🚀'
+    return 'Al-Madih Bot Running (Sync SSL Mode) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
