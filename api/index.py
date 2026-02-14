@@ -104,15 +104,9 @@ async def answer_inline_query(session, query_id, results, switch_pm_text=None, s
         payload["switch_pm_text"] = switch_pm_text
         payload["switch_pm_parameter"] = switch_pm_param
     
-    # DEBUG LOG
-    logger.error(f"[INLINE SEND] Sending {len(results)} results for ID {query_id}")
-    
     try:
         async with session.post(url, json=payload) as resp:
-            res = await resp.json()
-            if not res.get("ok"):
-                logger.error(f"[INLINE ERROR] Telegram API: {res}")
-            return res
+            return await resp.json()
     except Exception as e: 
         logger.error(f"[INLINE EXCEPTION] {e}")
 
@@ -227,16 +221,6 @@ async def process_telegram_update(data):
     db_client = AsyncIOMotorClient(MONGO_URL)
     db = db_client["MenzumaDB"]
     
-    # 🔥 DEBUG: Log ALL incoming updates to see what Telegram is sending
-    logger.error(f"[UPDATE] Received keys: {list(data.keys())}")
-    
-    # If inline query exists, log it specifically
-    if "inline_query" in data:
-        iq_query = data['inline_query'].get('query', '')
-        logger.error(f"[INLINE DETECTED] Query: '{iq_query}'")
-    else:
-        logger.error("[UPDATE] No inline_query found in this update")
-
     async with aiohttp.ClientSession() as session:
         try:
             # 1. Callback Query (Buttons)
@@ -446,83 +430,59 @@ async def process_telegram_update(data):
                     else:
                         await send_message(session, chat_id, "😔 አልተገኘም።")
 
-            # 3. Inline Query (Fixed Logic + Logging)
+            # 3. Inline Query (FIXED: Article Type Fallback)
             elif "inline_query" in data:
                 iq = data["inline_query"]
                 query_id = iq["id"]
                 query = iq.get("query", "").strip().lower()
 
                 results = []
-                
-                # Debug logging
-                logger.error(f"[INLINE] Processing Query: '{query}'")
 
                 # A) FAVORITES
                 if query.startswith("#favorites"):
                     user_id = iq.get("from", {}).get("id")
                     user = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
-                    if not user: 
-                        user = await db.users.find_one({"_id": str(user_id)}, {"favorites": 1})
+                    if not user: user = await db.users.find_one({"_id": str(user_id)}, {"favorites": 1})
                     
                     fav_ids = user.get("favorites", []) if user else []
                     if fav_ids:
-                        cursor = db.files.find(
-                            {"file_id": {"$in": fav_ids}}, 
-                            {"file_id": 1, "display_name": 1}
-                        ).limit(50)
+                        cursor = db.files.find({"file_id": {"$in": fav_ids}}, {"file_id": 1, "display_name": 1}).limit(50)
                         docs = await cursor.to_list(length=50)
-                        
                         for doc in docs:
                             results.append({
-                                "type": "audio",
+                                "type": "article",
                                 "id": str(doc["_id"]),
-                                "audio_file_id": doc["file_id"],
-                                "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                                "reply_markup": {
-                                    "inline_keyboard": [[
-                                        {"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}"}
-                                    ]]
-                                }
+                                "title": f"🎵 {doc.get('display_name')}",
+                                "description": "Tap to play",
+                                "input_message_content": {
+                                    "message_text": doc.get('display_name')
+                                },
+                                "reply_markup": {"inline_keyboard": [[{"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}" }]]}
                             })
                     await answer_inline_query(session, query_id, results, cache_time=10, switch_pm_text="Favorites", switch_pm_param="start")
 
                 # B) EMPTY QUERY (Recent)
                 elif not query:
                     current_time = time.time()
-                    
-                    # 1. Check Cache
                     if CACHED_EMPTY_RESULT["data"] and (current_time - CACHED_EMPTY_RESULT["time"] < CACHE_TTL):
                         results = CACHED_EMPTY_RESULT["data"]
-                        logger.error("[INLINE] Used Cache")
                     else:
-                        # 2. Fetch Fresh from DB
-                        cursor = db.files.find(
-                            {"file_id": {"$exists": True}}, 
-                            {"file_id": 1, "display_name": 1}
-                        ).sort("_id", -1).limit(50)
-                        
+                        cursor = db.files.find({"file_id": {"$exists": True}}, {"file_id": 1, "display_name": 1}).sort("_id", -1).limit(50)
                         docs = await cursor.to_list(length=50)
-                        logger.error(f"[INLINE] Fetched {len(docs)} from DB")
-                        
                         for doc in docs:
                             results.append({
-                                "type": "audio",
+                                "type": "article",
                                 "id": str(doc["_id"]),
-                                "audio_file_id": doc["file_id"],
-                                "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                                "reply_markup": {
-                                    "inline_keyboard": [[
-                                        {"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}
-                                    ]]
+                                "title": f"🎵 {doc.get('display_name')}",
+                                "description": "Tap to play",
+                                "input_message_content": {
+                                    "message_text": doc.get('display_name')
                                 }
                             })
-                        
-                        # 3. Update Cache (Only if we found results)
                         if results:
                             CACHED_EMPTY_RESULT["data"] = results
                             CACHED_EMPTY_RESULT["time"] = current_time
 
-                    # 4. ALWAYS SEND RESPONSE
                     await answer_inline_query(session, query_id, results, cache_time=300, switch_pm_text="🔥 Menzumas", switch_pm_param="start")
 
                 # C) SEARCH QUERY
@@ -530,17 +490,14 @@ async def process_telegram_update(data):
                     sq = build_search_query(query)
                     cursor = db.files.find(sq, {"file_id": 1, "display_name": 1}).limit(50)
                     docs = await cursor.to_list(length=50)
-                    
                     for doc in docs:
                         results.append({
-                            "type": "audio",
+                            "type": "article",
                             "id": str(doc["_id"]),
-                            "audio_file_id": doc["file_id"],
-                            "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                            "reply_markup": {
-                                "inline_keyboard": [[
-                                    {"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}
-                                ]]
+                            "title": f"🎵 {doc.get('display_name')}",
+                            "description": "Tap to play",
+                            "input_message_content": {
+                                    "message_text": doc.get('display_name')
                             }
                         })
                     
@@ -560,7 +517,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Debug Mode 🚀)'
+    return 'Al-Madih Bot Running (Article Mode 🚀)'
 
 if __name__ == '__main__':
     app.run(debug=True)
