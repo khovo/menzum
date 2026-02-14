@@ -387,6 +387,28 @@ async def process_telegram_update(data):
                     elif text == "📢 Broadcast":
                         await set_user_state(db, user_id, "broadcast_wait")
                         await send_message(session, chat_id, "Send message to broadcast.")
+
+                    # --- New Debug Commands for Admin (VITAL) ---
+                    elif text == "/checkdb":
+                        total = await db.files.count_documents({"file_id": {"$exists": True}})
+                        sample = await db.files.find_one({"file_id": {"$exists": True}})
+                        msg = f"📊 **Database Stats:**\n\n**Total Files:** `{total}`\n\n"
+                        if sample:
+                            msg += f"**Sample Name:** `{sample.get('display_name')}`\n"
+                            msg += f"**Sample ID:** `{sample['file_id'][:20]}...`"
+                        await send_message(session, chat_id, msg)
+                        return
+
+                    elif text == "/testfile":
+                        doc = await db.files.find_one({"file_id": {"$exists": True}})
+                        if doc:
+                            try:
+                                await send_audio(session, chat_id, doc["file_id"], f"🎵 Test\n{doc.get('display_name')}\n\n@Almadihbot")
+                                await send_message(session, chat_id, "✅ **SUCCESS!** Inline mode will work.")
+                            except Exception as e:
+                                await send_message(session, chat_id, f"❌ **FAILED:** `{str(e)}`\n\nYour File IDs are INVALID for this bot.")
+                        return
+                    # -------------------------------------
                     
                     if state == "admin_reply_wait":
                         target_user = (user_data or {}).get("target_user_id")
@@ -430,7 +452,7 @@ async def process_telegram_update(data):
                     else:
                         await send_message(session, chat_id, "😔 አልተገኘም።")
 
-            # 3. Inline Query (FIXED: Article Type Fallback)
+            # 3. Inline Query (AUDIO TYPE RESTORED)
             elif "inline_query" in data:
                 iq = data["inline_query"]
                 query_id = iq["id"]
@@ -450,13 +472,11 @@ async def process_telegram_update(data):
                         docs = await cursor.to_list(length=50)
                         for doc in docs:
                             results.append({
-                                "type": "article",
+                                "type": "audio",
                                 "id": str(doc["_id"]),
-                                "title": f"🎵 {doc.get('display_name')}",
-                                "description": "Tap to play",
-                                "input_message_content": {
-                                    "message_text": doc.get('display_name')
-                                },
+                                "audio_file_id": doc["file_id"],
+                                "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
+                                "title": doc.get('display_name', 'Unknown'),
                                 "reply_markup": {"inline_keyboard": [[{"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}" }]]}
                             })
                     await answer_inline_query(session, query_id, results, cache_time=10, switch_pm_text="Favorites", switch_pm_param="start")
@@ -471,13 +491,12 @@ async def process_telegram_update(data):
                         docs = await cursor.to_list(length=50)
                         for doc in docs:
                             results.append({
-                                "type": "article",
+                                "type": "audio",
                                 "id": str(doc["_id"]),
-                                "title": f"🎵 {doc.get('display_name')}",
-                                "description": "Tap to play",
-                                "input_message_content": {
-                                    "message_text": doc.get('display_name')
-                                }
+                                "audio_file_id": doc["file_id"],
+                                "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
+                                "title": doc.get('display_name', 'Unknown'),
+                                "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]}
                             })
                         if results:
                             CACHED_EMPTY_RESULT["data"] = results
@@ -492,13 +511,12 @@ async def process_telegram_update(data):
                     docs = await cursor.to_list(length=50)
                     for doc in docs:
                         results.append({
-                            "type": "article",
+                            "type": "audio",
                             "id": str(doc["_id"]),
-                            "title": f"🎵 {doc.get('display_name')}",
-                            "description": "Tap to play",
-                            "input_message_content": {
-                                    "message_text": doc.get('display_name')
-                            }
+                            "audio_file_id": doc["file_id"],
+                            "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
+                            "title": doc.get('display_name', 'Unknown'),
+                            "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]}
                         })
                     
                     await answer_inline_query(session, query_id, results, cache_time=300)
@@ -517,7 +535,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Article Mode 🚀)'
+    return 'Al-Madih Bot Running (Audio Mode 🚀)'
 
 if __name__ == '__main__':
     app.run(debug=True)
