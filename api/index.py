@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 
 # Logging
-logging.basicConfig(level=logging.ERROR) # INFO ቀይረን ወደ ERROR (Logging መቀነስ ፍጥነት ይጨምራል)
+logging.basicConfig(level=logging.ERROR)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -26,10 +26,12 @@ FORCE_CHANNEL_URL = "https://t.me/Al_madih"
 ITEMS_PER_PAGE = 10 
 
 # --- SPEED BOOST: MEMORY CACHE ---
-# ቦቱ የተጠቃሚውን ሁኔታ እና የፍለጋ ውጤቶችን በቃሉ ይይዛል (RAM Cache)
 MEMBERSHIP_CACHE = {} 
 CACHED_EMPTY_RESULT = {"data": [], "time": 0}
-CACHE_TTL = 300 # 5 Minutes
+
+# 🔥 MODIFIED: Cache Time ቀንሰነዋል (ከ 300 ወደ 60 ሰከንድ)
+# ሰውየው Leave ካለ በ1 ደቂቃ ውስጥ ቦቱ እንዲዘጋበት።
+CACHE_TTL = 60 
 
 # --- Helpers ---
 def run_async(coro):
@@ -70,15 +72,6 @@ async def edit_message_text(chat_id, message_id, text, reply_markup=None):
             async with session.post(url, json=payload) as resp: return await resp.json()
         except: pass
 
-async def edit_message_reply_markup(chat_id, message_id, reply_markup):
-    if not BOT_TOKEN: return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageReplyMarkup"
-    async with aiohttp.ClientSession() as session:
-        payload = {"chat_id": chat_id, "message_id": message_id, "reply_markup": reply_markup}
-        try:
-            async with session.post(url, json=payload) as resp: return await resp.json()
-        except: pass
-
 async def answer_callback_query(callback_query_id, text=None, show_alert=False):
     if not BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
@@ -94,14 +87,14 @@ async def answer_callback_query(callback_query_id, text=None, show_alert=False):
 async def check_membership(user_id):
     if not BOT_TOKEN: return True
     
-    # 1. Check Cache (በጣም ፈጣን)
+    # 1. Check Cache
     current_time = time.time()
     if user_id in MEMBERSHIP_CACHE:
         is_member, timestamp = MEMBERSHIP_CACHE[user_id]
         if current_time - timestamp < CACHE_TTL:
             return is_member
 
-    # 2. Call Telegram API (Only if not in cache)
+    # 2. Call Telegram API
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
     params = {"chat_id": f"@{FORCE_CHANNEL_USERNAME}", "user_id": user_id}
     async with aiohttp.ClientSession() as session:
@@ -139,45 +132,21 @@ async def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
             async with session.post(url, json=payload) as resp: return await resp.json()
         except: pass
 
-async def send_document(chat_id, file_path, caption=None):
-    if not BOT_TOKEN: return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    data = aiohttp.FormData()
-    data.add_field('chat_id', str(chat_id))
-    if caption: data.add_field('caption', caption)
-    data.add_field('document', open(file_path, 'rb'))
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post(url, data=data) as resp: return await resp.json()
-        except: pass
-
-# --- DB Helpers (Optimized) ---
+# --- DB Helpers ---
 async def track_user(db, user_id, first_name):
-    # Only run this on /start to reduce DB write load
     try:
         now = datetime.now()
         await db.users.update_one(
             {"_id": int(user_id)},
-            {
-                "$set": {"first_name": first_name, "last_active": now},
-                "$setOnInsert": {"joined_at": now}
-            },
+            {"$set": {"first_name": first_name, "last_active": now}, "$setOnInsert": {"joined_at": now}},
             upsert=True
         )
-    except: pass
-
-async def increment_view(db, file_id):
-    # Fire and forget - don't await result strictly if speed is key
-    try:
-        await db.files.update_one({"file_id": file_id}, {"$inc": {"views": 1}})
     except: pass
 
 async def toggle_favorite(db, user_id, file_id):
     try:
         user = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
-        if not user:
-             # Fallback for old string IDs
-             user = await db.users.find_one({"_id": str(user_id)}, {"favorites": 1})
+        if not user: user = await db.users.find_one({"_id": str(user_id)}, {"favorites": 1})
         
         target_id = user["_id"] if user else int(user_id)
         favorites = user.get("favorites", []) if user else []
@@ -203,12 +172,8 @@ async def set_user_state(db, user_id, state, meta=None):
 def build_search_query(query_text):
     if not query_text: return {}
     query_text = query_text.strip()
-    
-    # 1. Single Letter Optimization: Use StartsWith (^) instead of Contains
     if len(query_text) == 1:
         return {"display_name": {"$regex": f"^{re.escape(query_text)}", "$options": "i"}}
-
-    # 2. Multi-word Optimization
     words = query_text.split()
     conditions = [{"display_name": {"$regex": re.escape(word), "$options": "i"}} for word in words]
     if len(conditions) == 1: return conditions[0]
@@ -217,13 +182,12 @@ def build_search_query(query_text):
 async def get_catalog_page(db, page):
     limit = ITEMS_PER_PAGE
     skip = (page - 1) * limit
-    # OPTIMIZATION: Only fetch needed fields
     total_docs = await db.files.count_documents({"file_id": {"$exists": True}})
     total_pages = (total_docs + limit - 1) // limit
     
     cursor = db.files.find(
         {"file_id": {"$exists": True}},
-        {"display_name": 1} # Fetch ONLY display_name
+        {"display_name": 1}
     ).sort("_id", -1).skip(skip).limit(limit)
     
     msg_text = f"📂 **የመንዙማዎች ዝርዝር (ገጽ {page}/{total_pages})**\n\n💡 _ስሙን ሲነኩት ኮፒ ይሆናል፣ ከዛ ለቦቱ ይላኩት።_\n\n"
@@ -279,17 +243,23 @@ async def process_telegram_update(data):
             chat_id = cb["message"]["chat"]["id"]
             message_id = cb["message"]["message_id"]
             
-           # --- BUTTON LOGIC ---
+            # --- SECURITY GATEKEEPER FOR BUTTONS ---
+            # "check_subscription" ካልሆነ በስተቀር ለሁሉም በተኖች አባልነትን ይጠይቃል።
+            if data_str != "check_subscription":
+                if not await check_membership(user_id):
+                    # አባል ካልሆነ Alert ያሳየዋል (Popup)
+                    await answer_callback_query(cb_id, "⚠️ እባክዎ መጀመሪያ ቻናሉን ይቀላቀሉ!", show_alert=True)
+                    return # Stop processing immediately
+
+            # --- BUTTON LOGIC ---
             if data_str == "check_subscription":
-                # 🔥 FIX: አዲስ ሰው Join ብሎ ሲመጣ፣ የድሮውን Cache ማጥፋት አለብን።
-                # ይህ ካልሆነ ቦቱ "አልገባህም" ብሎ በቃሉ የያዘውን (Cache) ነው ደጋግሞ የሚያነበው።
+                # Force remove from cache to re-verify
                 if user_id in MEMBERSHIP_CACHE:
-                    del MEMBERSHIP_CACHE[user_id]  # Force re-check from API
+                    del MEMBERSHIP_CACHE[user_id]
 
                 if await check_membership(user_id):
                     await answer_callback_query(cb_id, "✅ እንኳን ደህና መጡ!")
                     welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
-                    # ቦቱ ሲከፍት Loading እንዳይሆን አሮጌውን ሜሴጅ እናጥፋና አዲስ እንላክ (Optional improvement)
                     await edit_message_text(chat_id, message_id, welcome, reply_markup=get_main_menu_kb())
                 else:
                     await answer_callback_query(cb_id, "❌ አሁንም አልተቀላቀሉም! ቻናሉን Join ይበሉ", show_alert=True)
@@ -297,7 +267,6 @@ async def process_telegram_update(data):
 
             if data_str.startswith("pg_"):
                  if data_str == "pg_close":
-                    # Restore Main Menu on Close
                     welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
                     await edit_message_text(chat_id, message_id, welcome, reply_markup=get_main_menu_kb())
                  else:
@@ -308,10 +277,8 @@ async def process_telegram_update(data):
                  return
 
             if data_str.startswith("fav_"):
-                # Fast Favorite Toggle
                 doc_id = data_str.split("fav_")[1]
                 try:
-                    # Optimized: Don't fetch full doc, just check existence
                     if len(doc_id) == 24:
                         file_exists = await db.files.find_one({"_id": ObjectId(doc_id)}, {"_id": 1, "file_id": 1})
                         if file_exists:
@@ -326,9 +293,8 @@ async def process_telegram_update(data):
                     await answer_callback_query(cb_id, "Error")
                 return
 
-            # Admin Actions (Only run if necessary)
             if data_str.startswith("report_") or data_str.startswith("broadcast_"):
-                # ... (Admin logic kept same but simplified execution) ...
+                # Admin logic remains same
                 if data_str.startswith("report_"):
                     doc_id = data_str.split("report_")[1]
                     try:
@@ -344,7 +310,7 @@ async def process_telegram_update(data):
                     markup = (admin_data or {}).get("broadcast_markup")
                     if msg_id:
                         await edit_message_text(chat_id, message_id, "🚀 Sending...")
-                        users = db.users.find({}, {"_id": 1}) # Fetch ONLY IDs
+                        users = db.users.find({}, {"_id": 1})
                         count = 0
                         async for u in users:
                             try:
@@ -368,10 +334,19 @@ async def process_telegram_update(data):
             user_id = message.get("from", {}).get("id")
             text = message.get("text", "")
             
-            # --- COMMANDS (Only track user on /start) ---
+            # --- SECURITY GATEKEEPER FOR MESSAGES ---
+            # ማንኛውንም ጽሁፍ ከመቀበሉ በፊት አባል መሆኑን ያረጋግጣል።
+            is_joined = await check_membership(user_id)
+            if not is_joined:
+                msg = "**⚠️ ይቅርታ! ቦቱን ለመጠቀም መጀመሪያ ቻናላችንን ይቀላቀሉ።**"
+                kb = {"inline_keyboard": [[{"text": "Join Channel 📢", "url": FORCE_CHANNEL_URL}], [{"text": "✅ ተቀላቅያለሁ (Verify)", "callback_data": "check_subscription"}]]}
+                await send_message(chat_id, msg, reply_markup=kb)
+                return # Stop processing immediately
+
+            # ከዚህ በታች ያለው ኮድ የሚሰራው አባል ከሆነ ብቻ ነው
             if text == "/start":
                 first_name = message.get("from", {}).get("first_name", "User")
-                await track_user(db, user_id, first_name) # Record User
+                await track_user(db, user_id, first_name)
                 welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
                 await send_message(chat_id, welcome, reply_markup=get_main_menu_kb())
                 return
@@ -381,9 +356,7 @@ async def process_telegram_update(data):
                 await send_message(chat_id, msg_text, reply_markup=kb)
                 return
 
-            # Admin & Upload Logic (Simplified)
             if str(user_id) == str(ADMIN_ID):
-                # ... (Admin text commands logic) ...
                 if text == "/admin":
                     kb = {"keyboard": [[{"text": "📊 Statistics"}, {"text": "📅 Daily Stats"}], [{"text": "📢 Broadcast"}, {"text": "📂 Total Files"}]], "resize_keyboard": True}
                     await send_message(chat_id, "Admin Panel", reply_markup=kb)
@@ -398,11 +371,9 @@ async def process_telegram_update(data):
                     await set_user_state(db, user_id, "broadcast_wait")
                     await send_message(chat_id, "Send message to broadcast.")
                 
-                # Check for upload/broadcast state
                 admin_data = await get_user_data(db, user_id)
                 state = (admin_data or {}).get("state")
                 if state == "broadcast_wait" and text != "🔙 Back" and "message_id" in message:
-                     # Broadcast setup logic...
                      await set_user_state(db, user_id, "broadcast_confirm", {"broadcast_msg_id": message["message_id"], "broadcast_markup": message.get("reply_markup")})
                      await copy_message(chat_id, chat_id, message["message_id"], reply_markup=message.get("reply_markup"))
                      kb = {"inline_keyboard": [[{"text": "✅ Post", "callback_data": "broadcast_confirm"}], [{"text": "❌ Cancel", "callback_data": "broadcast_cancel"}]]}
@@ -410,7 +381,6 @@ async def process_telegram_update(data):
                      return
 
                 if "audio" in message or "voice" in message:
-                    # Fast Upload
                     f = message.get("audio") or message.get("voice")
                     cap = message.get("caption", "").split('\n')[0].strip()
                     name = cap if cap else f.get("file_name", "Unknown")
@@ -423,15 +393,7 @@ async def process_telegram_update(data):
                         await send_message(chat_id, f"✅ Saved: `{name}`")
                 return
 
-            if not await check_membership(user_id):
-                msg = "**⚠️ ይቅርታ! ቦቱን ለመጠቀም መጀመሪያ ቻናላችንን ይቀላቀሉ።**"
-                kb = {"inline_keyboard": [[{"text": "Join Channel 📢", "url": FORCE_CHANNEL_URL}], [{"text": "✅ ተቀላቅያለሁ (Verify)", "callback_data": "check_subscription"}]]}
-                await send_message(chat_id, msg, reply_markup=kb)
-                return
-
-            # Direct Text Search (Fallback)
             if text and not text.startswith("/"):
-                # Just find one best match quickly
                 sq = build_search_query(text)
                 doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
                 if doc:
@@ -440,17 +402,14 @@ async def process_telegram_update(data):
                 else:
                     await send_message(chat_id, "😔 አልተገኘም።")
 
-        # 3. Inline Query (SUPER OPTIMIZED)
+        # 3. Inline Query (Membership Check is disabled for speed in inline mode)
         elif "inline_query" in data:
             iq = data["inline_query"]
             query_id = iq["id"]
-            # No track_user here! (Too slow)
-            # No membership check here! (Too slow for inline)
             query = iq.get("query", "").strip().lower()
 
             results = []
 
-            # A. Favorites
             if query.startswith("#favorites"):
                 user_id = iq.get("from", {}).get("id")
                 user = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
@@ -458,7 +417,6 @@ async def process_telegram_update(data):
                 
                 fav_ids = user.get("favorites", []) if user else []
                 if fav_ids:
-                    # Fetch minimal data
                     cursor = db.files.find({"file_id": {"$in": fav_ids}}, {"file_id": 1, "display_name": 1}).limit(50)
                     docs = await cursor.to_list(length=50)
                     for doc in docs:
@@ -472,7 +430,6 @@ async def process_telegram_update(data):
                 else:
                      results.append({"type": "article", "id": "404", "title": "No Favorites", "input_message_content": {"message_text": "No favorites yet."}})
 
-            # B. Empty Query (Cached)
             elif not query:
                 if CACHED_EMPTY_RESULT["data"] and (time.time() - CACHED_EMPTY_RESULT["time"] < CACHE_TTL):
                     await answer_inline_query(query_id, CACHED_EMPTY_RESULT["data"], cache_time=300)
@@ -481,29 +438,28 @@ async def process_telegram_update(data):
                 cursor = db.files.find({"file_id": {"$exists": True}}, {"file_id": 1, "display_name": 1}).sort("_id", -1).limit(20)
                 docs = await cursor.to_list(length=20)
                 for doc in docs:
-                     results.append({
+                      results.append({
                         "type": "audio",
                         "id": str(doc["_id"]),
                         "audio_file_id": doc["file_id"],
                         "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                         "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]}
+                          "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]}
                     })
                 
                 CACHED_EMPTY_RESULT["data"] = results
                 CACHED_EMPTY_RESULT["time"] = time.time()
 
-            # C. Text Search (Optimized)
             else:
                 sq = build_search_query(query)
                 cursor = db.files.find(sq, {"file_id": 1, "display_name": 1}).limit(20)
                 docs = await cursor.to_list(length=20)
                 for doc in docs:
-                     results.append({
+                      results.append({
                         "type": "audio",
                         "id": str(doc["_id"]),
                         "audio_file_id": doc["file_id"],
                         "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                         "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]}
+                          "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]}
                     })
 
             await answer_inline_query(query_id, results, cache_time=300)
@@ -522,7 +478,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Electric Speed ⚡) 🚀'
+    return 'Al-Madih Bot Running (Strict Mode 🔒) 🚀'
 
 if __name__ == '__main__':
     app.run(debug=True)
