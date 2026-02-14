@@ -223,6 +223,7 @@ def get_main_menu_kb():
                 {"text": "❤️ Favorites", "switch_inline_query_current_chat": "#favorites"},
                 {"text": "📂 Catalog (List)", "callback_data": "pg_1"}
             ],
+            [{"text": "📞 አስተያየት ለመስጠት (Support)", "callback_data": "support_start"}],
             [{"text": "🔍 Search Name", "switch_inline_query_current_chat": ""}]
         ]
     }
@@ -263,6 +264,21 @@ async def process_telegram_update(data):
                     await edit_message_text(chat_id, message_id, welcome, reply_markup=get_main_menu_kb())
                 else:
                     await answer_callback_query(cb_id, "❌ አሁንም አልተቀላቀሉም! ቻናሉን Join ይበሉ", show_alert=True)
+                return
+
+            # --- NEW: SUPPORT BUTTONS ---
+            if data_str == "support_start":
+                await set_user_state(db, user_id, "support_wait")
+                kb = {"inline_keyboard": [[{"text": "🔙 ተመለስ", "callback_data": "support_cancel"}]]}
+                await edit_message_text(chat_id, message_id, "📝 **ሀሳቦን እዚህ ጋር ይጻፉ ወይም 'ተመለስ' የሚለውን በተን ይጫኑ።**", reply_markup=kb)
+                await answer_callback_query(cb_id)
+                return
+
+            if data_str == "support_cancel":
+                await set_user_state(db, user_id, "idle")
+                welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
+                await edit_message_text(chat_id, message_id, welcome, reply_markup=get_main_menu_kb())
+                await answer_callback_query(cb_id)
                 return
 
             if data_str.startswith("pg_"):
@@ -354,6 +370,27 @@ async def process_telegram_update(data):
             if text == "/list" or text == "📂 Catalog (List)":
                 msg_text, kb = await get_catalog_page(db, 1) 
                 await send_message(chat_id, msg_text, reply_markup=kb)
+                return
+
+            # --- NEW: SUPPORT MESSAGE HANDLING ---
+            # Check if user is in support mode
+            user_data = await get_user_data(db, user_id)
+            state = (user_data or {}).get("state")
+
+            if state == "support_wait":
+                if text == "/start": # Allow restart to exit
+                     await set_user_state(db, user_id, "idle")
+                     await send_message(chat_id, "🏠 ወደ ዋናው ገጽ ተመልሰዋል።", reply_markup=get_main_menu_kb())
+                     return
+
+                # Forward message to Admin
+                sender_name = message.get("from", {}).get("first_name", "User")
+                await send_message(ADMIN_ID, f"📩 **New Feedback from:** {sender_name} (`{user_id}`)")
+                await copy_message(ADMIN_ID, chat_id, message.get("message_id"))
+                
+                # Confirm to User
+                await send_message(chat_id, "✅ **መልእክትዎ ተልኳል! እናመሰግናለን።**\n\nወደ ዋናው ገጽ ተመልሰዋል።", reply_markup=get_main_menu_kb())
+                await set_user_state(db, user_id, "idle")
                 return
 
             if str(user_id) == str(ADMIN_ID):
