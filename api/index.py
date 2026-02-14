@@ -279,14 +279,20 @@ async def process_telegram_update(data):
             chat_id = cb["message"]["chat"]["id"]
             message_id = cb["message"]["message_id"]
             
-            # --- BUTTON LOGIC ---
+           # --- BUTTON LOGIC ---
             if data_str == "check_subscription":
+                # 🔥 FIX: አዲስ ሰው Join ብሎ ሲመጣ፣ የድሮውን Cache ማጥፋት አለብን።
+                # ይህ ካልሆነ ቦቱ "አልገባህም" ብሎ በቃሉ የያዘውን (Cache) ነው ደጋግሞ የሚያነበው።
+                if user_id in MEMBERSHIP_CACHE:
+                    del MEMBERSHIP_CACHE[user_id]  # Force re-check from API
+
                 if await check_membership(user_id):
                     await answer_callback_query(cb_id, "✅ እንኳን ደህና መጡ!")
                     welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
+                    # ቦቱ ሲከፍት Loading እንዳይሆን አሮጌውን ሜሴጅ እናጥፋና አዲስ እንላክ (Optional improvement)
                     await edit_message_text(chat_id, message_id, welcome, reply_markup=get_main_menu_kb())
                 else:
-                    await answer_callback_query(cb_id, "❌ አሁንም አልተቀላቀሉም!", show_alert=True)
+                    await answer_callback_query(cb_id, "❌ አሁንም አልተቀላቀሉም! ቻናሉን Join ይበሉ", show_alert=True)
                 return
 
             if data_str.startswith("pg_"):
