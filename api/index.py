@@ -280,6 +280,14 @@ async def process_telegram_update(data):
                 await edit_message_text(chat_id, message_id, welcome, reply_markup=get_main_menu_kb())
                 await answer_callback_query(cb_id)
                 return
+            
+            # --- ADMIN REPLY BUTTON LOGIC ---
+            if data_str.startswith("reply_") and str(user_id) == str(ADMIN_ID):
+                target_user_id = data_str.split("_")[1]
+                await set_user_state(db, user_id, "admin_reply_wait", {"target_user_id": target_user_id})
+                await send_message(chat_id, f"📝 **መልስ ለተጠቃሚ {target_user_id} እየጻፉ ነው:**\n\nመልእክቱን ይጻፉ (Text, Voice, Photo...).")
+                await answer_callback_query(cb_id)
+                return
 
             if data_str.startswith("pg_"):
                  if data_str == "pg_close":
@@ -383,9 +391,10 @@ async def process_telegram_update(data):
                      await send_message(chat_id, "🏠 ወደ ዋናው ገጽ ተመልሰዋል።", reply_markup=get_main_menu_kb())
                      return
 
-                # Forward message to Admin
+                # Forward message to Admin with REPLY BUTTON
                 sender_name = message.get("from", {}).get("first_name", "User")
-                await send_message(ADMIN_ID, f"📩 **New Feedback from:** {sender_name} (`{user_id}`)")
+                kb = {"inline_keyboard": [[{"text": "↩️ መልስ ለመስጠት (Reply)", "callback_data": f"reply_{user_id}"}]]}
+                await send_message(ADMIN_ID, f"📩 **New Feedback from:** {sender_name} (`{user_id}`)", reply_markup=kb)
                 await copy_message(ADMIN_ID, chat_id, message.get("message_id"))
                 
                 # Confirm to User
@@ -410,6 +419,22 @@ async def process_telegram_update(data):
                 
                 admin_data = await get_user_data(db, user_id)
                 state = (admin_data or {}).get("state")
+
+                # --- NEW: ADMIN REPLY LOGIC ---
+                if state == "admin_reply_wait":
+                    target_user = (admin_data or {}).get("target_user_id")
+                    if target_user:
+                        try:
+                            # Send context to user so they know it's a reply
+                            await send_message(target_user, "🔔 **ከአድሚኑ የተሰጠ መልስ:**")
+                            await copy_message(target_user, chat_id, message["message_id"])
+                            await send_message(chat_id, "✅ መልሱ ተልኳል!")
+                        except Exception as e:
+                            await send_message(chat_id, f"❌ አልተላከም: {e}")
+                        
+                        await set_user_state(db, user_id, "idle")
+                    return
+
                 if state == "broadcast_wait" and text != "🔙 Back" and "message_id" in message:
                      await set_user_state(db, user_id, "broadcast_confirm", {"broadcast_msg_id": message["message_id"], "broadcast_markup": message.get("reply_markup")})
                      await copy_message(chat_id, chat_id, message["message_id"], reply_markup=message.get("reply_markup"))
