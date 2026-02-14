@@ -30,7 +30,7 @@ MEMBERSHIP_CACHE = {}
 CACHED_EMPTY_RESULT = {"data": [], "time": 0}
 CACHE_TTL = 60 
 
-# --- Helpers (Now using shared session) ---
+# --- Helpers ---
 def run_async(coro):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -76,18 +76,14 @@ async def answer_callback_query(session, callback_query_id, text=None, show_aler
         async with session.post(url, json=payload) as resp: return await resp.json()
     except: pass
 
-# 🔥 SUPER OPTIMIZED: Membership Check with Session Reuse
 async def check_membership(session, user_id):
     if not BOT_TOKEN: return True
-    
-    # 1. Check Cache
     current_time = time.time()
     if user_id in MEMBERSHIP_CACHE:
         is_member, timestamp = MEMBERSHIP_CACHE[user_id]
         if current_time - timestamp < CACHE_TTL:
             return is_member
 
-    # 2. Call Telegram API (Using shared session)
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
     params = {"chat_id": f"@{FORCE_CHANNEL_USERNAME}", "user_id": user_id}
     try:
@@ -96,8 +92,6 @@ async def check_membership(session, user_id):
             if not res.get("ok"): return True 
             status = res["result"]["status"]
             is_member = status in ["creator", "administrator", "member"]
-            
-            # Save to Cache
             MEMBERSHIP_CACHE[user_id] = (is_member, current_time)
             return is_member
     except: return True
@@ -109,9 +103,18 @@ async def answer_inline_query(session, query_id, results, switch_pm_text=None, s
     if switch_pm_text:
         payload["switch_pm_text"] = switch_pm_text
         payload["switch_pm_parameter"] = switch_pm_param
+    
+    # DEBUG LOG
+    logger.error(f"[INLINE SEND] Sending {len(results)} results for ID {query_id}")
+    
     try:
-        async with session.post(url, json=payload) as resp: return await resp.json()
-    except: pass
+        async with session.post(url, json=payload) as resp:
+            res = await resp.json()
+            if not res.get("ok"):
+                logger.error(f"[INLINE ERROR] Telegram API: {res}")
+            return res
+    except Exception as e: 
+        logger.error(f"[INLINE EXCEPTION] {e}")
 
 async def copy_message(session, chat_id, from_chat_id, message_id, reply_markup=None):
     if not BOT_TOKEN: return
@@ -224,7 +227,6 @@ async def process_telegram_update(data):
     db_client = AsyncIOMotorClient(MONGO_URL)
     db = db_client["MenzumaDB"]
 
-    # 🔥 OPTIMIZATION: Create ONE session for the entire update
     async with aiohttp.ClientSession() as session:
         try:
             # 1. Callback Query (Buttons)
@@ -236,16 +238,13 @@ async def process_telegram_update(data):
                 chat_id = cb["message"]["chat"]["id"]
                 message_id = cb["message"]["message_id"]
                 
-                # --- SECURITY GATEKEEPER ---
                 if data_str != "check_subscription":
                     if not await check_membership(session, user_id):
                         await answer_callback_query(session, cb_id, "⚠️ እባክዎ መጀመሪያ ቻናሉን ይቀላቀሉ!", show_alert=True)
                         return 
 
-                # --- BUTTON LOGIC ---
                 if data_str == "check_subscription":
                     if user_id in MEMBERSHIP_CACHE: del MEMBERSHIP_CACHE[user_id]
-
                     if await check_membership(session, user_id):
                         await answer_callback_query(session, cb_id, "✅ እንኳን ደህና መጡ!")
                         welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
@@ -254,7 +253,6 @@ async def process_telegram_update(data):
                         await answer_callback_query(session, cb_id, "❌ አሁንም አልተቀላቀሉም! ቻናሉን Join ይበሉ", show_alert=True)
                     return
 
-                # Support Buttons
                 if data_str == "support_start":
                     await set_user_state(db, user_id, "support_wait")
                     kb = {"inline_keyboard": [[{"text": "🔙 ተመለስ", "callback_data": "support_cancel"}]]}
@@ -344,7 +342,6 @@ async def process_telegram_update(data):
                 user_id = message.get("from", {}).get("id")
                 text = message.get("text", "")
                 
-                # --- SECURITY GATEKEEPER ---
                 is_joined = await check_membership(session, user_id)
                 if not is_joined:
                     msg = "**⚠️ ይቅርታ! ቦቱን ለመጠቀም መጀመሪያ ቻናላችንን ይቀላቀሉ።**"
@@ -364,7 +361,6 @@ async def process_telegram_update(data):
                     await send_message(session, chat_id, msg_text, reply_markup=kb)
                     return
 
-                # Support & Admin Logic
                 user_data = await get_user_data(db, user_id)
                 state = (user_data or {}).get("state")
 
@@ -440,73 +436,102 @@ async def process_telegram_update(data):
                     else:
                         await send_message(session, chat_id, "😔 አልተገኘም።")
 
-            # 3. Inline Query (Optimized & Fixed)
+            # 3. Inline Query (Fixed Logic)
             elif "inline_query" in data:
                 iq = data["inline_query"]
                 query_id = iq["id"]
                 query = iq.get("query", "").strip().lower()
 
                 results = []
+                
+                # Debug logging
+                logger.error(f"[INLINE] Query: '{query}'")
 
-                # --- A. FAVORITES LIST ---
+                # A) FAVORITES
                 if query.startswith("#favorites"):
                     user_id = iq.get("from", {}).get("id")
-                    # handle int/str id mismatch
                     user = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
-                    if not user: user = await db.users.find_one({"_id": str(user_id)}, {"favorites": 1})
+                    if not user: 
+                        user = await db.users.find_one({"_id": str(user_id)}, {"favorites": 1})
                     
                     fav_ids = user.get("favorites", []) if user else []
                     if fav_ids:
-                        cursor = db.files.find({"file_id": {"$in": fav_ids}}, {"file_id": 1, "display_name": 1}).limit(50)
+                        cursor = db.files.find(
+                            {"file_id": {"$in": fav_ids}}, 
+                            {"file_id": 1, "display_name": 1}
+                        ).limit(50)
                         docs = await cursor.to_list(length=50)
+                        
                         for doc in docs:
                             results.append({
                                 "type": "audio",
                                 "id": str(doc["_id"]),
                                 "audio_file_id": doc["file_id"],
                                 "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                                "reply_markup": {"inline_keyboard": [[{"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}" }]]}
+                                "reply_markup": {
+                                    "inline_keyboard": [[
+                                        {"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}"}
+                                    ]]
+                                }
                             })
-                    # Always send response even if empty
                     await answer_inline_query(session, query_id, results, cache_time=10, switch_pm_text="Favorites", switch_pm_param="start")
 
-                # --- B. EMPTY QUERY (RECENT FILES) ---
+                # B) EMPTY QUERY (Recent)
                 elif not query:
                     current_time = time.time()
-                    # Check Cache
+                    
+                    # 1. Check Cache
                     if CACHED_EMPTY_RESULT["data"] and (current_time - CACHED_EMPTY_RESULT["time"] < CACHE_TTL):
                         results = CACHED_EMPTY_RESULT["data"]
+                        logger.error("[INLINE] Used Cache")
                     else:
-                        # Fetch Fresh
-                        cursor = db.files.find({"file_id": {"$exists": True}}, {"file_id": 1, "display_name": 1}).sort("_id", -1).limit(50)
+                        # 2. Fetch Fresh from DB
+                        cursor = db.files.find(
+                            {"file_id": {"$exists": True}}, 
+                            {"file_id": 1, "display_name": 1}
+                        ).sort("_id", -1).limit(50)
+                        
                         docs = await cursor.to_list(length=50)
+                        logger.error(f"[INLINE] Fetched {len(docs)} from DB")
+                        
                         for doc in docs:
                             results.append({
                                 "type": "audio",
                                 "id": str(doc["_id"]),
                                 "audio_file_id": doc["file_id"],
                                 "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                                "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]}
+                                "reply_markup": {
+                                    "inline_keyboard": [[
+                                        {"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}
+                                    ]]
+                                }
                             })
-                        # Update Cache
-                        CACHED_EMPTY_RESULT["data"] = results
-                        CACHED_EMPTY_RESULT["time"] = current_time
-                    
-                    # Send Response
-                    await answer_inline_query(session, query_id, results, cache_time=300, switch_pm_text="Open Bot", switch_pm_param="start")
+                        
+                        # 3. Update Cache (Only if we found results)
+                        if results:
+                            CACHED_EMPTY_RESULT["data"] = results
+                            CACHED_EMPTY_RESULT["time"] = current_time
 
-                # --- C. SEARCH QUERY ---
+                    # 4. ALWAYS SEND RESPONSE
+                    await answer_inline_query(session, query_id, results, cache_time=300, switch_pm_text="🔥 Menzumas", switch_pm_param="start")
+
+                # C) SEARCH QUERY
                 else:
                     sq = build_search_query(query)
                     cursor = db.files.find(sq, {"file_id": 1, "display_name": 1}).limit(50)
                     docs = await cursor.to_list(length=50)
+                    
                     for doc in docs:
                         results.append({
                             "type": "audio",
                             "id": str(doc["_id"]),
                             "audio_file_id": doc["file_id"],
                             "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                            "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]}
+                            "reply_markup": {
+                                "inline_keyboard": [[
+                                    {"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}
+                                ]]
+                            }
                         })
                     
                     await answer_inline_query(session, query_id, results, cache_time=300)
@@ -525,8 +550,9 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Electric Speed ⚡) 🚀'
+    return 'Al-Madih Bot Running (Fixed Version 🚀)'
 
 if __name__ == '__main__':
     app.run(debug=True)
+
 
