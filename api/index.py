@@ -440,99 +440,76 @@ async def process_telegram_update(data):
                     else:
                         await send_message(session, chat_id, "😔 አልተገኘም።")
 
-            # 3. Inline Query (FIXED - Empty Query Bug)
-elif "inline_query" in data:
-    iq = data["inline_query"]
-    query_id = iq["id"]
-    query = iq.get("query", "").strip().lower()
+            # 3. Inline Query (Optimized & Fixed)
+            elif "inline_query" in data:
+                iq = data["inline_query"]
+                query_id = iq["id"]
+                query = iq.get("query", "").strip().lower()
 
-    results = []
+                results = []
 
-    # A) FAVORITES
-    if query.startswith("#favorites"):
-        user_id = iq.get("from", {}).get("id")
-        user = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
-        if not user: 
-            user = await db.users.find_one({"_id": str(user_id)}, {"favorites": 1})
-        
-        fav_ids = user.get("favorites", []) if user else []
-        if fav_ids:
-            cursor = db.files.find(
-                {"file_id": {"$in": fav_ids}}, 
-                {"file_id": 1, "display_name": 1}
-            ).limit(50)
-            docs = await cursor.to_list(length=50)
-            
-            for doc in docs:
-                results.append({
-                    "type": "audio",
-                    "id": str(doc["_id"]),
-                    "audio_file_id": doc["file_id"],
-                    "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                    "reply_markup": {
-                        "inline_keyboard": [[
-                            {"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}"}
-                        ]]
-                    }
-                })
-        
-        # Send results (even if empty)
-        await answer_inline_query(session, query_id, results, cache_time=300)
+                # --- A. FAVORITES LIST ---
+                if query.startswith("#favorites"):
+                    user_id = iq.get("from", {}).get("id")
+                    # handle int/str id mismatch
+                    user = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
+                    if not user: user = await db.users.find_one({"_id": str(user_id)}, {"favorites": 1})
+                    
+                    fav_ids = user.get("favorites", []) if user else []
+                    if fav_ids:
+                        cursor = db.files.find({"file_id": {"$in": fav_ids}}, {"file_id": 1, "display_name": 1}).limit(50)
+                        docs = await cursor.to_list(length=50)
+                        for doc in docs:
+                            results.append({
+                                "type": "audio",
+                                "id": str(doc["_id"]),
+                                "audio_file_id": doc["file_id"],
+                                "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
+                                "reply_markup": {"inline_keyboard": [[{"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}" }]]}
+                            })
+                    # Always send response even if empty
+                    await answer_inline_query(session, query_id, results, cache_time=10, switch_pm_text="Favorites", switch_pm_param="start")
 
-    # B) EMPTY QUERY - Show Recent 50
-    elif not query:
-        # Check cache first
-        current_time = time.time()
-        if CACHED_EMPTY_RESULT["data"] and (current_time - CACHED_EMPTY_RESULT["time"] < CACHE_TTL):
-            results = CACHED_EMPTY_RESULT["data"]
-        else:
-            # Fetch fresh data
-            cursor = db.files.find(
-                {"file_id": {"$exists": True}}, 
-                {"file_id": 1, "display_name": 1}
-            ).sort("_id", -1).limit(50)  # Changed from 20 to 50
-            
-            docs = await cursor.to_list(length=50)
-            for doc in docs:
-                results.append({
-                    "type": "audio",
-                    "id": str(doc["_id"]),
-                    "audio_file_id": doc["file_id"],
-                    "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                    "reply_markup": {
-                        "inline_keyboard": [[
-                            {"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}
-                        ]]
-                    }
-                })
-            
-            # Update cache
-            CACHED_EMPTY_RESULT["data"] = results
-            CACHED_EMPTY_RESULT["time"] = current_time
-        
-        # 🔥 FIX: ALWAYS send response
-        await answer_inline_query(session, query_id, results, cache_time=300)
+                # --- B. EMPTY QUERY (RECENT FILES) ---
+                elif not query:
+                    current_time = time.time()
+                    # Check Cache
+                    if CACHED_EMPTY_RESULT["data"] and (current_time - CACHED_EMPTY_RESULT["time"] < CACHE_TTL):
+                        results = CACHED_EMPTY_RESULT["data"]
+                    else:
+                        # Fetch Fresh
+                        cursor = db.files.find({"file_id": {"$exists": True}}, {"file_id": 1, "display_name": 1}).sort("_id", -1).limit(50)
+                        docs = await cursor.to_list(length=50)
+                        for doc in docs:
+                            results.append({
+                                "type": "audio",
+                                "id": str(doc["_id"]),
+                                "audio_file_id": doc["file_id"],
+                                "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
+                                "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]}
+                            })
+                        # Update Cache
+                        CACHED_EMPTY_RESULT["data"] = results
+                        CACHED_EMPTY_RESULT["time"] = current_time
+                    
+                    # Send Response
+                    await answer_inline_query(session, query_id, results, cache_time=300, switch_pm_text="Open Bot", switch_pm_param="start")
 
-    # C) SEARCH QUERY
-    else:
-        sq = build_search_query(query)
-        cursor = db.files.find(sq, {"file_id": 1, "display_name": 1}).limit(50)
-        docs = await cursor.to_list(length=50)
-        
-        for doc in docs:
-            results.append({
-                "type": "audio",
-                "id": str(doc["_id"]),
-                "audio_file_id": doc["file_id"],
-                "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                "reply_markup": {
-                    "inline_keyboard": [[
-                        {"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}
-                    ]]
-                }
-            })
-        
-        await answer_inline_query(session, query_id, results, cache_time=300)
+                # --- C. SEARCH QUERY ---
+                else:
+                    sq = build_search_query(query)
+                    cursor = db.files.find(sq, {"file_id": 1, "display_name": 1}).limit(50)
+                    docs = await cursor.to_list(length=50)
+                    for doc in docs:
+                        results.append({
+                            "type": "audio",
+                            "id": str(doc["_id"]),
+                            "audio_file_id": doc["file_id"],
+                            "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
+                            "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]}
+                        })
+                    
+                    await answer_inline_query(session, query_id, results, cache_time=300)
 
         except Exception as e:
             logger.error(f"Err: {e}")
@@ -552,3 +529,4 @@ def telegram_webhook():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
