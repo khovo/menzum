@@ -226,6 +226,16 @@ async def process_telegram_update(data):
     if not MONGO_URL or not BOT_TOKEN: return
     db_client = AsyncIOMotorClient(MONGO_URL)
     db = db_client["MenzumaDB"]
+    
+    # 🔥 DEBUG: Log ALL incoming updates to see what Telegram is sending
+    logger.error(f"[UPDATE] Received keys: {list(data.keys())}")
+    
+    # If inline query exists, log it specifically
+    if "inline_query" in data:
+        iq_query = data['inline_query'].get('query', '')
+        logger.error(f"[INLINE DETECTED] Query: '{iq_query}'")
+    else:
+        logger.error("[UPDATE] No inline_query found in this update")
 
     async with aiohttp.ClientSession() as session:
         try:
@@ -436,7 +446,7 @@ async def process_telegram_update(data):
                     else:
                         await send_message(session, chat_id, "😔 አልተገኘም።")
 
-            # 3. Inline Query (Fixed Logic)
+            # 3. Inline Query (Fixed Logic + Logging)
             elif "inline_query" in data:
                 iq = data["inline_query"]
                 query_id = iq["id"]
@@ -445,7 +455,7 @@ async def process_telegram_update(data):
                 results = []
                 
                 # Debug logging
-                logger.error(f"[INLINE] Query: '{query}'")
+                logger.error(f"[INLINE] Processing Query: '{query}'")
 
                 # A) FAVORITES
                 if query.startswith("#favorites"):
@@ -550,7 +560,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Fixed Version 🚀)'
+    return 'Al-Madih Bot Running (Debug Mode 🚀)'
 
 if __name__ == '__main__':
     app.run(debug=True)
