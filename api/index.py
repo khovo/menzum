@@ -7,6 +7,7 @@ import logging
 import aiohttp 
 import re
 import time
+import json
 from datetime import datetime, timedelta
 
 # Logging
@@ -22,6 +23,9 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 
 FORCE_CHANNEL_USERNAME = "Al_madih" 
 FORCE_CHANNEL_URL = "https://t.me/Al_madih"
+
+# Storage Channel ID (የመንዙማ ማከማቻው)
+STORAGE_CHANNEL_ID = -1003561085933 
 
 ITEMS_PER_PAGE = 10 
 
@@ -373,22 +377,47 @@ async def process_telegram_update(data):
                     await set_user_state(db, user_id, "idle")
                     return
 
+                # --- 🛑 ADMIN ONLY AREA 🛑 ---
                 if str(user_id) == str(ADMIN_ID):
                     if text == "/admin":
                         kb = {"keyboard": [[{"text": "📊 Statistics"}, {"text": "📅 Daily Stats"}], [{"text": "📢 Broadcast"}, {"text": "📂 Total Files"}]], "resize_keyboard": True}
                         await send_message(session, chat_id, "Admin Panel", reply_markup=kb)
+                    
                     elif text == "📊 Statistics":
                         u = await db.users.count_documents({})
                         f = await db.files.count_documents({})
                         await send_message(session, chat_id, f"Users: {u}\nFiles: {f}")
+                    
                     elif text == "📅 Daily Stats":
                         msg = await get_daily_stats(db)
                         await send_message(session, chat_id, msg)
+                    
                     elif text == "📢 Broadcast":
                         await set_user_state(db, user_id, "broadcast_wait")
                         await send_message(session, chat_id, "Send message to broadcast.")
 
-                    # --- New Debug Commands for Admin (VITAL) ---
+                    # --- 🔍 THE 4 DEBUG COMMANDS (REQUESTED) ---
+                    
+                    # 1. TEST CHANNEL ACCESS
+                    elif text == "/testchannel":
+                        try:
+                            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChat"
+                            async with session.get(url, params={"chat_id": STORAGE_CHANNEL_ID}) as resp:
+                                result = await resp.json()
+                                if result.get("ok"):
+                                    channel_info = result["result"]
+                                    await send_message(session, chat_id, 
+                                        f"✅ **Channel Access: OK**\n\n"
+                                        f"**Title:** {channel_info.get('title')}\n"
+                                        f"**ID:** `{channel_info.get('id')}`"
+                                    )
+                                else:
+                                    await send_message(session, chat_id, f"❌ Error: {result.get('description')}")
+                        except Exception as e:
+                            await send_message(session, chat_id, f"❌ Exception: {e}")
+                        return
+
+                    # 2. CHECK DB
                     elif text == "/checkdb":
                         total = await db.files.count_documents({"file_id": {"$exists": True}})
                         sample = await db.files.find_one({"file_id": {"$exists": True}})
@@ -399,16 +428,32 @@ async def process_telegram_update(data):
                         await send_message(session, chat_id, msg)
                         return
 
+                    # 3. TEST FILE (Send real audio)
                     elif text == "/testfile":
                         doc = await db.files.find_one({"file_id": {"$exists": True}})
                         if doc:
                             try:
                                 await send_audio(session, chat_id, doc["file_id"], f"🎵 Test\n{doc.get('display_name')}\n\n@Almadihbot")
-                                await send_message(session, chat_id, "✅ **SUCCESS!** Inline mode will work.")
+                                await send_message(session, chat_id, "✅ **SUCCESS!** File sent. IDs are valid.")
                             except Exception as e:
-                                await send_message(session, chat_id, f"❌ **FAILED:** `{str(e)}`\n\nYour File IDs are INVALID for this bot.")
+                                await send_message(session, chat_id, f"❌ **FAILED:** `{str(e)}`\n\nYour File IDs might be INVALID for this bot.")
+                        else:
+                            await send_message(session, chat_id, "❌ No files in DB.")
                         return
-                    # -------------------------------------
+
+                    # 4. TEST INLINE (Simulate JSON)
+                    elif text == "/testinline":
+                        doc = await db.files.find_one({"file_id": {"$exists": True}})
+                        if doc:
+                            test_result = {
+                                "type": "audio",
+                                "id": str(doc["_id"]),
+                                "audio_file_id": doc["file_id"],
+                                "caption": f"🎵 {doc.get('display_name')}\n\n@Almadihbot"
+                            }
+                            await send_message(session, chat_id, f"**Test Inline JSON:**\n\n```json\n{json.dumps(test_result, indent=2)}\n```")
+                        return
+                    # ---------------------------------------------
                     
                     if state == "admin_reply_wait":
                         target_user = (user_data or {}).get("target_user_id")
@@ -535,7 +580,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (Audio Mode 🚀)'
+    return 'Al-Madih Bot Running (Diagnostics Mode 🚀)'
 
 if __name__ == '__main__':
     app.run(debug=True)
