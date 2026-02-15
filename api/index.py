@@ -7,7 +7,6 @@ import logging
 import aiohttp 
 import re
 import time
-import json
 from datetime import datetime, timedelta
 
 # Logging
@@ -23,9 +22,6 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 
 FORCE_CHANNEL_USERNAME = "Al_madih" 
 FORCE_CHANNEL_URL = "https://t.me/Al_madih"
-
-# Storage Channel ID
-STORAGE_CHANNEL_ID = -1003561085933 
 
 ITEMS_PER_PAGE = 10 
 
@@ -226,7 +222,7 @@ async def process_telegram_update(data):
     
     async with aiohttp.ClientSession() as session:
         try:
-            # 1. Callback Query
+            # 1. Callback Query (Buttons)
             if "callback_query" in data:
                 cb = data["callback_query"]
                 user_id = cb["from"]["id"]
@@ -338,52 +334,7 @@ async def process_telegram_update(data):
                 chat_id = message.get("chat", {}).get("id")
                 user_id = message.get("from", {}).get("id")
                 text = message.get("text", "")
-
-                # ----------------------------------------------------
-                # 🔥 IDENTITY CHECK (ይሄን ሞክር)
-                # ----------------------------------------------------
-                if text == "/myid":
-                    await send_message(session, chat_id, f"🆔 Your ID: `{user_id}`\n🔑 Configured Admin ID: `{ADMIN_ID}`")
-                    return
-
-                # 🔥 ADMIN COMMANDS
-                if str(user_id) == str(ADMIN_ID):
-                    if text == "/testchannel":
-                        try:
-                            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChat"
-                            async with session.get(url, params={"chat_id": STORAGE_CHANNEL_ID}) as resp:
-                                result = await resp.json()
-                                if result.get("ok"):
-                                    await send_message(session, chat_id, "✅ Channel OK")
-                                else:
-                                    await send_message(session, chat_id, f"❌ Error: {result.get('description')}")
-                        except Exception as e:
-                            await send_message(session, chat_id, f"❌ Err: {e}")
-                        return
-                    
-                    if text == "/testfile":
-                        doc = await db.files.find_one({"file_id": {"$exists": True}})
-                        if doc:
-                            try:
-                                await send_audio(session, chat_id, doc["file_id"], f"🎵 Test Audio\n@Almadihbot")
-                                await send_message(session, chat_id, "✅ File sent successfully.")
-                            except Exception as e:
-                                await send_message(session, chat_id, f"❌ Failed: {e}")
-                        else:
-                            await send_message(session, chat_id, "❌ Database is empty")
-                        return
-
-                    if text == "/checkdb":
-                         total = await db.files.count_documents({"file_id": {"$exists": True}})
-                         await send_message(session, chat_id, f"📊 Total Files: {total}")
-                         return
-
-                    if text == "/testinline":
-                        test_json = {"type": "audio", "title": "Test", "caption": "Test"}
-                        await send_message(session, chat_id, f"```json\n{json.dumps(test_json)}\n```")
-                        return
-
-                # --- Regular User Logic ---
+                
                 is_joined = await check_membership(session, user_id)
                 if not is_joined:
                     msg = "**⚠️ ይቅርታ! ቦቱን ለመጠቀም መጀመሪያ ቻናላችንን ይቀላቀሉ።**"
@@ -398,9 +349,75 @@ async def process_telegram_update(data):
                     await send_message(session, chat_id, welcome, reply_markup=get_main_menu_kb())
                     return
 
-                if text == "/list":
+                if text == "/list" or text == "📂 Catalog (List)":
                     msg_text, kb = await get_catalog_page(db, 1) 
                     await send_message(session, chat_id, msg_text, reply_markup=kb)
+                    return
+
+                user_data = await get_user_data(db, user_id)
+                state = (user_data or {}).get("state")
+
+                if state == "support_wait":
+                    if text == "/start":
+                        await set_user_state(db, user_id, "idle")
+                        await send_message(session, chat_id, "🏠 ወደ ዋናው ገጽ ተመልሰዋል።", reply_markup=get_main_menu_kb())
+                        return
+
+                    sender_name = message.get("from", {}).get("first_name", "User")
+                    kb = {"inline_keyboard": [[{"text": "↩️ መልስ ለመስጠት (Reply)", "callback_data": f"reply_{user_id}"}]]}
+                    await send_message(session, ADMIN_ID, f"📩 **New Feedback from:** {sender_name} (`{user_id}`)", reply_markup=kb)
+                    await copy_message(session, ADMIN_ID, chat_id, message.get("message_id"))
+                    
+                    await send_message(session, chat_id, "✅ **መልእክትዎ ተልኳል! እናመሰግናለን።**\n\nወደ ዋናው ገጽ ተመልሰዋል።", reply_markup=get_main_menu_kb())
+                    await set_user_state(db, user_id, "idle")
+                    return
+
+                if str(user_id) == str(ADMIN_ID):
+                    if text == "/admin":
+                        kb = {"keyboard": [[{"text": "📊 Statistics"}, {"text": "📅 Daily Stats"}], [{"text": "📢 Broadcast"}, {"text": "📂 Total Files"}]], "resize_keyboard": True}
+                        await send_message(session, chat_id, "Admin Panel", reply_markup=kb)
+                    elif text == "📊 Statistics":
+                        u = await db.users.count_documents({})
+                        f = await db.files.count_documents({})
+                        await send_message(session, chat_id, f"Users: {u}\nFiles: {f}")
+                    elif text == "📅 Daily Stats":
+                        msg = await get_daily_stats(db)
+                        await send_message(session, chat_id, msg)
+                    elif text == "📢 Broadcast":
+                        await set_user_state(db, user_id, "broadcast_wait")
+                        await send_message(session, chat_id, "Send message to broadcast.")
+                    
+                    if state == "admin_reply_wait":
+                        target_user = (user_data or {}).get("target_user_id")
+                        if target_user:
+                            try:
+                                await send_message(session, target_user, "🔔 **ከአድሚኑ የተሰጠ መልስ:**")
+                                await copy_message(session, target_user, chat_id, message["message_id"])
+                                await send_message(session, chat_id, "✅ መልሱ ተልኳል!")
+                            except Exception as e:
+                                await send_message(session, chat_id, f"❌ አልተላከም: {e}")
+                            
+                            await set_user_state(db, user_id, "idle")
+                        return
+
+                    if state == "broadcast_wait" and text != "🔙 Back" and "message_id" in message:
+                        await set_user_state(db, user_id, "broadcast_confirm", {"broadcast_msg_id": message["message_id"], "broadcast_markup": message.get("reply_markup")})
+                        await copy_message(session, chat_id, chat_id, message["message_id"], reply_markup=message.get("reply_markup"))
+                        kb = {"inline_keyboard": [[{"text": "✅ Post", "callback_data": "broadcast_confirm"}], [{"text": "❌ Cancel", "callback_data": "broadcast_cancel"}]]}
+                        await send_message(session, chat_id, "Confirm?", reply_markup=kb)
+                        return
+
+                    if "audio" in message or "voice" in message:
+                        f = message.get("audio") or message.get("voice")
+                        cap = message.get("caption", "").split('\n')[0].strip()
+                        name = cap if cap else f.get("file_name", "Unknown")
+                        if len(name) > 3:
+                            await db.files.update_one(
+                                {"display_name": {"$regex": re.escape(name), "$options": "i"}},
+                                {"$set": {"file_id": f["file_id"], "display_name": name}},
+                                upsert=True
+                            )
+                            await send_message(session, chat_id, f"✅ Saved: `{name}`")
                     return
 
                 if text and not text.startswith("/"):
@@ -412,8 +429,8 @@ async def process_telegram_update(data):
                     else:
                         await send_message(session, chat_id, "😔 አልተገኘም።")
 
-            # 3. Inline Query (Corrected)
-            if "inline_query" in data:
+            # 3. Inline Query (FINAL AUDIO VERSION)
+            elif "inline_query" in data:
                 iq = data["inline_query"]
                 query_id = iq["id"]
                 query = iq.get("query", "").strip().lower()
@@ -421,60 +438,91 @@ async def process_telegram_update(data):
 
                 results = []
 
+                # A) FAVORITES
                 if query.startswith("#favorites"):
                     user = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
-                    if not user: user = await db.users.find_one({"_id": str(user_id)}, {"favorites": 1})
+                    if not user: 
+                        user = await db.users.find_one({"_id": str(user_id)}, {"favorites": 1})
+                    
                     fav_ids = user.get("favorites", []) if user else []
                     
                     if fav_ids:
-                        cursor = db.files.find({"file_id": {"$in": fav_ids}}, {"file_id": 1, "display_name": 1}).limit(50)
+                        cursor = db.files.find(
+                            {"file_id": {"$in": fav_ids}}, 
+                            {"file_id": 1, "display_name": 1}
+                        ).limit(50)
                         docs = await cursor.to_list(length=50)
+                        
                         for doc in docs:
                             results.append({
                                 "type": "audio",
                                 "id": str(doc["_id"]),
                                 "audio_file_id": doc["file_id"],
                                 "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                                "parse_mode": "Markdown",
-                                "reply_markup": {"inline_keyboard": [[{"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}" }]]}
+                                "reply_markup": {
+                                    "inline_keyboard": [[
+                                        {"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}"}
+                                    ]]
+                                }
                             })
-                    await answer_inline_query(session, query_id, results, cache_time=300)
+                    
+                    await answer_inline_query(session, query_id, results, cache_time=10, switch_pm_text="Favorites", switch_pm_param="start")
 
+                # B) EMPTY QUERY - Show Recent 50
                 elif not query:
-                    if CACHED_EMPTY_RESULT["data"] and (time.time() - CACHED_EMPTY_RESULT["time"] < CACHE_TTL):
+                    current_time = time.time()
+                    
+                    # Check Cache
+                    if CACHED_EMPTY_RESULT["data"] and (current_time - CACHED_EMPTY_RESULT["time"] < CACHE_TTL):
                         results = CACHED_EMPTY_RESULT["data"]
                     else:
-                        cursor = db.files.find({"file_id": {"$exists": True, "$ne": ""}}, {"file_id": 1, "display_name": 1}).sort("_id", -1).limit(50)
+                        cursor = db.files.find(
+                            {"file_id": {"$exists": True, "$ne": ""}}, 
+                            {"file_id": 1, "display_name": 1}
+                        ).sort("_id", -1).limit(50)
+                        
                         docs = await cursor.to_list(length=50)
+                        
                         for doc in docs:
-                            if not doc.get("file_id") or len(doc.get("file_id")) < 10: continue
+                            if not doc.get("file_id"): continue
                             results.append({
                                 "type": "audio",
                                 "id": str(doc["_id"]),
                                 "audio_file_id": doc["file_id"],
                                 "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                                "parse_mode": "Markdown",
-                                "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]}
+                                "reply_markup": {
+                                    "inline_keyboard": [[
+                                        {"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}
+                                    ]]
+                                }
                             })
+                        
+                        # Update Cache
                         CACHED_EMPTY_RESULT["data"] = results
-                        CACHED_EMPTY_RESULT["time"] = time.time()
+                        CACHED_EMPTY_RESULT["time"] = current_time
                     
-                    await answer_inline_query(session, query_id, results, cache_time=300)
+                    await answer_inline_query(session, query_id, results, cache_time=300, switch_pm_text="🔥 Menzumas", switch_pm_param="start")
 
+                # C) SEARCH QUERY
                 else:
                     sq = build_search_query(query)
                     cursor = db.files.find(sq, {"file_id": 1, "display_name": 1}).limit(50)
                     docs = await cursor.to_list(length=50)
+                    
                     for doc in docs:
-                        if not doc.get("file_id") or len(doc.get("file_id")) < 10: continue
+                        if not doc.get("file_id"): continue
                         results.append({
                             "type": "audio",
                             "id": str(doc["_id"]),
                             "audio_file_id": doc["file_id"],
                             "caption": f"{doc.get('display_name')}\n\n@Almadihbot",
-                            "parse_mode": "Markdown",
-                            "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}" }]]}
+                            "reply_markup": {
+                                "inline_keyboard": [[
+                                    {"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}
+                                ]]
+                            }
                         })
+                    
                     await answer_inline_query(session, query_id, results, cache_time=300)
 
         except Exception as e:
@@ -491,7 +539,7 @@ def telegram_webhook():
             run_async(process_telegram_update(data))
             return 'ok'
         except: return 'error', 500
-    return 'Al-Madih Bot Running (ID Check Mode 🚀)'
+    return 'Al-Madih Bot Running (Final Version 🚀)'
 
 if __name__ == '__main__':
     app.run(debug=True)
