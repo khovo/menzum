@@ -7,6 +7,7 @@ import logging
 import aiohttp 
 import re
 import time
+import traceback # Added for the debug snippet
 from datetime import datetime, timedelta
 
 # Logging
@@ -496,55 +497,94 @@ async def process_telegram_update(data):
                     else:
                         await send_message(session, chat_id, "😔 አልተገኘም።")
 
-            # 3. Inline Query (FINAL WORKING VERSION - AUDIO TYPE)
+            # 3. Inline Query (WITH DETAILED LOGGING)
             if "inline_query" in data:
                 iq = data["inline_query"]
                 query_id = iq["id"]
                 query = iq.get("query", "").strip().lower()
                 user_id = iq.get("from", {}).get("id")
 
+                logger.error(f"[INLINE START] User: {user_id}, Query: '{query}', QueryID: {query_id}")
+
                 results = []
 
-                # A) FAVORITES
-                if query.startswith("#favorites"):
-                    user = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
-                    if not user: 
-                        user = await db.users.find_one({"_id": str(user_id)}, {"favorites": 1})
-                    
-                    fav_ids = user.get("favorites", []) if user else []
-                    
-                    if fav_ids:
-                        cursor = db.files.find(
-                            {"file_id": {"$in": fav_ids}}, 
-                            {"file_id": 1, "display_name": 1}
-                        ).limit(50)
-                        docs = await cursor.to_list(length=50)
+                try:
+                    # A) FAVORITES
+                    if query.startswith("#favorites"):
+                        logger.error("[INLINE] Mode: FAVORITES")
+                        user = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
+                        if not user: 
+                            user = await db.users.find_one({"_id": str(user_id)}, {"favorites": 1})
                         
-                        for doc in docs:
-                            results.append({
-                                "type": "audio",
-                                "id": str(doc["_id"]),
-                                "audio_file_id": doc["file_id"],
-                                "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
-                            })
-                    
-                    await answer_inline_query(session, query_id, results, cache_time=300)
+                        fav_ids = user.get("favorites", []) if user else []
+                        logger.error(f"[INLINE] Found {len(fav_ids)} favorites")
+                        
+                        if fav_ids:
+                            cursor = db.files.find(
+                                {"file_id": {"$in": fav_ids}}, 
+                                {"file_id": 1, "display_name": 1}
+                            ).limit(50)
+                            docs = await cursor.to_list(length=50)
+                            logger.error(f"[INLINE] Fetched {len(docs)} favorite docs")
+                            
+                            for doc in docs:
+                                results.append({
+                                    "type": "audio",
+                                    "id": str(doc["_id"]),
+                                    "audio_file_id": doc["file_id"],
+                                    "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
+                                })
+                        
+                        logger.error(f"[INLINE] Sending {len(results)} favorite results")
+                        response = await answer_inline_query(session, query_id, results, cache_time=300)
+                        logger.error(f"[INLINE] Telegram response: {response}")
 
-                # B) EMPTY QUERY - Show Recent 50 Audios
-                elif not query:
-                    current_time = time.time()
-                    
-                    # Check cache
-                    if CACHED_EMPTY_RESULT["data"] and (current_time - CACHED_EMPTY_RESULT["time"] < CACHE_TTL):
-                        results = CACHED_EMPTY_RESULT["data"]
+                    # B) EMPTY QUERY - Show Recent 50 Audios
+                    elif not query:
+                        logger.error("[INLINE] Mode: EMPTY QUERY (Recent 50)")
+                        current_time = time.time()
+                        
+                        # Check cache
+                        if CACHED_EMPTY_RESULT["data"] and (current_time - CACHED_EMPTY_RESULT["time"] < CACHE_TTL):
+                            results = CACHED_EMPTY_RESULT["data"]
+                            logger.error(f"[INLINE] Using cache: {len(results)} results")
+                        else:
+                            logger.error("[INLINE] Cache miss - fetching from DB")
+                            # Fetch from database
+                            cursor = db.files.find(
+                                {"file_id": {"$exists": True}}, 
+                                {"file_id": 1, "display_name": 1}
+                            ).sort("_id", -1).limit(50)
+                            
+                            docs = await cursor.to_list(length=50)
+                            logger.error(f"[INLINE] Fetched {len(docs)} docs from DB")
+                            
+                            for doc in docs:
+                                results.append({
+                                    "type": "audio",
+                                    "id": str(doc["_id"]),
+                                    "audio_file_id": doc["file_id"],
+                                    "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
+                                })
+                            
+                            # Update cache
+                            CACHED_EMPTY_RESULT["data"] = results
+                            CACHED_EMPTY_RESULT["time"] = current_time
+                            logger.error(f"[INLINE] Cache updated with {len(results)} results")
+                        
+                        logger.error(f"[INLINE] Sending {len(results)} results to Telegram")
+                        response = await answer_inline_query(session, query_id, results, cache_time=300)
+                        logger.error(f"[INLINE] Telegram API response: {response}")
+
+                    # C) SEARCH QUERY
                     else:
-                        # Fetch from database
-                        cursor = db.files.find(
-                            {"file_id": {"$exists": True}}, 
-                            {"file_id": 1, "display_name": 1}
-                        ).sort("_id", -1).limit(50)
+                        logger.error(f"[INLINE] Mode: SEARCH '{query}'")
+                        sq = build_search_query(query)
+                        logger.error(f"[INLINE] MongoDB query: {sq}")
                         
+                        cursor = db.files.find(sq, {"file_id": 1, "display_name": 1}).limit(50)
                         docs = await cursor.to_list(length=50)
+                        logger.error(f"[INLINE] Search found {len(docs)} results")
                         
                         for doc in docs:
                             results.append({
@@ -554,27 +594,14 @@ async def process_telegram_update(data):
                                 "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
                             })
                         
-                        # Update cache
-                        CACHED_EMPTY_RESULT["data"] = results
-                        CACHED_EMPTY_RESULT["time"] = current_time
-                    
-                    await answer_inline_query(session, query_id, results, cache_time=300)
-
-                # C) SEARCH QUERY
-                else:
-                    sq = build_search_query(query)
-                    cursor = db.files.find(sq, {"file_id": 1, "display_name": 1}).limit(50)
-                    docs = await cursor.to_list(length=50)
-                    
-                    for doc in docs:
-                        results.append({
-                            "type": "audio",
-                            "id": str(doc["_id"]),
-                            "audio_file_id": doc["file_id"],
-                            "caption": f"{doc.get('display_name')}\n\n@Almadihbot"
-                        })
-                    
-                    await answer_inline_query(session, query_id, results, cache_time=300)
+                        logger.error(f"[INLINE] Sending {len(results)} search results")
+                        response = await answer_inline_query(session, query_id, results, cache_time=300)
+                        logger.error(f"[INLINE] Telegram response: {response}")
+                
+                except Exception as e:
+                    logger.error(f"[INLINE ERROR] Exception: {e}")
+                    import traceback
+                    logger.error(f"[INLINE ERROR] Traceback: {traceback.format_exc()}")
 
         except Exception as e:
             logger.error(f"Err: {e}")
@@ -594,3 +621,4 @@ def telegram_webhook():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
