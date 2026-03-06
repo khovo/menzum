@@ -98,16 +98,6 @@ def _is_admin(user_id) -> bool:
 def _normalize_text(text: str) -> str:
     """
     Strip Unicode variation selectors (U+FE0F, U+FE0E) from incoming text.
-
-    WHY THIS EXISTS:
-    Android and iOS Telegram clients silently append U+FE0F (VS-16, the
-    "emoji presentation" selector) to emoji characters before transmitting.
-    A reply-keyboard button defined as "🔧 Manage Channels" (U+1F527) arrives
-    as U+1F527 + U+FE0F.  A plain == check against the original string always
-    returns False → the handler is silently skipped → bot goes completely mute.
-
-    Stripping both variation selectors from the incoming text before every
-    comparison fixes ALL reply-keyboard emoji buttons in one place.
     """
     return text.replace("\ufe0f", "").replace("\ufe0e", "")
 
@@ -125,7 +115,6 @@ async def _channel_mgmt_menu_text(db) -> str:
 async def _send_menu(session, db, chat_id, user_id: int, user_data: dict | None) -> None:
     """
     Send the main menu and persist the message_id for future cleanup.
-    Helper used by both /start and pl_cancel so the logic lives in one place.
     """
     welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
     result  = await send_message(session, chat_id, welcome, reply_markup=get_main_menu_kb())
@@ -136,12 +125,6 @@ async def _send_menu(session, db, chat_id, user_id: int, user_data: dict | None)
 async def _deliver_playlist(session, db, chat_id, playlist: dict) -> None:
     """
     Deliver all tracks in a playlist.
-
-    Strategy (Vercel-safe, no sleep loops):
-      1 track  → sendAudio  (normal, with fav button)
-      2–10     → sendMediaGroup (single API call, entire playlist in one message group)
-
-    Increments the play counter after delivery.
     """
     tracks = playlist.get("tracks", [])
     if not tracks:
@@ -160,7 +143,6 @@ async def _deliver_playlist(session, db, chat_id, playlist: dict) -> None:
             reply_markup=kb,
         )
     else:
-        # Build InputMediaAudio list.  Caption only on first item.
         media = []
         for i, t in enumerate(tracks):
             item = {"type": "audio", "media": t["file_id"]}
@@ -266,7 +248,6 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
 
         await answer_callback_query(session, cb_id, f"➕ Added! ({count}/10)")
 
-        # Refresh the control panel message to show updated count
         user_data = await get_user_data(db, user_id)
         ctrl_msg_id = (user_data or {}).get("pl_ctrl_msg_id")
         if ctrl_msg_id:
@@ -293,7 +274,6 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         await answer_callback_query(session, cb_id, "⏳ Saving playlist...")
         playlist_id = await create_playlist(db, user_id, doc_ids)
 
-        # Clean up builder state
         await set_user_state(db, user_id, "idle", {"building_playlist": [], "pl_ctrl_msg_id": None})
 
         if not playlist_id:
@@ -535,34 +515,28 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             )
             return
 
-    # ── Load user state early (needed by /start cleanup + all state machines) ─
     user_data = await get_user_data(db, user_id)
     state     = (user_data or {}).get("state")
 
     # ── /start  (with optional deep-link parameter) ───────────────────────────
     if text and (text == "/start" or text.startswith("/start ")):
-        # ① Delete the command message immediately
         await delete_message(session, chat_id, msg_id)
-        # ② Delete old menu if we have its ID
         old_menu_id = (user_data or {}).get("last_menu_msg_id")
         if old_menu_id:
             await delete_message(session, chat_id, old_menu_id)
 
-        # ③ Check for deep-link parameter (e.g. /start pl_xY7k9z)
         parts       = text.split(" ", 1)
         start_param = parts[1].strip() if len(parts) > 1 else None
 
         if start_param and start_param.startswith("pl_"):
             playlist = await get_playlist(db, start_param)
             if playlist:
-                # Send a short preamble then deliver all tracks
                 await send_message(
                     session, chat_id,
                     f"🎧 *Playing playlist* `{start_param}` — "
                     f"{len(playlist.get('tracks', []))} tracks\n\n@{BOT_USERNAME}"
                 )
                 await _deliver_playlist(session, db, chat_id, playlist)
-                # Also drop a fresh main menu so the user isn't stranded
                 result = await send_message(
                     session, chat_id,
                     "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*",
@@ -572,7 +546,6 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                     await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
                 return
 
-        # ④ Normal /start: send main menu, persist msg_id
         result = await send_message(
             session, chat_id,
             "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*",
@@ -595,10 +568,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         return
 
     # ── Admin: Manage Channels (reply-keyboard button) ───────────────────────
-    # Must be intercepted HERE — before any state machine — because the
-    # broadcast_wait state check below uses `text != "🔙 Back"` which would
-    # silently capture this text and treat it as broadcast content.
-    if text == "🔧 Manage Channels" and _is_admin(user_id):
+    if "Manage Channels" in text and _is_admin(user_id):
         await send_message(
             session, chat_id,
             await _channel_mgmt_menu_text(db),
@@ -625,11 +595,6 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
 
     # ── Admin Panel ───────────────────────────────────────────────────────────
     if _is_admin(user_id):
-
-        # ━━ STATE-BASED CHECKS FIRST ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # FIX ①: State always takes priority over text commands.
-        # Previously `admin_add_channel_wait` was checked AFTER text-command
-        # ifs, causing fall-through to the general search when no text matched.
 
         if state == "admin_add_channel_wait":
             if text and not text.startswith("/"):
@@ -676,8 +641,6 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             )
             return
 
-        # ━━ TEXT-COMMAND CHECKS AFTER STATES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
         if text == "/admin":
             await send_message(
                 session, chat_id, "⚙️ *Admin Panel*",
@@ -707,7 +670,6 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await send_message(session, chat_id, "📢 Send the message you want to broadcast.")
             return
 
-        # Admin audio/voice → save to DB
         if "audio" in message or "voice" in message:
             f    = message.get("audio") or message.get("voice")
             cap  = message.get("caption", "").split("\n")[0].strip()
@@ -721,11 +683,9 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 await send_message(session, chat_id, f"✅ Saved: `{name}`")
             return
 
-        # Admin text that matches none of the above → ignore silently
         return
 
     # ── Playlist Builder: search in playlist mode ─────────────────────────────
-    # Checked BEFORE general search so playlist mode always intercepts text.
     if state == "playlist_builder" and text and not text.startswith("/"):
         sq  = build_search_query(text)
         doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
@@ -783,7 +743,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             if suggestions:
                 await send_message(
                     session, chat_id,
-                    "😔 በቀጥታ አልተገኘም። ይህን ማለትዎ ነው?\n\n_ከታች ካሉት ዘፈኖች አንዱን ምረጡ:_",
+                    "😔 በቀጥታ አልተገኘም። ይህን ማለትዎ ነው?\n\n_ከታች ካሉት መንዙማዎች አንዱን ምረጡ:_",
                     reply_markup=get_fuzzy_suggestions_kb(suggestions),
                 )
             else:
@@ -891,3 +851,5 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
+
+
