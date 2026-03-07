@@ -656,7 +656,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             if suggestions:
                 await send_message(
                     session, chat_id,
-                    "😔 በቀጥታ አልተገኘም። ይህን ማለትዎ ነው?\n\n_Tap ➕ to add directly to your playlist:_",
+                    "😔 በቀጥታ አልተገኘም። ይህን ማለትዎ ነው?\n\n_ከታች ካሉት መንዙማዎች አንዱን ምረጡ:_",
                     reply_markup=get_playlist_fuzzy_kb(suggestions),
                 )
             else:
@@ -795,7 +795,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             if suggestions:
                 await send_message(
                     session, chat_id,
-                    "😔 በቀጥታ አልተገኘም። ይህን ማለትዎ ነው?\n\n_ከታች ካሉት ዘፈኖች አንዱን ምረጡ:_",
+                    "😔 በቀጥታ አልተገኘም። ይህን ማለትዎ ነው?\n\n_ከታች ካሉት መንዙማዎች አንዱን ምረጡ:_",
                     reply_markup=get_fuzzy_suggestions_kb(suggestions),
                 )
             else:
@@ -903,3 +903,4 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
+
