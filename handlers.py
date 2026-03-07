@@ -112,6 +112,19 @@ def _normalize_text(text: str) -> str:
     return text.replace("️", "").replace("︎", "")
 
 
+# All reply-keyboard button texts that belong exclusively to the admin panel.
+# Used to guard the playlist_builder state check: if an admin presses one of
+# these buttons while in playlist_builder state, it must NOT be treated as a
+# menzuma search — it must fall through to the admin routing block instead.
+_ADMIN_KB_TEXTS = {
+    "📊 Statistics",
+    "📅 Daily Stats",
+    "📢 Broadcast",
+    "📂 Total Files",
+    "🔧 Manage Channels",
+}
+
+
 async def _channel_mgmt_menu_text(db) -> str:
     channels = await get_force_channels(db)
     text = "📢 **Channel Management**\n\n"
@@ -339,11 +352,8 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             if file_doc:
                 kb = {
                     "inline_keyboard": [
+                        [{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{doc_id}"}],
                         [{"text": "❤️ Fav", "callback_data": f"fav_{doc_id}"}],
-                        [
-                            {"text": "↗️ Share",  "switch_inline_query": ""},
-                            {"text": "⚠️ Report", "callback_data": f"report_{doc_id}"},
-                        ],
                     ]
                 }
                 await send_audio(
@@ -625,7 +635,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
 
     # ── Playlist Builder: search in playlist mode ─────────────────────────────
     # Checked BEFORE general search so playlist mode always intercepts text.
-    if state == "playlist_builder" and text and not text.startswith("/"):
+    if state == "playlist_builder" and text and not text.startswith("/") and not (_is_admin(user_id) and text in _ADMIN_KB_TEXTS):
         sq  = build_search_query(text)
         doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
 
@@ -681,7 +691,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 await send_message(session, chat_id, "⚠️ Please send a plain username, e.g. `Al_madih`.")
             return
 
-        if state == "admin_reply_wait":
+        if state == "admin_reply_wait" and text not in _ADMIN_KB_TEXTS:
             target_user = (user_data or {}).get("target_user_id")
             if target_user:
                 try:
@@ -693,7 +703,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 await set_user_state(db, user_id, "idle")
             return
 
-        if state == "broadcast_wait" and text != "🔙 Back" and msg_id:
+        if state == "broadcast_wait" and text != "🔙 Back" and text not in _ADMIN_KB_TEXTS and msg_id:
             await set_user_state(
                 db, user_id, "broadcast_confirm",
                 {"broadcast_msg_id": msg_id, "broadcast_markup": message.get("reply_markup")},
@@ -741,6 +751,11 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await send_message(session, chat_id, "📢 Send the message you want to broadcast.")
             return
 
+        if text == "📂 Total Files":
+            f_count = await db.files.count_documents({})
+            await send_message(session, chat_id, f"📂 Total Files in DB: `{f_count}`")
+            return
+
         # Admin audio/voice → save to DB
         if "audio" in message or "voice" in message:
             f    = message.get("audio") or message.get("voice")
@@ -768,10 +783,6 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 "inline_keyboard": [
                     [{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}],
                     [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}],
-                    [
-                        {"text": "↗️ Share",  "switch_inline_query": ""},
-                        {"text": "⚠️ Report", "callback_data": f"report_{str(doc['_id'])}"},
-                    ],
                 ]
             }
             await send_audio(
