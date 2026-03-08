@@ -89,6 +89,19 @@ logger = logging.getLogger(__name__)
 # Bot username for deep links.  Set BOT_USERNAME in Vercel env vars.
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "Almadihbot")
 
+# ── ቆንጆ እና ገላጭ የሆነ የዋና ገፅ መልእክት (Welcome Manual) ────────────────
+WELCOME_TEXT = (
+    "*🌙 አሰላሙ አለይኩም ወረህመቱላሂ ወበረካትሁ! 🌙*\n\n"
+    "እንኳን ወደ **አል-ማዲህ (Al-Madih)** የቴሌግራም ቦት በደህና መጡ! 🕌\n\n"
+    "ይህ ቦት ምርጥ ምርጥ መንዙማዎችን እና ነሺዳዎችን በቀላሉ የሚያገኙበት ትልቅ ማህደር ነው።\n\n"
+    "💡 *እንዴት መጠቀም ይችላሉ?*\n"
+    "🔍 **ፈልግ (Search):** የሚፈልጉትን መንዙማ ርዕስ በቀጥታ ይጻፉ።\n"
+    "📂 **ሙሉ ዝርዝር (Catalog):** ሁሉንም መንዙማዎች በገጽ እየገለጡ ለማየት።\n"
+    "🎧 **ፕሌይሊስት (Playlist):** የራስዎን ተወዳጅ ስብስብ ፈጥረው ለወዳጅዎ ለማጋራት።\n"
+    "❤️ **የምወዳቸው (Favorites):** ወደፊት ቶሎ ለማግኘት የሚወዷቸውን ነጥለው ለማስቀመጥ።\n\n"
+    "_መንዙማ ለማግኘት አሁኑኑ ስም ጽፈው ይላኩ!_ 📿"
+)
+
 
 # ── Shared Helpers ────────────────────────────────────────────────────────────
 
@@ -99,24 +112,11 @@ def _is_admin(user_id) -> bool:
 def _normalize_text(text: str) -> str:
     """
     Strip Unicode variation selectors (U+FE0F, U+FE0E) from incoming text.
-
-    WHY THIS EXISTS:
-    Android and iOS Telegram clients silently append U+FE0F (VS-16, the
-    "emoji presentation" selector) to emoji characters before transmitting.
-    A reply-keyboard button defined as "🔧 Manage Channels" (U+1F527) arrives
-    as U+1F527 + U+FE0F.  A plain == check against the original string always
-    returns False → the handler is silently skipped → bot goes completely mute.
-
-    Stripping both variation selectors from the incoming text before every
-    comparison fixes ALL reply-keyboard emoji buttons in one place.
     """
     return text.replace("️", "").replace("︎", "")
 
 
 # All reply-keyboard button texts that belong exclusively to the admin panel.
-# Used to guard the playlist_builder state check: if an admin presses one of
-# these buttons while in playlist_builder state, it must NOT be treated as a
-# menzuma search — it must fall through to the admin routing block instead.
 _ADMIN_KB_TEXTS = {
     "📊 Statistics",
     "📅 Daily Stats",
@@ -141,8 +141,7 @@ async def _send_menu(session, db, chat_id, user_id: int, user_data: dict | None)
     Send the main menu and persist the message_id for future cleanup.
     Helper used by both /start and pl_cancel so the logic lives in one place.
     """
-    welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
-    result  = await send_message(session, chat_id, welcome, reply_markup=get_main_menu_kb())
+    result  = await send_message(session, chat_id, WELCOME_TEXT, reply_markup=get_main_menu_kb())
     if result and result.get("ok"):
         await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
 
@@ -150,16 +149,10 @@ async def _send_menu(session, db, chat_id, user_id: int, user_data: dict | None)
 async def _deliver_playlist(session, db, chat_id, playlist: dict) -> None:
     """
     Deliver all tracks in a playlist.
-
-    Strategy (Vercel-safe, no sleep loops):
-      1 track  → sendAudio  (normal, with fav button)
-      2–10     → sendMediaGroup (single API call, entire playlist in one message group)
-
-    Increments the play counter after delivery.
     """
     tracks = playlist.get("tracks", [])
     if not tracks:
-        await send_message(session, chat_id, "⚠️ This playlist is empty.")
+        await send_message(session, chat_id, "⚠️ ፕሌይሊስቱ ባዶ ነው! ቢያንስ አንድ መንዙማ ያክሉ።")
         return
 
     playlist_id = playlist["_id"]
@@ -174,7 +167,6 @@ async def _deliver_playlist(session, db, chat_id, playlist: dict) -> None:
             reply_markup=kb,
         )
     else:
-        # Build InputMediaAudio list.  Caption only on first item.
         media = []
         for i, t in enumerate(tracks):
             item = {"type": "audio", "media": t["file_id"]}
@@ -231,7 +223,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
                     await _deliver_playlist(session, db, chat_id, playlist)
                     result = await send_message(
                         session, chat_id,
-                        "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*",
+                        WELCOME_TEXT,
                         reply_markup=get_main_menu_kb(),
                     )
                     if result and result.get("ok"):
@@ -239,9 +231,8 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
                     return
 
             # No pending deep-link → show normal welcome
-            welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
             await edit_message_text(
-                session, chat_id, message_id, welcome,
+                session, chat_id, message_id, WELCOME_TEXT,
                 reply_markup=get_main_menu_kb(),
             )
         else:
@@ -255,7 +246,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         await set_user_state(db, user_id, "support_wait")
         await edit_message_text(
             session, chat_id, message_id,
-            "📝 **ሀሳቦን እዚህ ጋር ይጻፉ ወይም 'ተመለስ' የሚለውን በተን ይጫኑ።**",
+            "📝 **አስተያየትዎን ወይም ጥያቄዎን እዚህ ይጻፉ...**\n_(ወደ ዋናው ገጽ ለመመለስ 'ተመለስ' የሚለውን ይጫኑ)_",
             reply_markup={"inline_keyboard": [[{"text": "🔙 ተመለስ", "callback_data": "support_cancel"}]]},
         )
         await answer_callback_query(session, cb_id)
@@ -263,9 +254,8 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
 
     if data_str == "support_cancel":
         await set_user_state(db, user_id, "idle")
-        welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
         await edit_message_text(
-            session, chat_id, message_id, welcome,
+            session, chat_id, message_id, WELCOME_TEXT,
             reply_markup=get_main_menu_kb(),
         )
         await answer_callback_query(session, cb_id)
@@ -279,9 +269,9 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         )
         await edit_message_text(
             session, chat_id, message_id,
-            "🎧 *Playlist Builder* — 0/10\n\n"
-            "መንዙማ ይፈልጉ (Search for a Menzuma) and tap ➕ to add it.\n\n"
-            "_Max 10 tracks. Tap ✅ Save when done._",
+            "🎧 *የፕሌይሊስት ማዘጋጃ (Playlist Builder)* — 0/10\n\n"
+            "የመንዙማውን ስም ይፈልጉ እና ➕ የሚለውን በመጫን ወደ ስብስብዎ ያክሉ።\n\n"
+            "_እስከ 10 መንዙማ መምረጥ ይችላሉ። ሲጨርሱ ✅ Save የሚለውን ይጫኑ።_",
             reply_markup=get_playlist_builder_kb(0),
         )
         await answer_callback_query(session, cb_id)
@@ -297,7 +287,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             return
         if count == -1:
             await answer_callback_query(
-                session, cb_id, "🎵 Max 10 tracks reached! Tap ✅ Save.", show_alert=True
+                session, cb_id, "🎵 ከ 10 በላይ መንዙማ መጨመር አይቻልም! ለማስቀመጥ ✅ Save ይጫኑ።", show_alert=True
             )
             return
 
@@ -309,9 +299,9 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         if ctrl_msg_id:
             await edit_message_text(
                 session, chat_id, ctrl_msg_id,
-                f"🎧 *Playlist Builder* — {count}/10\n\n"
-                "መንዙማ ይፈልጉ (Search for a Menzuma) and tap ➕ to add it.\n\n"
-                "_Max 10 tracks. Tap ✅ Save when done._",
+                f"🎧 *የፕሌይሊስት ማዘጋጃ (Playlist Builder)* — {count}/10\n\n"
+                "የመንዙማውን ስም ይፈልጉ እና ➕ የሚለውን በመጫን ወደ ስብስብዎ ያክሉ።\n\n"
+                "_እስከ 10 መንዙማ መምረጥ ይችላሉ። ሲጨርሱ ✅ Save የሚለውን ይጫኑ።_",
                 reply_markup=get_playlist_builder_kb(count),
             )
         return
@@ -357,9 +347,8 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
     # ── Playlist: Cancel ──────────────────────────────────────────────────────
     if data_str == "pl_cancel":
         await set_user_state(db, user_id, "idle", {"building_playlist": [], "pl_ctrl_msg_id": None})
-        welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
         await edit_message_text(
-            session, chat_id, message_id, welcome,
+            session, chat_id, message_id, WELCOME_TEXT,
             reply_markup=get_main_menu_kb(),
         )
         await answer_callback_query(session, cb_id, "❌ Playlist cancelled.")
@@ -406,9 +395,8 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
     # ── Catalog Pagination ────────────────────────────────────────────────────
     if data_str.startswith("pg_"):
         if data_str == "pg_close":
-            welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
             await edit_message_text(
-                session, chat_id, message_id, welcome,
+                session, chat_id, message_id, WELCOME_TEXT,
                 reply_markup=get_main_menu_kb(),
             )
         else:
@@ -571,7 +559,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 await save_pending_start(db, user_id, start_param)
             await send_message(
                 session, chat_id,
-                "**⚠️ ይቅርታ! ቦቱን ለመጠቀም መጀመሪያ ቻናላችንን ይቀላቀሉ።**",
+                "**⚠️ አሰላሙ አለይኩም! ቦቱን ለመጠቀም እባክዎ መጀመሪያ ቻናላችንን ይቀላቀሉ።**",
                 reply_markup=get_subscription_kb(channels),
             )
             return
@@ -602,7 +590,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 # Also drop a fresh main menu so the user isn't stranded
                 result = await send_message(
                     session, chat_id,
-                    "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*",
+                    WELCOME_TEXT,
                     reply_markup=get_main_menu_kb(),
                 )
                 if result and result.get("ok"):
@@ -612,7 +600,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         # ④ Normal /start: send main menu, persist msg_id
         result = await send_message(
             session, chat_id,
-            "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*",
+            WELCOME_TEXT,
             reply_markup=get_main_menu_kb(),
         )
         if result and result.get("ok"):
@@ -654,7 +642,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         await copy_message(session, ADMIN_ID, chat_id, msg_id)
         await send_message(
             session, chat_id,
-            "✅ **መልእክትዎ ተልኳል! እናመሰግናለን።**\n\nወደ ዋናው ገጽ ተመልሰዋል።",
+            "✅ **መልእክትዎ ደርሶናል! ስላነጋገሩን እናመሰግናለን።** ጀዛኩሙላሁ ኸይረን!\n\n_ወደ ዋናው ገጽ ተመልሰዋል።_",
             reply_markup=get_main_menu_kb(),
         )
         await set_user_state(db, user_id, "idle")
@@ -683,13 +671,13 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             if suggestions:
                 await send_message(
                     session, chat_id,
-                    "😔 በቀጥታ አልተገኘም። ይህን ማለትዎ ነው?\n\n_Tap ➕ to add directly to your playlist:_",
+                    "😔 የፈለጉት መንዙማ በቀጥታ አልተገኘም።\n\n_ወደ ፕሌይሊስትዎ ለመጨመር ➕ ይጫኑ፦_",
                     reply_markup=get_playlist_fuzzy_kb(suggestions),
                 )
             else:
                 await send_message(
                     session, chat_id,
-                    "😔 አልተገኘም። Try a different search term.",
+                    "😔 የፈለጉት መንዙማ አልተገኘም።\nእባክዎ የተለየ ቃል ጽፈው ይሞክሩ።",
                     reply_markup=get_not_found_kb(),
                 )
         return
@@ -822,13 +810,13 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             if suggestions:
                 await send_message(
                     session, chat_id,
-                    "😔 በቀጥታ አልተገኘም። ይህን ማለትዎ ነው?\n\n_ከታች ካሉት መንዙማዎች አንዱን ምረጡ:_",
+                    "😔 የፈለጉት መንዙማ በቀጥታ አልተገኘም።\n\n_ምናልባት ከታች ያሉት ሊሆኑ ይችላሉ? አንዱን ይምረጡ፦_",
                     reply_markup=get_fuzzy_suggestions_kb(suggestions),
                 )
             else:
                 await send_message(
                     session, chat_id,
-                    "😔 በቀጥታ አልተገኘም።\nእባክዎ ከታች ባለው ቁልፍ ሙሉ ዝርዝሩ ውስጥ ይፈልጉ!",
+                    "😔 የፈለጉት መንዙማ አልተገኘም።\nእባክዎ የተለየ ቃል ጽፈው ይሞክሩ ወይም 'ሙሉ ዝርዝር' የሚለውን ይጫኑ።",
                     reply_markup=get_not_found_kb(),
                 )
 
