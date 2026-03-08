@@ -346,7 +346,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             "✅ *Playlist Saved!*\n\n"
             "🔗 *Share this link:*\n"
             f"`{deep_link}`\n\n"
-            "_Anyone who taps this link will hear your playlist instantly._"
+            "_ይህን ሊንክ የሚጫን ማንኛውም ሰው ያዘጋጁትን Playlist ወዲያውኑ ማዳመጥ ይችላል!_"
         )
         await edit_message_text(
             session, chat_id, message_id, share_text,
@@ -822,7 +822,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             if suggestions:
                 await send_message(
                     session, chat_id,
-                    "😔 በቀጥታ አልተገኘም። ይህን ማለትዎ ነው?\n\n_ከታች ካሉት ዘፈኖች አንዱን ምረጡ:_",
+                    "😔 በቀጥታ አልተገኘም። ይህን ማለትዎ ነው?\n\n_ከታች ካሉት መንዙማዎች አንዱን ምረጡ:_",
                     reply_markup=get_fuzzy_suggestions_kb(suggestions),
                 )
             else:
@@ -930,3 +930,5 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
+
+
