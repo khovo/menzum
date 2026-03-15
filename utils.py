@@ -312,9 +312,12 @@ async def copy_message(
 # ── UI / Keyboard Builders ────────────────────────────────────────────────────
 
 def get_main_menu_kb() -> dict:
-    """Main menu. 'Create Playlist' button added vs v1."""
+    """Main menu. 'Open Al-Madih' Mini App button added as the flagship feature."""
     return {
         "inline_keyboard": [
+            [
+                {"text": "🎵 Open Al-Madih", "web_app": {"url": "https://menzum.vercel.app/webapp"}}
+            ],
             [
                 {"text": "❤️ Favorites",      "switch_inline_query_current_chat": "#favorites"},
                 {"text": "📂 Catalog (List)",  "callback_data": "pg_1"},
@@ -394,3 +397,4 @@ def get_channel_mgmt_kb() -> dict:
             [{"text": "❌ Close", "callback_data": "admin_ch_close"}],
         ]
     }
+
