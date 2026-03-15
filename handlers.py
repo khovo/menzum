@@ -635,24 +635,34 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     # broadcast_wait state check below uses `text != "🔙 Back"` which would
     # silently capture this text and treat it as broadcast content.
     if text == "🔧 Manage Channels" and _is_admin(user_id):
-        # ══ X-RAY TRAP 2: INSIDE THE HANDLER ════════════════════════════════
-        try:
-            await send_message(session, chat_id, "🔬 *TRAP 2 — inside handler, before DB call*")
-            mgmt_text = await _channel_mgmt_menu_text(db)
-            await send_message(session, chat_id, "🔬 *TRAP 2 — DB call succeeded, sending menu*")
-            await send_message(
-                session, chat_id,
-                mgmt_text,
-                reply_markup=get_channel_mgmt_kb(),
-            )
-        except Exception as e:
-            await send_message(
-                session, chat_id,
-                f"💥 *TRAP 2 — CRASH CAUGHT*\n\n"
-                f"`{type(e).__name__}: {e}`",
-            )
-        # ════════════════════════════════════════════════════════════════════
-        return
+            # ══ X-RAY TRAP 3: CATCH TELEGRAM API ERROR ════════════════════════
+            try:
+                mgmt_text = await _channel_mgmt_menu_text(db)
+                
+                # መልእክቱን ለቴሌግራም እንልካለን፣ ውጤቱንም (result) እንይዘዋለን
+                result = await send_message(
+                    session, chat_id,
+                    mgmt_text,
+                    reply_markup=get_channel_mgmt_kb(),
+                )
+                
+                # ቴሌግራም "አልቀበልም (ok: False)" ካለ፣ ምክንያቱን አጋልጦ ይነግረናል!
+                if not result or result.get("ok") is not True:
+                    await send_message(
+                        session, chat_id,
+                        f"🚨 *TELEGRAM API ERROR* 🚨\n\n"
+                        f"`{result}`\n\n"
+                        f"_Check your get_channel_mgmt_kb() format in utils.py_"
+                    )
+            except Exception as e:
+                await send_message(
+                    session, chat_id,
+                    f"💥 *TRAP 2 — CRASH CAUGHT*\n\n`{type(e).__name__}: {e}`",
+                )
+            # ════════════════════════════════════════════════════════════════════
+            return
+
+
 
     # ── Support: waiting for feedback text ───────────────────────────────────
     if state == "support_wait":
