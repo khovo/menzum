@@ -30,6 +30,7 @@ import { useTelegram } from '../hooks/useTelegram';
 import { FeaturedCard, ListTrack } from '../components/TrackCard';
 import BottomNav from '../components/BottomNav';
 import NowPlaying from '../components/NowPlaying';
+import Library from '../components/Library';
 
 // ── API base URL — same origin as the Mini App (Vercel) ─────────────────────
 // In dev, Next runs on :3001 and API on :5000, so we allow an override.
@@ -90,6 +91,12 @@ export default function Home() {
   const [searching, setSearching] = useState(false);
 
   const [nowPlaying, setNowPlaying] = useState(null);   // { track, status, error }
+
+  // ── Library state ───────────────────────────────────────────────────────
+  const [libraryStats,     setLibraryStats]     = useState(null);
+  const [libraryFavorites, setLibraryFavorites] = useState([]);
+  const [libraryLoading,   setLibraryLoading]   = useState(false);
+  const [libraryLoaded,    setLibraryLoaded]     = useState(false);
 
   const searchInputRef = useRef(null);
   const debounceRef    = useRef(null);
@@ -185,12 +192,36 @@ export default function Home() {
     }
   }, [view]);
 
+  // ── Load library data (lazy — only fetches on first visit) ──────────────
+  const loadLibrary = useCallback(async () => {
+    if (libraryLoaded) return;  // already fetched this session
+    setLibraryLoading(true);
+    try {
+      const res  = await fetch(`${API_BASE}/api/webapp/library`, {
+        headers: authHeader(),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setLibraryStats(data.stats);
+        setLibraryFavorites(data.favorites ?? []);
+        setLibraryLoaded(true);
+      }
+    } catch (err) {
+      console.error('loadLibrary error:', err);
+    } finally {
+      setLibraryLoading(false);
+    }
+  }, [libraryLoaded, authHeader]);
+
   // ── Handle view switch ─────────────────────────────────────────────────────
   function handleViewChange(v) {
     setView(v);
     if (v === 'home') {
       setQuery('');
       setResults([]);
+    }
+    if (v === 'library') {
+      loadLibrary();
     }
   }
 
@@ -462,6 +493,17 @@ export default function Home() {
               )}
 
             </div>
+          )}
+
+          {/* ════════════════════════════════════════════ LIBRARY VIEW */}
+          {view === 'library' && (
+            <Library
+              stats={libraryStats}
+              favorites={libraryFavorites}
+              loading={libraryLoading}
+              onPlay={handlePlay}
+              onFavorite={handleFavorite}
+            />
           )}
 
         </main>
