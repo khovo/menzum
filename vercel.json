@@ -20,12 +20,8 @@
       "dest": "/api/webapp/$1.js"
     },
     {
-      "src": "/webapp/_next/(.*)",
-      "dest": "/webapp/_next/$1"
-    },
-    {
-      "src": "/webapp(.*)",
-      "dest": "/webapp$1"
+      "src": "/webapp/(.*)",
+      "dest": "/webapp/$1"
     },
     {
       "src": "/(.*)",
