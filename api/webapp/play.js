@@ -121,6 +121,25 @@ module.exports = withAuth(async function handler(req, res) {
         });
       }
 
+      // ── Track listen history (fire-and-forget, never blocks the response) ──
+      // Appends to a capped listen_history array (max 50 entries) and bumps
+      // total_plays counter.  Used by /api/webapp/library for stats.
+      // $slice: -50 keeps only the 50 most recent plays — no unbounded growth.
+      db.collection("users").updateOne(
+        { _id: userId },
+        {
+          $inc:  { total_plays: 1 },
+          $push: {
+            listen_history: {
+              $each:     [{ track_id, name: track.display_name, played_at: new Date() }],
+              $slice:    -50,
+              $position: 0,
+            },
+          },
+        },
+        { upsert: true }
+      ).catch((e) => console.error("listen tracking failed:", e)); // intentional no-await
+
       return res.status(200).json({
         ok:         true,
         action:     "play",
