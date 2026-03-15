@@ -316,7 +316,7 @@ def get_main_menu_kb() -> dict:
     return {
         "inline_keyboard": [
             [
-                {"text": "🎵 Open Al-Madih", "web_app": {"url": "https://almadih.vercel.app/webapp/"}}
+                {"text": "🎵 Open Al-Madih", "web_app": {"url": "https://almadih.vercel.app"}}
             ],
             [
                 {"text": "❤️ Favorites",      "switch_inline_query_current_chat": "#favorites"},
