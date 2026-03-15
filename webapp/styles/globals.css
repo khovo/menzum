@@ -809,6 +809,151 @@ body::before {
   100% { background-position: -200% 0; }
 }
 
+
+/* ── Library: Stats Cards ──────────────────────────────────────────────────── */
+.stats-row {
+  display: flex;
+  gap: 12px;
+  padding: 4px 20px 16px;
+}
+
+.stat-card {
+  flex: 1;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 18px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  animation: fadeSlideUp 350ms ease both;
+  position: relative;
+  overflow: hidden;
+}
+
+.stat-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 0%, var(--gold-glow), transparent 70%);
+  pointer-events: none;
+}
+
+.stat-icon {
+  font-size: 20px;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
+.stat-value {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--gold-bright) 0%, var(--gold-primary) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  line-height: 1.1;
+}
+
+.stat-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* ── Library: Most Played ──────────────────────────────────────────────────── */
+.most-played-list {
+  padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.most-played-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), transform var(--transition-fast);
+  animation: fadeSlideUp 350ms ease both;
+}
+
+.most-played-item:active {
+  transform: scale(0.98);
+  border-color: var(--border-accent);
+}
+
+.most-played-rank {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  width: 28px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.most-played-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.most-played-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.most-played-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.most-played-play {
+  font-size: 14px;
+  flex-shrink: 0;
+  width: 24px;
+  text-align: center;
+  opacity: 0.8;
+}
+
+/* ── Library: Empty State ──────────────────────────────────────────────────── */
+.library-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 32px;
+  gap: 10px;
+  text-align: center;
+}
+
+.library-empty-icon {
+  font-size: 38px;
+  animation: pulse 2.5s ease infinite;
+}
+
+.library-empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.library-empty-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
 /* ── Utility ───────────────────────────────────────────────────────────────── */
 .visually-hidden {
   position: absolute;
