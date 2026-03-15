@@ -631,38 +631,34 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         return
 
     # ── Admin: Manage Channels (reply-keyboard button) ───────────────────────
-    # Must be intercepted HERE — before any state machine — because the
-    # broadcast_wait state check below uses `text != "🔙 Back"` which would
-    # silently capture this text and treat it as broadcast content.
     if text == "🔧 Manage Channels" and _is_admin(user_id):
-            # ══ X-RAY TRAP 3: CATCH TELEGRAM API ERROR ════════════════════════
-            try:
-                mgmt_text = await _channel_mgmt_menu_text(db)
-                
-                # መልእክቱን ለቴሌግራም እንልካለን፣ ውጤቱንም (result) እንይዘዋለን
-                result = await send_message(
-                    session, chat_id,
-                    mgmt_text,
-                    reply_markup=get_channel_mgmt_kb(),
-                )
-                
-                # ቴሌግራም "አልቀበልም (ok: False)" ካለ፣ ምክንያቱን አጋልጦ ይነግረናል!
-                if not result or result.get("ok") is not True:
-                    await send_message(
-                        session, chat_id,
-                        f"🚨 *TELEGRAM API ERROR* 🚨\n\n"
-                        f"`{result}`\n\n"
-                        f"_Check your get_channel_mgmt_kb() format in utils.py_"
-                    )
-            except Exception as e:
+        # ══ X-RAY TRAP 3: CATCH TELEGRAM API ERROR ════════════════════════
+        try:
+            mgmt_text = await _channel_mgmt_menu_text(db)
+            
+            # መልእክቱን ለቴሌግራም እንልካለን፣ ውጤቱንም (result) እንይዘዋለን
+            result = await send_message(
+                session, chat_id,
+                mgmt_text,
+                reply_markup=get_channel_mgmt_kb(),
+            )
+            
+            # ቴሌግራም "አልቀበልም (ok: False)" ካለ፣ ምክንያቱን አጋልጦ ይነግረናል!
+            if not result or result.get("ok") is not True:
+                err_msg = str(result)[:800] if result else "None"
                 await send_message(
                     session, chat_id,
-                    f"💥 *TRAP 2 — CRASH CAUGHT*\n\n`{type(e).__name__}: {e}`",
+                    f"🚨 *TELEGRAM API ERROR* 🚨\n\n"
+                    f"`{err_msg}`\n\n"
+                    f"_Check your get_channel_mgmt_kb() format in utils.py_"
                 )
-            # ════════════════════════════════════════════════════════════════════
-            return
-
-
+        except Exception as e:
+            await send_message(
+                session, chat_id,
+                f"💥 *TRAP 3 — CRASH CAUGHT*\n\n`{type(e).__name__}: {e}`",
+            )
+        # ════════════════════════════════════════════════════════════════════
+        return
 
     # ── Support: waiting for feedback text ───────────────────────────────────
     if state == "support_wait":
@@ -719,10 +715,6 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     if _is_admin(user_id):
 
         # ━━ STATE-BASED CHECKS FIRST ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # FIX ①: State always takes priority over text commands.
-        # Previously `admin_add_channel_wait` was checked AFTER text-command
-        # ifs, causing fall-through to the general search when no text matched.
-
         if state == "admin_add_channel_wait":
             if text and not text.startswith("/"):
                 username = text.lstrip("@").strip()
@@ -961,4 +953,5 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
+
 
