@@ -544,6 +544,16 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     text       = _normalize_text(message.get("text", ""))
     msg_id     = message.get("message_id")
     first_name = user_info.get("first_name", "User")
+    # ══ X-RAY TRAP 1: TOP OF FUNCTION ══════════════════════════════════════
+    if _is_admin(user_id):
+        await send_message(
+            session, chat_id,
+            f"🔬 *TRAP 1 — top of handle_message*\n\n"
+            f"`text  : {repr(text)}`\n"
+            f"`hex   : {text.encode('utf-8').hex() if text else 'None'}`\n"
+            f"`msg_id: {msg_id}`",
+        )
+    # ════════════════════════════════════════════════════════════════════════
 
     # ── Load user data + track in ONE round-trip ─────────────────────────────
     user_data = await track_and_get_user(db, user_id, first_name)
@@ -623,13 +633,26 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     # Must be intercepted HERE — before any state machine — because the
     # broadcast_wait state check below uses `text != "🔙 Back"` which would
     # silently capture this text and treat it as broadcast content.
-    if text == "🔧 Manage Channels" and _is_admin(user_id):
-        await send_message(
-            session, chat_id,
-            await _channel_mgmt_menu_text(db),
-            reply_markup=get_channel_mgmt_kb(),
-        )
+        if text == "🔧 Manage Channels" and _is_admin(user_id):
+        # ══ X-RAY TRAP 2: INSIDE THE HANDLER ════════════════════════════════
+        try:
+            await send_message(session, chat_id, "🔬 *TRAP 2 — inside handler, before DB call*")
+            mgmt_text = await _channel_mgmt_menu_text(db)
+            await send_message(session, chat_id, "🔬 *TRAP 2 — DB call succeeded, sending menu*")
+            await send_message(
+                session, chat_id,
+                mgmt_text,
+                reply_markup=get_channel_mgmt_kb(),
+            )
+        except Exception as e:
+            await send_message(
+                session, chat_id,
+                f"💥 *TRAP 2 — CRASH CAUGHT*\n\n"
+                f"`{type(e).__name__}: {e}`",
+            )
+        # ════════════════════════════════════════════════════════════════════
         return
+
 
     # ── Support: waiting for feedback text ───────────────────────────────────
     if state == "support_wait":
