@@ -785,8 +785,18 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 await send_message(session, chat_id, f"✅ Saved: `{name}`")
             return
 
-        # Admin text that matches none of the above → ignore silently
+                # ── DEBUG X-RAY (remove after diagnosis) ─────────────────────────────
+        hex_val = text.encode("utf-8").hex() if text else "None"
+        await send_message(
+            session, chat_id,
+            f"⚠️ *DEBUG X-RAY* ⚠️\n\n"
+            f"`Raw Text : {repr(text)}`\n"
+            f"`Hex      : {hex_val}`\n"
+            f"`State    : {state}`\n\n"
+            f"_This text reached the bottom of the admin block uncaught._",
+        )
         return
+
 
     # ── Regular User: Smart Search ────────────────────────────────────────────
     if text and not text.startswith("/"):
