@@ -43,6 +43,24 @@ function SearchIcon({ active }) {
   );
 }
 
+function LibraryIcon({ active }) {
+  const c = active ? '#e8b84b' : '#4a6a9a';
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"
+        stroke={c} strokeWidth={active ? 2.2 : 1.8} strokeLinecap="round"
+      />
+      <path
+        d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"
+        stroke={c} strokeWidth={active ? 2.2 : 1.8}
+        fill={active ? 'rgba(232,184,75,0.1)' : 'none'}
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 export default function BottomNav({ view, onViewChange }) {
   return (
     <nav className="bottom-nav" aria-label="Main navigation">
@@ -67,6 +85,17 @@ export default function BottomNav({ view, onViewChange }) {
         >
           <SearchIcon active={view === 'search'} />
           <span>Search</span>
+          <div className="nav-indicator" />
+        </button>
+
+        <button
+          className={`nav-item ${view === 'library' ? 'active' : ''}`}
+          onClick={() => onViewChange('library')}
+          aria-label="Library"
+          aria-current={view === 'library' ? 'page' : undefined}
+        >
+          <LibraryIcon active={view === 'library'} />
+          <span>Library</span>
           <div className="nav-indicator" />
         </button>
 
