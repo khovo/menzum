@@ -1,10 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // NO basePath here. Vercel's routing layer in vercel.json strips /webapp
-  // from incoming requests before they reach Next.js, so Next.js always sees
-  // paths starting from /. Using basePath here AND a route in vercel.json
-  // produces a circular rewrite: /webapp → /webapp → 404.
-
+  // No basePath — this project IS the root. Deployed at https://almadih-app.vercel.app/
+  // API calls go to the bot project via NEXT_PUBLIC_API_BASE env var.
+  // In Vercel webapp project settings, set:
+  //   NEXT_PUBLIC_API_BASE = https://menzum.vercel.app
   reactStrictMode: true,
 };
 
