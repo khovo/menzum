@@ -95,10 +95,10 @@ WELCOME_TEXT = (
     "እንኳን ወደ **አል-ማዲህ (Al-Madih)** የቴሌግራም ቦት በደህና መጡ! 🕌\n\n"
     "ይህ ቦት ምርጥ ምርጥ መንዙማዎችን እና ነሺዳዎችን በቀላሉ የሚያገኙበት ትልቅ ማህደር ነው።\n\n"
     "💡 *እንዴት መጠቀም ይችላሉ?*\n"
-    "🔍 **ፈልግ (Search):** የሚፈልጉትን መንዙማ ርዕስ በቀጥታ ይጻፉ።\n"
-    "📂 **ሙሉ ዝርዝር (Catalog):** ሁሉንም መንዙማዎች በገጽ እየገለጡ ለማየት።\n"
-    "🎧 **ፕሌይሊስት (Playlist):** የራስዎን ተወዳጅ ስብስብ ፈጥረው ለወዳጅዎ ለማጋራት።\n"
-    "❤️ **የምወዳቸው (Favorites):** ወደፊት ቶሎ ለማግኘት የሚወዷቸውን ነጥለው ለማስቀመጥ።\n\n"
+    "🔍 **ፈልግ (Search):** የሚፈልጉትን መንዙማ ርዕስ በቀጥታ ይጻፉ。\n"
+    "📂 **ሙሉ ዝርዝር (Catalog):** ሁሉንም መንዙማዎች በገጽ እየገለጡ ለማየት。\n"
+    "🎧 **ፕሌይሊስት (Playlist):** የራስዎን ተወዳጅ ስብስብ ፈጥረው ለወዳጅዎ ለማጋራት。\n"
+    "❤️ **የምወዳቸው (Favorites):** ወደፊት ቶሎ ለማግኘት የሚወዷቸውን ነጥለው ለማስቀመጥ。\n\n"
     "_መንዙማ ለማግኘት አሁኑኑ ስም ጽፈው ይላኩ!_ 📿"
 )
 
@@ -544,6 +544,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     text       = _normalize_text(message.get("text", ""))
     msg_id     = message.get("message_id")
     first_name = user_info.get("first_name", "User")
+    
     # ══ X-RAY TRAP 1: TOP OF FUNCTION ══════════════════════════════════════
     if _is_admin(user_id):
         await send_message(
@@ -633,26 +634,25 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     # Must be intercepted HERE — before any state machine — because the
     # broadcast_wait state check below uses `text != "🔙 Back"` which would
     # silently capture this text and treat it as broadcast content.
-          if text == "🔧 Manage Channels" and _is_admin(user_id):
-            # ══ X-RAY TRAP 2: INSIDE THE HANDLER ════════════════════════════════
-            try:
-                await send_message(session, chat_id, "🔬 *TRAP 2 — inside handler, before DB call*")
-                mgmt_text = await _channel_mgmt_menu_text(db)
-                await send_message(session, chat_id, "🔬 *TRAP 2 — DB call succeeded, sending menu*")
-                await send_message(
-                    session, chat_id,
-                    mgmt_text,
-                    reply_markup=get_channel_mgmt_kb(),
-                )
-            except Exception as e:
-                await send_message(
-                    session, chat_id,
-                    f"💥 *TRAP 2 — CRASH CAUGHT*\n\n"
-                    f"`{type(e).__name__}: {e}`",
-                )
-            # ════════════════════════════════════════════════════════════════════
-            return
-        
+    if text == "🔧 Manage Channels" and _is_admin(user_id):
+        # ══ X-RAY TRAP 2: INSIDE THE HANDLER ════════════════════════════════
+        try:
+            await send_message(session, chat_id, "🔬 *TRAP 2 — inside handler, before DB call*")
+            mgmt_text = await _channel_mgmt_menu_text(db)
+            await send_message(session, chat_id, "🔬 *TRAP 2 — DB call succeeded, sending menu*")
+            await send_message(
+                session, chat_id,
+                mgmt_text,
+                reply_markup=get_channel_mgmt_kb(),
+            )
+        except Exception as e:
+            await send_message(
+                session, chat_id,
+                f"💥 *TRAP 2 — CRASH CAUGHT*\n\n"
+                f"`{type(e).__name__}: {e}`",
+            )
+        # ════════════════════════════════════════════════════════════════════
+        return
 
     # ── Support: waiting for feedback text ───────────────────────────────────
     if state == "support_wait":
@@ -808,7 +808,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 await send_message(session, chat_id, f"✅ Saved: `{name}`")
             return
 
-                # ── DEBUG X-RAY (remove after diagnosis) ─────────────────────────────
+        # ── DEBUG X-RAY (remove after diagnosis) ─────────────────────────────
         hex_val = text.encode("utf-8").hex() if text else "None"
         await send_message(
             session, chat_id,
@@ -951,5 +951,4 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
-
 
