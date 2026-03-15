@@ -1,24 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: true,
-  basePath: '/webapp', // ይሄ በጣም ወሳኝ ነው!
-  async headers() {
-    return [
-      {
-        source: '/(.*)',
-        headers: [
-          {
-            key: 'X-Frame-Options',
-            value: 'ALLOW-FROM https://web.telegram.org/',
-          },
-          {
-            key: 'Content-Security-Policy',
-            value: "frame-ancestors 'self' https://web.telegram.org/ https://oauth.telegram.org/;",
-          }
-        ],
-      },
-    ]
-  },
-}
+  // NO basePath here. Vercel's routing layer in vercel.json strips /webapp
+  // from incoming requests before they reach Next.js, so Next.js always sees
+  // paths starting from /. Using basePath here AND a route in vercel.json
+  // produces a circular rewrite: /webapp → /webapp → 404.
 
-module.exports = nextConfig
+  reactStrictMode: true,
+};
+
+module.exports = nextConfig;
