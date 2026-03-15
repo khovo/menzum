@@ -633,26 +633,26 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     # Must be intercepted HERE — before any state machine — because the
     # broadcast_wait state check below uses `text != "🔙 Back"` which would
     # silently capture this text and treat it as broadcast content.
-        if text == "🔧 Manage Channels" and _is_admin(user_id):
-        # ══ X-RAY TRAP 2: INSIDE THE HANDLER ════════════════════════════════
-        try:
-            await send_message(session, chat_id, "🔬 *TRAP 2 — inside handler, before DB call*")
-            mgmt_text = await _channel_mgmt_menu_text(db)
-            await send_message(session, chat_id, "🔬 *TRAP 2 — DB call succeeded, sending menu*")
-            await send_message(
-                session, chat_id,
-                mgmt_text,
-                reply_markup=get_channel_mgmt_kb(),
-            )
-        except Exception as e:
-            await send_message(
-                session, chat_id,
-                f"💥 *TRAP 2 — CRASH CAUGHT*\n\n"
-                f"`{type(e).__name__}: {e}`",
-            )
-        # ════════════════════════════════════════════════════════════════════
-        return
-
+          if text == "🔧 Manage Channels" and _is_admin(user_id):
+            # ══ X-RAY TRAP 2: INSIDE THE HANDLER ════════════════════════════════
+            try:
+                await send_message(session, chat_id, "🔬 *TRAP 2 — inside handler, before DB call*")
+                mgmt_text = await _channel_mgmt_menu_text(db)
+                await send_message(session, chat_id, "🔬 *TRAP 2 — DB call succeeded, sending menu*")
+                await send_message(
+                    session, chat_id,
+                    mgmt_text,
+                    reply_markup=get_channel_mgmt_kb(),
+                )
+            except Exception as e:
+                await send_message(
+                    session, chat_id,
+                    f"💥 *TRAP 2 — CRASH CAUGHT*\n\n"
+                    f"`{type(e).__name__}: {e}`",
+                )
+            # ════════════════════════════════════════════════════════════════════
+            return
+        
 
     # ── Support: waiting for feedback text ───────────────────────────────────
     if state == "support_wait":
