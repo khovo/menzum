@@ -1,0 +1,12 @@
+{
+  "name": "almadih-webapp-api",
+  "version": "1.0.0",
+  "description": "Node.js API routes for Al-Madih Telegram Mini App",
+  "private": true,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "mongodb": "^6.3.0"
+  }
+}
