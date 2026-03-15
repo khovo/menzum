@@ -1,31 +1,14 @@
 {
   "version": 2,
   "builds": [
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python"
-    },
-    {
-      "src": "api/webapp/*.js",
-      "use": "@vercel/node"
-    },
-    {
-      "src": "webapp/package.json",
-      "use": "@vercel/next"
-    }
+    { "src": "api/index.py",       "use": "@vercel/python" },
+    { "src": "api/webapp/*.js",    "use": "@vercel/node"   },
+    { "src": "webapp/package.json","use": "@vercel/next"   }
   ],
   "routes": [
-    {
-      "src": "/api/webapp/(.*)",
-      "dest": "/api/webapp/$1.js"
-    },
-    {
-      "src": "/webapp(.*)",
-      "dest": "/webapp$1"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/api/index.py"
-    }
+    { "src": "/api/webapp/(.*)",  "dest": "/api/webapp/$1.js" },
+    { "src": "/_next/(.*)",       "dest": "/_next/$1"          },
+    { "src": "/webapp/?$",        "dest": "/"                  },
+    { "src": "/(.*)",             "dest": "/api/index.py"      }
   ]
 }
