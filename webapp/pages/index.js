@@ -86,6 +86,12 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [authErr, setAuthErr] = useState(null);
 
+  // ── Central favorites registry ────────────────────────────────────────────
+  // Single source of truth for ALL views. A Set of track IDs (MongoDB ObjectId
+  // strings). Every FeaturedCard, ListTrack, and Library row reads from here.
+  // handleFavorite updates it optimistically — no stale state across tabs.
+  const [favoritedIds, setFavoritedIds] = useState(() => new Set());
+
   const [view,     setView]    = useState('home');    // 'home' | 'search' | 'library'
   const [prevView, setPrevView] = useState(null);   // for directional transition
   const [query,    setQuery]   = useState('');
@@ -173,7 +179,12 @@ export default function Home() {
         const featData = await featRes.json();
 
         if (featData.ok) {
-          setTracks(featData.tracks || []);
+          const loaded = featData.tracks || [];
+          setTracks(loaded);
+          // Seed the central favorites registry from the API's is_favorite flags
+          setFavoritedIds(new Set(
+            loaded.filter((t) => t.is_favorite).map((t) => t.id)
+          ));
           setHomeError(null);
         } else {
           setHomeError('Failed to load tracks from the server.');
@@ -268,7 +279,14 @@ export default function Home() {
       const data = await res.json();
       if (data.ok) {
         setLibraryStats(data.stats);
-        setLibraryFavorites(data.favorites ?? []);
+        const libFavs = data.favorites ?? [];
+        setLibraryFavorites(libFavs);
+        // Merge library favorites into the central registry
+        setFavoritedIds((prev) => {
+          const merged = new Set(prev);
+          libFavs.forEach((t) => merged.add(t.id));
+          return merged;
+        });
         setLibraryLoaded(true);
         setLibraryError(null);
       } else {
@@ -335,6 +353,28 @@ export default function Home() {
   // ── Toggle favorite ────────────────────────────────────────────────────────
   const handleFavorite = useCallback(async (track) => {
     hapticImpact('light');
+    const wasLiked = favoritedIds.has(track.id);
+
+    // 1. Optimistic update — flip immediately so ALL views update instantly
+    setFavoritedIds((prev) => {
+      const next = new Set(prev);
+      if (wasLiked) next.delete(track.id);
+      else          next.add(track.id);
+      return next;
+    });
+
+    // 2. Also update libraryFavorites list for the Library view
+    if (wasLiked) {
+      setLibraryFavorites((prev) => prev.filter((t) => t.id !== track.id));
+    } else {
+      // Add to library list so it appears immediately without a refetch
+      setLibraryFavorites((prev) => {
+        if (prev.find((t) => t.id === track.id)) return prev;
+        return [{ id: track.id, name: track.name ?? track.display_name, is_favorite: true }, ...prev];
+      });
+    }
+
+    // 3. Persist to DB
     try {
       const res  = await fetch(`${API_BASE}/api/webapp/play`, {
         method:  'POST',
@@ -342,11 +382,36 @@ export default function Home() {
         body:    JSON.stringify({ track_id: track.id, action: 'favorite' }),
       });
       const data = await res.json();
-      return data.ok;
+      if (!data.ok) {
+        // Revert both optimistic changes on failure
+        setFavoritedIds((prev) => {
+          const next = new Set(prev);
+          if (wasLiked) next.add(track.id);
+          else          next.delete(track.id);
+          return next;
+        });
+        if (wasLiked) {
+          setLibraryFavorites((prev) => [
+            { id: track.id, name: track.name ?? track.display_name, is_favorite: true },
+            ...prev,
+          ]);
+        } else {
+          setLibraryFavorites((prev) => prev.filter((t) => t.id !== track.id));
+        }
+        return false;
+      }
+      return true;
     } catch {
+      // Revert on network error
+      setFavoritedIds((prev) => {
+        const next = new Set(prev);
+        if (wasLiked) next.add(track.id);
+        else          next.delete(track.id);
+        return next;
+      });
       return false;
     }
-  }, [authHeader, hapticImpact]);
+  }, [authHeader, hapticImpact, favoritedIds]);
 
   // ── Pull-to-refresh touch handlers (Home view) ───────────────────────────
   const handleTouchStart = useCallback((e) => {
@@ -503,6 +568,7 @@ export default function Home() {
                       track={track}
                       onPlay={handlePlay}
                       onFavorite={handleFavorite}
+                      isFav={favoritedIds.has(track.id)}
                       style={{ animationDelay: `${i * 60}ms` }}
                     />
                   ))}
@@ -542,6 +608,7 @@ export default function Home() {
                       track={track}
                       onPlay={handlePlay}
                       onFavorite={handleFavorite}
+                      isFav={favoritedIds.has(track.id)}
                       index={i}
                     />
                   ))}
@@ -649,6 +716,7 @@ export default function Home() {
                         track={track}
                         onPlay={handlePlay}
                         onFavorite={handleFavorite}
+                        isFav={favoritedIds.has(track.id)}
                         index={i}
                       />
                     ))}
