@@ -954,6 +954,215 @@ body::before {
   line-height: 1.5;
 }
 
+
+/* ════════════════════════════════════════════════════════════════════════════
+   ADMIN DASHBOARD (Baraka Analytics)
+   Completely isolated from the bot UI palette — futuristic dark + neon cyan.
+   All classes prefixed with "a-" to prevent collisions.
+════════════════════════════════════════════════════════════════════════════ */
+
+.a-root {
+  min-height: 100vh;
+  background: #050a14;
+  font-family: 'Courier New', 'Monaco', monospace;
+  color: #c8d8f0;
+  padding: 0 0 60px;
+}
+
+/* Login screen */
+.a-login {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 40px 24px;
+  background: radial-gradient(ellipse at 50% 20%, #051a2e 0%, #050a14 70%);
+}
+
+.a-login-icon { font-size: 48px; margin-bottom: 8px; }
+
+.a-login-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: #00e5ff;
+  text-shadow: 0 0 20px rgba(0, 229, 255, 0.4);
+}
+
+.a-login-sub {
+  font-size: 12px;
+  color: #4a6a9a;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+
+.a-input {
+  width: 100%;
+  max-width: 320px;
+  padding: 14px 16px;
+  background: #0c1a2e;
+  border: 1px solid #1a4a7a;
+  border-radius: 8px;
+  color: #c8d8f0;
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 200ms, box-shadow 200ms;
+}
+
+.a-input:focus {
+  border-color: #00e5ff;
+  box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.1);
+}
+
+.a-input-error { border-color: #ff4060 !important; }
+
+.a-btn {
+  width: 100%;
+  max-width: 320px;
+  padding: 14px;
+  background: rgba(0, 229, 255, 0.1);
+  border: 1px solid #00e5ff;
+  border-radius: 8px;
+  color: #00e5ff;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: background 150ms, transform 150ms, box-shadow 150ms;
+}
+
+.a-btn:hover  { background: rgba(0, 229, 255, 0.18); box-shadow: 0 0 16px rgba(0, 229, 255, 0.2); }
+.a-btn:active { transform: scale(0.98); }
+.a-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.a-error-msg { font-size: 12px; color: #ff4060; letter-spacing: 0.3px; }
+
+/* Dashboard shell */
+.a-header {
+  padding: 24px 24px 16px;
+  border-bottom: 1px solid #0f2a4a;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  background: linear-gradient(180deg, #08111f, transparent);
+}
+
+.a-header-title {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: #00e5ff;
+  text-shadow: 0 0 16px rgba(0, 229, 255, 0.35);
+}
+
+.a-header-sub { font-size: 11px; color: #4a6a9a; letter-spacing: 0.5px; }
+
+.a-refresh-btn {
+  background: none;
+  border: 1px solid #0f2a4a;
+  border-radius: 6px;
+  color: #4a6a9a;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: border-color 150ms, color 150ms;
+  letter-spacing: 0.5px;
+}
+
+.a-refresh-btn:hover { border-color: #00e5ff; color: #00e5ff; }
+.a-refresh-btn.loading { animation: pulse 1s ease infinite; }
+
+/* Stat cards row */
+.a-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  padding: 20px 16px 4px;
+}
+
+@media (min-width: 480px) {
+  .a-stats-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+.a-stat-card {
+  background: #0c1a2e;
+  border: 1px solid #0f2a4a;
+  border-radius: 12px;
+  padding: 16px 14px;
+  animation: fadeSlideUp 400ms ease both;
+  position: relative;
+  overflow: hidden;
+}
+
+.a-stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+}
+
+.a-stat-icon { font-size: 18px; margin-bottom: 8px; }
+
+.a-stat-value {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.a-stat-label { font-size: 10px; color: #4a6a9a; letter-spacing: 1px; text-transform: uppercase; }
+.a-stat-sub   { font-size: 10px; color: #4a6a9a; margin-top: 4px; }
+
+/* Chart sections */
+.a-section {
+  padding: 20px 16px 0;
+}
+
+.a-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #4a6a9a;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #0f2a4a;
+}
+
+.a-chart-card {
+  background: #0c1a2e;
+  border: 1px solid #0f2a4a;
+  border-radius: 12px;
+  padding: 16px 12px 12px;
+}
+
+/* Dashboard loading */
+.a-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 24px;
+  gap: 8px;
+  color: #4a6a9a;
+  font-size: 13px;
+  letter-spacing: 1px;
+}
+
+.a-loading::before {
+  content: '⟳';
+  font-size: 18px;
+  color: #00e5ff;
+  animation: spinLoop 1s linear infinite;
+  display: inline-block;
+}
+
 /* ── Utility ───────────────────────────────────────────────────────────────── */
 .visually-hidden {
   position: absolute;
@@ -1163,4 +1372,343 @@ body::before {
   font-size: 16px;
   color: var(--text-secondary);
   margin-bottom: 6px;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   PHASE 5 — Baraka Analytics Admin Dashboard
+   Completely isolated CSS — no overlap with the bot Mini App styles.
+   All classes prefixed with "a-" to guarantee zero collision.
+════════════════════════════════════════════════════════════════════════════ */
+
+/* ── Dashboard Shell ───────────────────────────────────────────────────────── */
+.a-dashboard {
+  min-height: 100vh;
+  background: #050a14;
+  color: #c8d8f0;
+  font-family: 'Nunito', 'Helvetica Neue', sans-serif;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────────── */
+.a-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid #0f2a4a;
+  background: #08111f;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.a-header-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.a-header-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #00e5ff;
+  box-shadow: 0 0 8px #00e5ff;
+  animation: adminPulse 2s ease infinite;
+}
+
+@keyframes adminPulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 8px #00e5ff; }
+  50%       { opacity: 0.7; box-shadow: 0 0 16px #00e5ff; }
+}
+
+.a-header-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: #00e5ff;
+}
+
+.a-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.a-sync-time {
+  font-size: 11px;
+  color: #4a6a9a;
+  font-weight: 500;
+}
+
+.a-refresh-btn {
+  padding: 6px 14px;
+  background: #0c1a2e;
+  border: 1px solid #0f2a4a;
+  border-radius: 20px;
+  color: #00e5ff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 150ms, background 150ms;
+  font-family: inherit;
+}
+
+.a-refresh-btn:hover:not(:disabled) {
+  border-color: #00e5ff;
+  background: rgba(0, 229, 255, 0.08);
+}
+
+.a-refresh-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Stat Cards ────────────────────────────────────────────────────────────── */
+.a-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  padding: 24px;
+}
+
+@media (max-width: 600px) {
+  .a-stats-grid { grid-template-columns: 1fr; }
+}
+
+.a-stat-card {
+  position: relative;
+  background: #0c1a2e;
+  border: 1px solid;
+  border-radius: 16px;
+  padding: 24px 20px 20px;
+  overflow: hidden;
+  animation: adminFadeUp 400ms ease both;
+}
+
+.a-stat-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  pointer-events: none;
+}
+
+.a-stat-value {
+  font-size: 36px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  line-height: 1;
+  margin-bottom: 6px;
+  font-family: 'Courier New', monospace;
+}
+
+.a-stat-label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #4a6a9a;
+}
+
+.a-stat-sub {
+  font-size: 11px;
+  color: #4a6a9a;
+  margin-top: 4px;
+}
+
+/* ── Charts ────────────────────────────────────────────────────────────────── */
+.a-charts-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 0 24px 32px;
+}
+
+@media (max-width: 900px) {
+  .a-charts-row { grid-template-columns: 1fr; }
+}
+
+.a-chart-card {
+  background: #08111f;
+  border: 1px solid #0f2a4a;
+  border-radius: 16px;
+  padding: 20px;
+  animation: adminFadeUp 400ms ease both;
+}
+
+.a-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.a-chart-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.a-chart-sub {
+  font-size: 11px;
+  color: #4a6a9a;
+}
+
+.a-chart-empty {
+  height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: #4a6a9a;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* ── Login Screen ──────────────────────────────────────────────────────────── */
+.a-login-screen {
+  min-height: 100vh;
+  background: #050a14;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.a-login-card {
+  width: 100%;
+  max-width: 380px;
+  background: #0c1a2e;
+  border: 1px solid #0f2a4a;
+  border-radius: 24px;
+  padding: 40px 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  animation: adminFadeUp 400ms ease both;
+}
+
+.a-login-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(0, 229, 255, 0.06);
+  border: 1px solid rgba(0, 229, 255, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 4px;
+}
+
+.a-login-title {
+  font-size: 22px;
+  font-weight: 800;
+  color: #00e5ff;
+  letter-spacing: 1px;
+  text-align: center;
+}
+
+.a-login-sub {
+  font-size: 13px;
+  color: #4a6a9a;
+  margin-top: -8px;
+}
+
+.a-input-wrap {
+  width: 100%;
+}
+
+.a-input {
+  width: 100%;
+  padding: 12px 16px;
+  background: #08111f;
+  border: 1px solid #0f2a4a;
+  border-radius: 12px;
+  color: #c8d8f0;
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 150ms, box-shadow 150ms;
+  letter-spacing: 2px;
+}
+
+.a-input:focus {
+  border-color: #00e5ff;
+  box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.1);
+}
+
+.a-login-error {
+  width: 100%;
+  padding: 10px 14px;
+  background: rgba(255, 80, 80, 0.1);
+  border: 1px solid rgba(255, 80, 80, 0.3);
+  border-radius: 10px;
+  color: #ff8080;
+  font-size: 12px;
+  text-align: center;
+  animation: adminFadeUp 200ms ease both;
+}
+
+.a-login-btn {
+  width: 100%;
+  padding: 13px;
+  background: linear-gradient(135deg, rgba(0,229,255,0.15), rgba(0,229,255,0.05));
+  border: 1px solid #00e5ff;
+  border-radius: 12px;
+  color: #00e5ff;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: background 150ms, transform 150ms;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.a-login-btn:hover:not(:disabled) {
+  background: rgba(0, 229, 255, 0.2);
+}
+
+.a-login-btn:active:not(:disabled) { transform: scale(0.98); }
+.a-login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Spinners ──────────────────────────────────────────────────────────────── */
+.a-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(0, 229, 255, 0.3);
+  border-top-color: #00e5ff;
+  border-radius: 50%;
+  animation: adminSpin 0.7s linear infinite;
+  display: inline-block;
+}
+
+.a-spinner-sm {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid rgba(0, 229, 255, 0.3);
+  border-top-color: #00e5ff;
+  border-radius: 50%;
+  animation: adminSpin 0.7s linear infinite;
+  display: inline-block;
+}
+
+@keyframes adminSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Skeleton shimmer for admin ────────────────────────────────────────────── */
+@keyframes adminSkeletonShimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Entry animation ───────────────────────────────────────────────────────── */
+@keyframes adminFadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0);    }
 }
