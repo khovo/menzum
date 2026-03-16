@@ -96,9 +96,11 @@ module.exports = async function handler(req, res) {
         { $sort: { _id: 1 } },
       ]).toArray(),
 
-      // 5. Trending tracks: aggregate listen_history across all users, last 7 days
-      //    Note: $unwind on a capped-50 array, across all users — efficient.
+      // 5. Trending tracks — resilient version:
+      //    $match first to skip users with no listen_history (avoids $unwind errors
+      //    on Atlas when the field is missing entirely, not just an empty array).
       db.collection("users").aggregate([
+        { $match: { listen_history: { $exists: true, $ne: [] } } },
         { $unwind: "$listen_history" },
         { $match: { "listen_history.played_at": { $gte: last7d } } },
         {
