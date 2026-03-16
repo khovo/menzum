@@ -964,6 +964,191 @@ body::before {
   white-space: nowrap;
 }
 
+
+/* ════════════════════════════════════════════════════════════════════════════
+   PHASE 4 — Polish & UX Upgrades
+   • Directional view transitions (slide-left / slide-right)
+   • Pull-to-refresh indicator
+   • Offline banner
+   • Error state card
+   • Retry button
+════════════════════════════════════════════════════════════════════════════ */
+
+/* ── Directional View Transitions ──────────────────────────────────────────── */
+/*
+  Three named keyframes for three slide directions.
+  Applied by viewTransitionClass() in index.js based on the numeric
+  order of views: home=0, search=1, library=2.
+  Going right in the nav → new view enters from right (slide-left).
+  Going left in the nav  → new view enters from left  (slide-right).
+*/
+
+.view-slide-left {
+  animation: slideInFromRight 280ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.view-slide-right {
+  animation: slideInFromLeft 280ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes slideInFromRight {
+  from { opacity: 0.4; transform: translateX(28px); }
+  to   { opacity: 1;   transform: translateX(0);    }
+}
+
+@keyframes slideInFromLeft {
+  from { opacity: 0.4; transform: translateX(-28px); }
+  to   { opacity: 1;   transform: translateX(0);     }
+}
+
+/* ── Pull-to-Refresh Indicator ─────────────────────────────────────────────── */
+.pull-indicator {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 0;           /* collapsed by default — transform pulls it into view */
+  pointer-events: none;
+}
+
+.pull-spinner {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: var(--gold-primary);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+  transition: transform var(--transition-fast);
+}
+
+.pull-spinner--spinning {
+  animation: spinLoop 0.7s linear infinite;
+}
+
+@keyframes spinLoop {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Offline Banner ────────────────────────────────────────────────────────── */
+.offline-banner {
+  position: relative;
+  z-index: 15;
+  background: linear-gradient(90deg, #2a1a0a, #1a1208);
+  border-bottom: 1px solid rgba(232, 100, 40, 0.3);
+  color: #ffaa60;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  padding: 8px 20px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  animation: slideDownBanner 250ms ease both;
+}
+
+@keyframes slideDownBanner {
+  from { opacity: 0; transform: translateY(-100%); }
+  to   { opacity: 1; transform: translateY(0);     }
+}
+
+/* ── Error State Card ──────────────────────────────────────────────────────── */
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px 24px;
+  gap: 10px;
+  text-align: center;
+  animation: fadeSlideUp 300ms ease both;
+}
+
+.error-state--compact {
+  padding: 24px 16px;
+  background: rgba(220, 60, 60, 0.06);
+  border: 1px solid rgba(220, 60, 60, 0.18);
+  border-radius: var(--radius-lg);
+}
+
+.error-state-icon {
+  font-size: 36px;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
+.error-state--compact .error-state-icon {
+  font-size: 26px;
+}
+
+.error-state-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  line-height: 1.2;
+}
+
+.error-state--compact .error-state-title {
+  font-size: 14px;
+}
+
+.error-state-message {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  max-width: 240px;
+}
+
+.error-state--compact .error-state-message {
+  font-size: 12px;
+}
+
+/* ── Retry Button ──────────────────────────────────────────────────────────── */
+.retry-btn {
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 22px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-full);
+  color: var(--gold-primary);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+              transform var(--transition-fast);
+}
+
+.retry-btn:active {
+  background: var(--gold-glow);
+  border-color: var(--gold-primary);
+  transform: scale(0.96);
+}
+
+.retry-btn-icon {
+  font-size: 15px;
+  display: inline-block;
+  transition: transform 0.4s ease;
+}
+
+.retry-btn:active .retry-btn-icon {
+  transform: rotate(-180deg);
+}
+
+.error-state--compact .retry-btn {
+  padding: 7px 16px;
+  font-size: 12px;
+}
+
 /* ── No-results ────────────────────────────────────────────────────────────── */
 .no-results {
   padding: 40px 20px;
