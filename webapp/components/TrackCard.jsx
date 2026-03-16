@@ -64,8 +64,13 @@ function HeartIcon({ size = 14, filled = false, color = 'currentColor' }) {
 }
 
 /* ── Featured Card ─────────────────────────────────────────────────────────── */
-function FeaturedCard({ track, onPlay, onFavorite, style }) {
-  const [isFav, setIsFav] = useState(track.is_favorite);
+function FeaturedCard({ track, onPlay, onFavorite, style, isFav: controlledFav }) {
+  // Controlled mode: parent passes isFav → use it directly (synced global state).
+  // Uncontrolled mode: parent omits isFav → manage locally (backwards compatible).
+  const isControlled = controlledFav !== undefined;
+  const [localFav, setLocalFav] = useState(track.is_favorite);
+  const isFav = isControlled ? controlledFav : localFav;
+
   const [playing, setPlaying] = useState(false);
 
   const handlePlay = async (e) => {
@@ -78,9 +83,13 @@ function FeaturedCard({ track, onPlay, onFavorite, style }) {
 
   const handleFav = async (e) => {
     e.stopPropagation();
-    setIsFav((v) => !v);   // optimistic
-    const ok = await onFavorite(track);
-    if (!ok) setIsFav((v) => !v); // revert on error
+    if (!isControlled) {
+      setLocalFav((v) => !v);   // optimistic (uncontrolled)
+      const ok = await onFavorite(track);
+      if (!ok) setLocalFav((v) => !v);
+    } else {
+      await onFavorite(track);  // parent handles optimistic update
+    }
   };
 
   return (
@@ -132,8 +141,11 @@ function FeaturedCard({ track, onPlay, onFavorite, style }) {
 }
 
 /* ── List Row ──────────────────────────────────────────────────────────────── */
-function ListTrack({ track, onPlay, onFavorite, index }) {
-  const [isFav, setIsFav] = useState(track.is_favorite);
+function ListTrack({ track, onPlay, onFavorite, index, isFav: controlledFav }) {
+  const isControlled = controlledFav !== undefined;
+  const [localFav, setLocalFav] = useState(track.is_favorite);
+  const isFav = isControlled ? controlledFav : localFav;
+
   const [playing, setPlaying] = useState(false);
 
   const handlePlay = async () => {
@@ -145,9 +157,13 @@ function ListTrack({ track, onPlay, onFavorite, index }) {
 
   const handleFav = async (e) => {
     e.stopPropagation();
-    setIsFav((v) => !v);
-    const ok = await onFavorite(track);
-    if (!ok) setIsFav((v) => !v);
+    if (!isControlled) {
+      setLocalFav((v) => !v);
+      const ok = await onFavorite(track);
+      if (!ok) setLocalFav((v) => !v);
+    } else {
+      await onFavorite(track);
+    }
   };
 
   return (
