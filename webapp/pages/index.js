@@ -123,8 +123,20 @@ export default function Home() {
   const [libraryLoading,   setLibraryLoading]   = useState(false);
   const [libraryLoaded,    setLibraryLoaded]     = useState(false);
 
-  const searchInputRef = useRef(null);
-  const debounceRef    = useRef(null);
+  const searchInputRef  = useRef(null);
+  const debounceRef     = useRef(null);
+  const sentinelRef     = useRef(null);   // Intersection Observer target for infinite scroll
+  const observerRef     = useRef(null);   // holds the IntersectionObserver instance
+
+  // ── Catalog infinite scroll state ─────────────────────────────────────────
+  const [catalogCursor,    setCatalogCursor]    = useState(null);
+  const [catalogHasMore,   setCatalogHasMore]   = useState(true);
+  const [catalogLoading,   setCatalogLoading]   = useState(false);
+
+  // ── Search pagination state ────────────────────────────────────────────────
+  const [searchCursor,   setSearchCursor]   = useState(null);
+  const [searchHasMore,  setSearchHasMore]  = useState(false);
+  const [searchPageLoad, setSearchPageLoad] = useState(false);
 
   // ── Auth header helper ─────────────────────────────────────────────────────
   const authHeader = useCallback(() => ({
@@ -181,6 +193,9 @@ export default function Home() {
         if (featData.ok) {
           const loaded = featData.tracks || [];
           setTracks(loaded);
+          // Seed catalog pagination cursor
+          setCatalogCursor(featData.next_cursor ?? null);
+          setCatalogHasMore(featData.has_more ?? false);
           // Seed the central favorites registry from the API's is_favorite flags
           setFavoritedIds(new Set(
             loaded.filter((t) => t.is_favorite).map((t) => t.id)
@@ -205,6 +220,35 @@ export default function Home() {
     boot();
   }, [isReady, initData, tgUser, authHeader]);
 
+  // ── Catalog: load next page (called by IntersectionObserver) ─────────────
+  const loadMoreCatalog = useCallback(async () => {
+    if (catalogLoading || !catalogHasMore || !catalogCursor || isOffline) return;
+    setCatalogLoading(true);
+    try {
+      const res  = await fetch(
+        `${API_BASE}/api/webapp/featured?cursor=${catalogCursor}`,
+        { headers: authHeader() }
+      );
+      const data = await res.json();
+      if (data.ok) {
+        const newTracks = data.tracks || [];
+        setTracks((prev) => [...prev, ...newTracks]);
+        setCatalogCursor(data.next_cursor ?? null);
+        setCatalogHasMore(data.has_more ?? false);
+        // Merge any newly-favorited tracks into the registry
+        setFavoritedIds((prev) => {
+          const next = new Set(prev);
+          newTracks.filter((t) => t.is_favorite).forEach((t) => next.add(t.id));
+          return next;
+        });
+      }
+    } catch {
+      // Silent fail — user can scroll up and back down to retry
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, [catalogLoading, catalogHasMore, catalogCursor, isOffline, authHeader]);
+
   // ── Pull-to-refresh + retry: re-runs boot logic for Home ──────────────────
   const refreshHome = useCallback(async () => {
     if (refreshing || isOffline) return;
@@ -215,6 +259,8 @@ export default function Home() {
       const data = await res.json();
       if (data.ok) {
         setTracks(data.tracks || []);
+        setCatalogCursor(data.next_cursor ?? null);
+        setCatalogHasMore(data.has_more ?? false);
       } else {
         setHomeError('Failed to refresh. Try again.');
       }
@@ -237,6 +283,9 @@ export default function Home() {
       }
       setSearching(true);
       setSearchError(null);
+      // Reset pagination on every new query
+      setSearchCursor(null);
+      setSearchHasMore(false);
       try {
         const res  = await fetch(
           `${API_BASE}/api/webapp/search?q=${encodeURIComponent(query)}`,
@@ -245,6 +294,8 @@ export default function Home() {
         const data = await res.json();
         if (data.ok) {
           setResults(data.tracks || []);
+          setSearchCursor(data.next_cursor ?? null);
+          setSearchHasMore(data.has_more ?? false);
         } else {
           setResults([]);
           setSearchError('Search failed. Tap to retry.');
@@ -259,6 +310,21 @@ export default function Home() {
 
     return () => clearTimeout(debounceRef.current);
   }, [query, view, authHeader]);
+
+  // ── Intersection Observer: triggers loadMoreCatalog when sentinel is visible ─
+  useEffect(() => {
+    if (!sentinelRef.current) return;
+    observerRef.current = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          loadMoreCatalog();
+        }
+      },
+      { rootMargin: '200px' }   // start loading 200px before user reaches the bottom
+    );
+    observerRef.current.observe(sentinelRef.current);
+    return () => observerRef.current?.disconnect();
+  }, [loadMoreCatalog]);
 
   // ── Autofocus search input when switching to search view ──────────────────
   useEffect(() => {
@@ -412,6 +478,34 @@ export default function Home() {
       return false;
     }
   }, [authHeader, hapticImpact, favoritedIds]);
+
+  // ── Search: load more results ────────────────────────────────────────────
+  const loadMoreSearch = useCallback(async () => {
+    if (searchPageLoad || !searchHasMore || !searchCursor || isOffline) return;
+    setSearchPageLoad(true);
+    try {
+      const res  = await fetch(
+        `${API_BASE}/api/webapp/search?q=${encodeURIComponent(query)}&cursor=${searchCursor}`,
+        { headers: authHeader() }
+      );
+      const data = await res.json();
+      if (data.ok) {
+        const newTracks = data.tracks || [];
+        setResults((prev) => [...prev, ...newTracks]);
+        setSearchCursor(data.next_cursor ?? null);
+        setSearchHasMore(data.has_more ?? false);
+        setFavoritedIds((prev) => {
+          const next = new Set(prev);
+          newTracks.filter((t) => t.is_favorite).forEach((t) => next.add(t.id));
+          return next;
+        });
+      }
+    } catch {
+      // Silent fail — button remains visible for retry
+    } finally {
+      setSearchPageLoad(false);
+    }
+  }, [searchPageLoad, searchHasMore, searchCursor, isOffline, authHeader, query]);
 
   // ── Pull-to-refresh touch handlers (Home view) ───────────────────────────
   const handleTouchStart = useCallback((e) => {
@@ -615,6 +709,23 @@ export default function Home() {
                 </div>
               )}
 
+              {/* ── Infinite scroll sentinel + loading state ──────────────── */}
+              {/* The IntersectionObserver watches this div. When it enters    */}
+              {/* the viewport (200px before bottom), loadMoreCatalog() fires. */}
+              <div ref={sentinelRef} style={{ height: 1 }} />
+              {catalogLoading && (
+                <div className="load-more-spinner">
+                  <div className="loading-dot" />
+                  <div className="loading-dot" />
+                  <div className="loading-dot" />
+                </div>
+              )}
+              {!catalogHasMore && tracks.length > 0 && (
+                <div className="catalog-end-msg">
+                  ✦ All {tracks.length} Menzumas loaded
+                </div>
+              )}
+
             </div>
           )}
 
@@ -707,7 +818,9 @@ export default function Home() {
                 <div style={{ marginTop: 12 }}>
                   <div className="section-header">
                     <div className="section-title">Results</div>
-                    <div className="section-count">{results.length} found</div>
+                    <div className="section-count">
+                      {results.length}{searchHasMore ? '+' : ''} found
+                    </div>
                   </div>
                   <div className="track-list">
                     {results.map((track, i) => (
@@ -721,6 +834,27 @@ export default function Home() {
                       />
                     ))}
                   </div>
+
+                  {/* Load more button — explicit for search (better UX than auto-scroll) */}
+                  {searchHasMore && (
+                    <div className="load-more-row">
+                      <button
+                        className="load-more-btn"
+                        onClick={loadMoreSearch}
+                        disabled={searchPageLoad}
+                      >
+                        {searchPageLoad ? (
+                          <span className="load-more-btn-inner">
+                            <div className="loading-dot" />
+                            <div className="loading-dot" />
+                            <div className="loading-dot" />
+                          </span>
+                        ) : (
+                          <span>Load more results ↓</span>
+                        )}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
