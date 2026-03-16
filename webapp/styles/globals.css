@@ -1358,6 +1358,68 @@ body::before {
   font-size: 12px;
 }
 
+
+/* ════════════════════════════════════════════════════════════════════════════
+   PHASE 6 — Infinite Scroll + Cover Art + Load More
+════════════════════════════════════════════════════════════════════════════ */
+
+/* ── Catalog loading spinner (inline, below list) ──────────────────────────── */
+.load-more-spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 20px 0 8px;
+}
+
+/* ── Catalog end message ───────────────────────────────────────────────────── */
+.catalog-end-msg {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 1px;
+  padding: 16px 20px 8px;
+  opacity: 0.7;
+}
+
+/* ── Search: Load more button row ──────────────────────────────────────────── */
+.load-more-row {
+  display: flex;
+  justify-content: center;
+  padding: 16px 20px 8px;
+}
+
+.load-more-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 28px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-full);
+  color: var(--gold-primary);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+              transform var(--transition-fast);
+  min-width: 180px;
+  min-height: 42px;
+}
+
+.load-more-btn:hover  { background: var(--gold-glow); border-color: var(--gold-primary); }
+.load-more-btn:active { transform: scale(0.97); }
+.load-more-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+.load-more-btn-inner {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
 /* ── No-results ────────────────────────────────────────────────────────────── */
 .no-results {
   padding: 40px 20px;
