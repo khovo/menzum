@@ -31,6 +31,7 @@ import { FeaturedCard, ListTrack } from '../components/TrackCard';
 import BottomNav from '../components/BottomNav';
 import NowPlaying from '../components/NowPlaying';
 import Library from '../components/Library';
+import ErrorState from '../components/ErrorState';
 
 // ── API base URL — same origin as the Mini App (Vercel) ─────────────────────
 // In dev, Next runs on :3001 and API on :5000, so we allow an override.
@@ -85,10 +86,28 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [authErr, setAuthErr] = useState(null);
 
-  const [view,    setView]    = useState('home');    // 'home' | 'search'
-  const [query,   setQuery]   = useState('');
-  const [results, setResults] = useState([]);
-  const [searching, setSearching] = useState(false);
+  const [view,     setView]    = useState('home');    // 'home' | 'search' | 'library'
+  const [prevView, setPrevView] = useState(null);   // for directional transition
+  const [query,    setQuery]   = useState('');
+  const [results,  setResults] = useState([]);
+  const [searching,  setSearching]  = useState(false);
+  const [searchError, setSearchError] = useState(null);
+
+  // ── Offline / connectivity ───────────────────────────────────────────────
+  const [isOffline, setIsOffline] = useState(
+    typeof navigator !== 'undefined' ? !navigator.onLine : false
+  );
+
+  // ── Pull-to-refresh (Home) ───────────────────────────────────────────────
+  const [pulling,       setPulling]      = useState(false);
+  const [pullDistance,  setPullDistance] = useState(0);
+  const [refreshing,    setRefreshing]   = useState(false);
+  const pullStartY = useRef(null);
+  const PULL_THRESHOLD = 65;
+
+  // ── Error states per-view ───────────────────────────────────────────────
+  const [homeError,    setHomeError]    = useState(null);
+  const [libraryError, setLibraryError] = useState(null);
 
   const [nowPlaying, setNowPlaying] = useState(null);   // { track, status, error }
 
@@ -106,6 +125,18 @@ export default function Home() {
     'Authorization': `tma ${initData}`,
     'Content-Type':  'application/json',
   }), [initData]);
+
+  // ── Offline detection ────────────────────────────────────────────────────
+  useEffect(() => {
+    function goOnline()  { setIsOffline(false); }
+    function goOffline() { setIsOffline(true);  }
+    window.addEventListener('online',  goOnline);
+    window.addEventListener('offline', goOffline);
+    return () => {
+      window.removeEventListener('online',  goOnline);
+      window.removeEventListener('offline', goOffline);
+    };
+  }, []);
 
   // ── Boot: authenticate then load featured tracks ───────────────────────────
   useEffect(() => {
@@ -143,12 +174,18 @@ export default function Home() {
 
         if (featData.ok) {
           setTracks(featData.tracks || []);
+          setHomeError(null);
         } else {
-          setAuthErr('Failed to load tracks.');
+          setHomeError('Failed to load tracks from the server.');
         }
       } catch (err) {
         console.error('Boot error:', err);
-        setAuthErr('Connection error. Please try again.');
+        // Only set authErr for auth failures — network errors show inline retry
+        if (!user) {
+          setAuthErr('Connection error. Please open via @Almadihbot.');
+        } else {
+          setHomeError('Connection error. Check your internet and try again.');
+        }
       } finally {
         setLoading(false);
       }
@@ -156,6 +193,26 @@ export default function Home() {
 
     boot();
   }, [isReady, initData, tgUser, authHeader]);
+
+  // ── Pull-to-refresh + retry: re-runs boot logic for Home ──────────────────
+  const refreshHome = useCallback(async () => {
+    if (refreshing || isOffline) return;
+    setRefreshing(true);
+    setHomeError(null);
+    try {
+      const res  = await fetch(`${API_BASE}/api/webapp/featured`, { headers: authHeader() });
+      const data = await res.json();
+      if (data.ok) {
+        setTracks(data.tracks || []);
+      } else {
+        setHomeError('Failed to refresh. Try again.');
+      }
+    } catch {
+      setHomeError('No connection. Pull down to retry.');
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshing, isOffline, authHeader]);
 
   // ── Search: debounced query ────────────────────────────────────────────────
   useEffect(() => {
@@ -168,15 +225,22 @@ export default function Home() {
         return;
       }
       setSearching(true);
+      setSearchError(null);
       try {
         const res  = await fetch(
           `${API_BASE}/api/webapp/search?q=${encodeURIComponent(query)}`,
           { headers: authHeader() }
         );
         const data = await res.json();
-        setResults(data.ok ? (data.tracks || []) : []);
+        if (data.ok) {
+          setResults(data.tracks || []);
+        } else {
+          setResults([]);
+          setSearchError('Search failed. Tap to retry.');
+        }
       } catch {
         setResults([]);
+        setSearchError('No connection. Tap to retry.');
       } finally {
         setSearching(false);
       }
@@ -196,6 +260,7 @@ export default function Home() {
   const loadLibrary = useCallback(async () => {
     if (libraryLoaded) return;  // already fetched this session
     setLibraryLoading(true);
+    setLibraryError(null);
     try {
       const res  = await fetch(`${API_BASE}/api/webapp/library`, {
         headers: authHeader(),
@@ -205,24 +270,41 @@ export default function Home() {
         setLibraryStats(data.stats);
         setLibraryFavorites(data.favorites ?? []);
         setLibraryLoaded(true);
+        setLibraryError(null);
+      } else {
+        setLibraryError('Could not load your library.');
       }
-    } catch (err) {
-      console.error('loadLibrary error:', err);
+    } catch {
+      setLibraryError('No connection. Tap retry to try again.');
     } finally {
       setLibraryLoading(false);
     }
   }, [libraryLoaded, authHeader]);
 
   // ── Handle view switch ─────────────────────────────────────────────────────
+  const VIEW_ORDER = { home: 0, search: 1, library: 2 };
   function handleViewChange(v) {
+    if (v === view) return;
+    setPrevView(view);
     setView(v);
     if (v === 'home') {
       setQuery('');
       setResults([]);
+      setSearchError(null);
     }
     if (v === 'library') {
+      // Reset so a retry re-fetches fresh
+      if (libraryError) setLibraryLoaded(false);
       loadLibrary();
     }
+  }
+
+  // Compute CSS class for directional slide transition
+  function viewTransitionClass(v) {
+    if (!prevView || prevView === v) return 'view-enter';
+    const curr = VIEW_ORDER[v]       ?? 0;
+    const prev = VIEW_ORDER[prevView] ?? 0;
+    return curr > prev ? 'view-slide-left' : 'view-slide-right';
   }
 
   // ── Play a track ───────────────────────────────────────────────────────────
@@ -265,6 +347,33 @@ export default function Home() {
       return false;
     }
   }, [authHeader, hapticImpact]);
+
+  // ── Pull-to-refresh touch handlers (Home view) ───────────────────────────
+  const handleTouchStart = useCallback((e) => {
+    if (view !== 'home') return;
+    const scrollEl = e.currentTarget;
+    if (scrollEl.scrollTop === 0) {
+      pullStartY.current = e.touches[0].clientY;
+    }
+  }, [view]);
+
+  const handleTouchMove = useCallback((e) => {
+    if (pullStartY.current === null) return;
+    const dist = e.touches[0].clientY - pullStartY.current;
+    if (dist > 0 && dist < 120) {
+      setPulling(true);
+      setPullDistance(dist);
+    }
+  }, []);
+
+  const handleTouchEnd = useCallback(() => {
+    if (pulling && pullDistance >= PULL_THRESHOLD) {
+      refreshHome();
+    }
+    pullStartY.current = null;
+    setPulling(false);
+    setPullDistance(0);
+  }, [pulling, pullDistance, refreshHome]);
 
   // ── Loading screen ─────────────────────────────────────────────────────────
   if (!isReady || loading) {
@@ -344,11 +453,37 @@ export default function Home() {
         </header>
 
         {/* ── Scroll area ─────────────────────────────────────────────────── */}
-        <main className="scroll-container">
+        {/* ── Offline Banner ───────────────────────────────────────────────── */}
+        {isOffline && (
+          <div className="offline-banner" role="alert">
+            <span>📡</span> No internet connection
+          </div>
+        )}
+
+        <main
+          className="scroll-container"
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+        >
+          {/* ── Pull-to-refresh indicator ────────────────────────────────── */}
+          {(pulling || refreshing) && (
+            <div
+              className="pull-indicator"
+              style={{
+                opacity:   Math.min(pullDistance / PULL_THRESHOLD, 1),
+                transform: `translateY(${Math.min(pullDistance * 0.4, 24)}px) rotate(${refreshing ? 0 : pullDistance * 2}deg)`,
+              }}
+            >
+              <div className={`pull-spinner ${refreshing ? 'pull-spinner--spinning' : ''}`}>
+                ↺
+              </div>
+            </div>
+          )}
 
           {/* ════════════════════════════════════════════ HOME VIEW */}
           {view === 'home' && (
-            <div className="view-enter">
+            <div className={viewTransitionClass('home')}>
 
               {/* Featured section */}
               <div className="section-header">
@@ -371,6 +506,19 @@ export default function Home() {
                       style={{ animationDelay: `${i * 60}ms` }}
                     />
                   ))}
+                </div>
+              )}
+
+              {/* Inline error for home refresh failures */}
+              {homeError && !loading && (
+                <div style={{ padding: '0 16px 8px' }}>
+                  <ErrorState
+                    icon="📡"
+                    title="Couldn't load tracks"
+                    message={homeError}
+                    onRetry={refreshHome}
+                    compact
+                  />
                 </div>
               )}
 
@@ -405,7 +553,7 @@ export default function Home() {
 
           {/* ════════════════════════════════════════════ SEARCH VIEW */}
           {view === 'search' && (
-            <div className="view-enter">
+            <div className={viewTransitionClass('search')}>
 
               <div className="search-container">
                 <div className="search-input-wrap">
@@ -471,6 +619,22 @@ export default function Home() {
                 </div>
               )}
 
+              {/* Search error */}
+              {searchError && !searching && (
+                <div style={{ padding: '20px 16px 0' }}>
+                  <ErrorState
+                    icon="🔍"
+                    title="Search failed"
+                    message={searchError}
+                    onRetry={() => {
+                      setSearchError(null);
+                      setQuery((q) => q); // re-trigger debounce effect
+                    }}
+                    compact
+                  />
+                </div>
+              )}
+
               {/* Search results */}
               {results.length > 0 && (
                 <div style={{ marginTop: 12 }}>
@@ -497,13 +661,17 @@ export default function Home() {
 
           {/* ════════════════════════════════════════════ LIBRARY VIEW */}
           {view === 'library' && (
-            <Library
-              stats={libraryStats}
-              favorites={libraryFavorites}
-              loading={libraryLoading}
-              onPlay={handlePlay}
-              onFavorite={handleFavorite}
-            />
+            <div className={viewTransitionClass('library')}>
+              <Library
+                stats={libraryStats}
+                favorites={libraryFavorites}
+                loading={libraryLoading}
+                error={libraryError}
+                onRetry={() => { setLibraryLoaded(false); loadLibrary(); }}
+                onPlay={handlePlay}
+                onFavorite={handleFavorite}
+              />
+            </div>
           )}
 
         </main>
