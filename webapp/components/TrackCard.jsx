@@ -10,17 +10,38 @@
 import { useState } from 'react';
 
 /**
- * Deterministic gradient background from a track ID.
- * Uses the last 6 hex chars of the MongoDB ObjectId as a seed.
- * Produces unique, harmonious dark gradients in the blue-teal-indigo range.
+ * Rich deterministic cover art system.
+ *
+ * Each track gets a unique visual identity derived from its MongoDB ObjectId.
+ * Uses 8 carefully curated color palettes — all warm/jewel-toned for Islamic
+ * aesthetic coherence — rotated based on a hash of the track ID.
+ * The result looks like a real music app cover grid, not a generic fallback.
  */
+const COVER_PALETTES = [
+  // [angle, color1, color2, accent]
+  ['145deg', '#1a2744', '#0f3460', '#e8b84b'],   // navy → midnight blue, gold accent
+  ['135deg', '#1f1035', '#2d1b5e', '#9b59b6'],   // deep purple → violet
+  ['160deg', '#0d2137', '#0a4a5e', '#00c9ff'],   // dark ocean → teal
+  ['130deg', '#1a1208', '#3d2000', '#e8a020'],   // deep brown → amber
+  ['150deg', '#0a2218', '#0d3d2a', '#2ecc71'],   // forest dark → emerald
+  ['140deg', '#1f0a0a', '#4a1010', '#e74c3c'],   // deep crimson → red
+  ['155deg', '#0f0f2e', '#1a1a5e', '#4a90d9'],   // midnight → cobalt
+  ['145deg', '#1a0f2e', '#2d1a5e', '#7c5cbf'],   // indigo → purple
+];
+
 function trackGradient(id = '') {
-  const seed = parseInt(id.slice(-6) || 'a0b0c0', 16);
-  const h1   = (seed % 100) + 190;   // 190–290: blue → violet
-  const h2   = h1 + 25;
-  const s1   = 45 + (seed % 20);
-  const s2   = 60 + (seed % 25);
-  return `linear-gradient(145deg, hsl(${h1},${s1}%,18%) 0%, hsl(${h2},${s2}%,12%) 100%)`;
+  const seed     = parseInt(id.slice(-8) || 'a0b0c0d0', 16);
+  const palette  = COVER_PALETTES[seed % COVER_PALETTES.length];
+  const [angle, c1, c2] = palette;
+  // Add a subtle mid-stop derived from the track ID for variety within each palette
+  const midL = 15 + (seed % 10);
+  const midH = parseInt(id.slice(-4, -2) || 'a0', 16) % 360;
+  return `linear-gradient(${angle}, ${c1} 0%, hsl(${midH},40%,${midL}%) 55%, ${c2} 100%)`;
+}
+
+function trackAccentColor(id = '') {
+  const seed = parseInt(id.slice(-8) || 'a0b0c0d0', 16);
+  return COVER_PALETTES[seed % COVER_PALETTES.length][3];
 }
 
 /** Tiny waveform SVG — used as the track "cover art" placeholder */
