@@ -1,58 +1,64 @@
 /**
  * api/webapp/featured.js
  * ----------------------
- * GET /api/webapp/featured
+ * GET /api/webapp/featured?cursor=<last_id>&limit=20
  *
- * Returns the 20 most recently added tracks (sorted by _id descending,
- * identical to the bot's inline query empty-search handler).
+ * PAGINATION MODEL: cursor-based using MongoDB _id.
  *
- * Also returns which tracks the current user has favorited so the ♡ button
- * renders in the correct state without a second round-trip.
+ * WHY CURSOR NOT SKIP:
+ *   .skip(N) on a 1,150-document collection requires MongoDB to scan and discard
+ *   N documents on every request. Cursor-based pagination filters _id < cursor
+ *   which uses the _id index directly — O(log n) at any scroll depth.
  *
- * REQUEST:
- *   GET /api/webapp/featured
- *   Authorization: tma <initData>
+ * FIRST PAGE:  GET /api/webapp/featured
+ *              (no cursor) → returns first 20, sorted by _id desc
+ *
+ * NEXT PAGES:  GET /api/webapp/featured?cursor=<next_cursor_from_previous_response>
+ *              → returns next 20 tracks with _id < cursor
  *
  * RESPONSE 200:
  *   {
  *     "ok": true,
- *     "tracks": [
- *       {
- *         "id": "64a1b2c3d4e5f6a7b8c9d0e1",
- *         "name": "NEBEYE NEBEYE SELEHADIN HUSSEN",
- *         "is_favorite": false
- *       },
- *       ...
- *     ]
+ *     "tracks":      [...],         // up to `limit` tracks
+ *     "has_more":    true,          // false when the catalog is exhausted
+ *     "next_cursor": "64a1b2..."    // pass this as cursor on the next call
  *   }
- *
- * NOTE: file_id is intentionally NOT returned to the frontend.
- * The client never needs it — audio delivery goes through /api/webapp/play,
- * which looks up the file_id server-side. This prevents clients from
- * extracting Telegram file IDs directly.
  */
 
-const { withAuth }         = require("./_auth");
+const { withAuth }          = require("./_auth");
 const { connectToDatabase } = require("./_db");
+const { ObjectId }          = require("mongodb");
+
+const PAGE_SIZE = 20;
 
 module.exports = withAuth(async function handler(req, res) {
   if (req.method !== "GET") {
     return res.status(405).json({ ok: false, error: "Method not allowed." });
   }
 
+  const cursorParam = (req.query.cursor || "").trim();
+  const limit       = Math.min(parseInt(req.query.limit || PAGE_SIZE, 10), 50);
+
   try {
     const { db }  = await connectToDatabase();
     const userId  = parseInt(req.telegramUser.id, 10);
 
-    // Fetch latest 20 tracks and the user's favorites in parallel
+    // Build filter: if cursor provided, only return tracks older than cursor
+    const filter = { file_id: { $exists: true } };
+    if (cursorParam && cursorParam.length === 24) {
+      try {
+        filter._id = { $lt: new ObjectId(cursorParam) };
+      } catch {
+        // Invalid ObjectId — ignore, start from top
+      }
+    }
+
+    // Fetch limit+1 to cheaply detect whether another page exists
     const [tracks, dbUser] = await Promise.all([
       db.collection("files")
-        .find(
-          { file_id: { $exists: true } },
-          { projection: { display_name: 1 } }   // never expose file_id
-        )
+        .find(filter, { projection: { display_name: 1, file_id: 1 } })
         .sort({ _id: -1 })
-        .limit(20)
+        .limit(limit + 1)
         .toArray(),
 
       db.collection("users").findOne(
@@ -61,16 +67,22 @@ module.exports = withAuth(async function handler(req, res) {
       ),
     ]);
 
+    const hasMore    = tracks.length > limit;
+    const pageTracks = hasMore ? tracks.slice(0, limit) : tracks;
     const favoriteSet = new Set(dbUser?.favorites ?? []);
 
-    const response = tracks.map((t) => ({
+    const response = pageTracks.map((t) => ({
       id:          t._id.toString(),
       name:        t.display_name || "Unknown",
       is_favorite: favoriteSet.has(t.file_id ?? ""),
-      // file_id deliberately omitted
     }));
 
-    return res.status(200).json({ ok: true, tracks: response });
+    return res.status(200).json({
+      ok:          true,
+      tracks:      response,
+      has_more:    hasMore,
+      next_cursor: hasMore ? response[response.length - 1].id : null,
+    });
 
   } catch (err) {
     console.error("featured.js error:", err);
