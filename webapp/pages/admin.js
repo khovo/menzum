@@ -165,10 +165,18 @@ export default function AdminDashboard() {
     if (!t) return;
     setLoading(true);
     try {
-      const res  = await fetch(`${API_BASE}/api/webapp/admin-stats`, {
+      const res = await fetch(`${API_BASE}/api/webapp/admin-stats`, {
         headers: { Authorization: `Bearer ${t}` },
       });
-      const data = await res.json();
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        const raw = await res.text().catch(() => '(unreadable)');
+        console.error('admin-stats returned non-JSON:', res.status, raw.slice(0, 200));
+        setErr(`Server returned non-JSON (${res.status}). Check NEXT_PUBLIC_API_BASE env var on the webapp project.`);
+        return;
+      }
       if (data.ok) {
         setStats(data.stats);
         setLastSync(new Date());
@@ -177,7 +185,11 @@ export default function AdminDashboard() {
         setLoginErr('Session expired. Re-enter token.');
       }
     } catch (err) {
+      // Surface the error in the dashboard instead of silently swallowing it.
+      // Previously this was bare console.error — users saw "Connection error"
+      // from a stale state because no setErr() was ever called here.
       console.error('fetchStats error:', err);
+      setErr(`Network error: ${err.message}. Check NEXT_PUBLIC_API_BASE.`);
     } finally {
       setLoading(false);
     }
@@ -196,20 +208,35 @@ export default function AdminDashboard() {
     setLoginLoad(true);
     setLoginErr('');
     try {
-      const res  = await fetch(`${API_BASE}/api/webapp/admin-stats`, {
+      const res = await fetch(`${API_BASE}/api/webapp/admin-stats`, {
         headers: { Authorization: `Bearer ${pw}` },
       });
-      const data = await res.json();
+
+      // Parse JSON safely — if the server returns HTML (wrong URL, proxy error)
+      // res.json() throws SyntaxError, which was silently becoming "Connection error".
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        // res.json() failed — server returned non-JSON (HTML 404, proxy page, etc.)
+        // Read the raw text so we can show a meaningful error instead of generic message.
+        const raw = await res.text().catch(() => '(unreadable)');
+        const preview = raw.slice(0, 120).replace(/\n/g, ' ');
+        setLoginErr(`Server returned non-JSON (status ${res.status}). Check NEXT_PUBLIC_API_BASE. Preview: ${preview}`);
+        return;
+      }
+
       if (data.ok) {
         setToken(pw);
         setStats(data.stats);
         setLastSync(new Date());
         setAuthed(true);
       } else {
-        setLoginErr(res.status === 401 ? 'Invalid token. Try again.' : data.error);
+        setLoginErr(res.status === 401 ? 'Invalid token. Try again.' : (data.error || 'Unknown error'));
       }
-    } catch {
-      setLoginErr('Connection error. Check your internet.');
+    } catch (err) {
+      // True network error (offline, DNS failure, CORS preflight blocked)
+      setLoginErr(`Network error: ${err.message}`);
     } finally {
       setLoginLoad(false);
     }
