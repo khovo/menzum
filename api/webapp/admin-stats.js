@@ -24,11 +24,31 @@
 const { connectToDatabase } = require("./_db");
 const crypto = require("crypto");
 
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+// .trim() is mandatory: Vercel (and most CI systems) silently append a trailing
+// newline or carriage-return to env var values when they are set via the dashboard
+// or a .env file without quotes. If the byte lengths differ, timingSafeEqual throws
+// instead of returning false, the catch returns false, and you get a permanent 401
+// even when the token is 100% correct.
+const ADMIN_TOKEN = (process.env.ADMIN_TOKEN || "").trim();
 
 function constantTimeEqual(a, b) {
+  // Trim both sides to strip any whitespace the client or server may have added.
+  const bufA = Buffer.from(a.trim());
+  const bufB = Buffer.from(b.trim());
+
+  // timingSafeEqual REQUIRES identical lengths — throws a RangeError otherwise.
+  // We must length-check first, then still call timingSafeEqual (not early-return)
+  // so the comparison time stays constant and doesn't leak token length via timing.
+  if (bufA.length !== bufB.length) {
+    // Lengths differ — run a dummy equal-length comparison so timing stays flat,
+    // then return false.
+    const dummy = Buffer.alloc(bufA.length);
+    crypto.timingSafeEqual(dummy, dummy);
+    return false;
+  }
+
   try {
-    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+    return crypto.timingSafeEqual(bufA, bufB);
   } catch {
     return false;
   }
