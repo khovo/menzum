@@ -554,12 +554,37 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             cap  = message.get("caption", "").split("\n")[0].strip()
             name = cap if cap else f.get("file_name", "Unknown")
             if len(name) > 3:
-                await db.files.update_one(
-                    {"display_name": {"$regex": re.escape(name), "$options": "i"}},
-                    {"$set": {"file_id": f["file_id"], "display_name": name}},
-                    upsert=True,
-                )
-                await send_message(session, chat_id, f"✅ Saved: `{name}`")
+                # ── Safe thumbnail extraction ────────────────────────────────
+                # Telegram audio objects MAY carry a thumbnail (PhotoSize).
+                # Voice messages never do. We use chained .get() so a missing
+                # key at any level silently produces None — never a KeyError.
+                # The DB write happens whether or not a thumbnail exists.
+                thumb_file_id = (
+                    message.get("audio", {})
+                           .get("thumbnail", {})
+                           .get("file_id")
+                    or
+                    message.get("audio", {})
+                           .get("thumb", {})   # legacy field name, still sent by some clients
+                           .get("file_id")
+                )  # None if audio has no thumbnail, or if message is a voice note
+
+                # Build the update payload — include thumb_file_id only when present
+                update_fields = {"file_id": f["file_id"], "display_name": name}
+                if thumb_file_id:
+                    update_fields["thumb_file_id"] = thumb_file_id
+
+                try:
+                    await db.files.update_one(
+                        {"display_name": {"$regex": re.escape(name), "$options": "i"}},
+                        {"$set": update_fields},
+                        upsert=True,
+                    )
+                    thumb_status = " 🖼" if thumb_file_id else ""
+                    await send_message(session, chat_id, f"✅ Saved: `{name}`{thumb_status}")
+                except Exception as db_err:
+                    logger.error("db.files.update_one failed: %s", db_err)
+                    await send_message(session, chat_id, f"❌ DB error saving `{name}`. Please retry.")
             return
 
     if text and not text.startswith("/"):
