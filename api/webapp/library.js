@@ -66,7 +66,7 @@ module.exports = withAuth(async function handler(req, res) {
       ? await db.collection("files")
           .find(
             { file_id: { $in: favoriteFileIds } },
-            { projection: { display_name: 1 } }   // never expose file_id
+            { projection: { display_name: 1, thumb_file_id: 1 } }   // never expose file_id
           )
           .limit(50)
           .toArray()
@@ -86,6 +86,7 @@ module.exports = withAuth(async function handler(req, res) {
       id:          doc._id.toString(),
       name:        doc.display_name || "Unknown",
       is_favorite: true,
+      has_thumb:   !!doc.thumb_file_id,
     }));
 
     // ── Compute most-played from listen_history (O(50) max) ───────────────────
