@@ -81,7 +81,7 @@ module.exports = withAuth(async function handler(req, res) {
 
     const [tracks, dbUser] = await Promise.all([
       db.collection("files")
-        .find(filter, { projection: { display_name: 1, file_id: 1 } })
+        .find(filter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1 } })
         .sort({ _id: -1 })
         .limit(limit + 1)
         .toArray(),
@@ -100,6 +100,7 @@ module.exports = withAuth(async function handler(req, res) {
       id:          t._id.toString(),
       name:        t.display_name || "Unknown",
       is_favorite: favoriteSet.has(t.file_id ?? ""),
+      has_thumb:   !!t.thumb_file_id,
     }));
 
     return res.status(200).json({
