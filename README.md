@@ -42,7 +42,7 @@ Built a comprehensive analytics dashboard to track total users, catalog size, us
 
 ## 📸 Screenshots
 * ​![Dashboard View](dashboard.jpg)
-* ​![Audio Player](player.jpg)
+* ​![Audio Player](players.jpg)
 * ​![Admin Dashboard View](Admindashboard.jpg)
 ​
 ## 📬 Let's Connect
