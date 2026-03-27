@@ -41,11 +41,11 @@ Built a comprehensive analytics dashboard to track total users, catalog size, us
 * **Database:** MongoDB Atlas (NoSQL)
 
 ## 📸 Screenshots
-*(Add screenshots of your application here)*
-* Dashboard View
-* Audio Player & Gradient Thumbnails
-* Playlist Builder
+* ​![Dashboard View](dashboard.jpg)
+* ​![Audio Player](player.jpg)
+* ​![Dashboard View](dashboard.jpg)
 
 ## 📬 Let's Connect
 I am a passionate Software Engineer focused on building practical, scalable, and user-centric applications. Open to Software Engineering roles and collaborations!
 
+* **Telegram:** https://t.me/YourAdminUser
