@@ -43,7 +43,7 @@ Built a comprehensive analytics dashboard to track total users, catalog size, us
 ## 📸 Screenshots
 * ​![Dashboard View](dashboard.jpg)
 * ​![Audio Player](player.jpg)
-* ​![Dashboard View](dashboard.jpg)
+* ​![Dashboard View](Admindashboard.jpg)
 
 ## 📬 Let's Connect
 I am a passionate Software Engineer focused on building practical, scalable, and user-centric applications. Open to Software Engineering roles and collaborations!
