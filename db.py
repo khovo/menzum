@@ -1,4 +1,3 @@
-```python
 """
 db.py
 -----
@@ -486,4 +485,4 @@ async def has_pending_lyrics(db, file_id: str, user_id: int) -> bool:
         return False
 
 
-```
+
