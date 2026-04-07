@@ -1,4 +1,3 @@
-```javascript
 /**
  * api/webapp/featured.js
  * ----------------------
@@ -93,4 +92,3 @@ module.exports = withAuth(async function handler(req, res) {
   }
 });
 
-```
