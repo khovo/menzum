@@ -1,3 +1,4 @@
+```python
 """
 db.py
 -----
@@ -403,3 +404,86 @@ async def increment_playlist_plays(db, playlist_id: str) -> None:
         )
     except Exception:
         pass
+
+
+# ── Lyrics ────────────────────────────────────────────────────────────────────
+
+async def insert_lyrics(db, doc: dict) -> str | None:
+    """
+    Insert a pending lyrics submission.
+    Returns the new ObjectId as a string, or None on failure.
+    """
+    try:
+        result = await db.lyrics.insert_one(doc)
+        return str(result.inserted_id)
+    except Exception:
+        logger.exception("insert_lyrics failed")
+        return None
+
+
+async def approve_lyrics(db, doc_id: str) -> dict | None:
+    """
+    Set status=approved on a lyrics doc.
+    Returns the updated doc (used to read submitted_by, file_id, track_name).
+    Uses findOneAndUpdate with return_document=True — single round-trip.
+    """
+    try:
+        return await db.lyrics.find_one_and_update(
+            {"_id": ObjectId(doc_id)},
+            {"$set": {"status": "approved", "approved_at": datetime.now()}},
+            return_document=True,
+        )
+    except Exception:
+        logger.exception("approve_lyrics failed doc_id=%s", doc_id)
+        return None
+
+
+async def reject_lyrics(db, doc_id: str) -> dict | None:
+    """
+    Set status=rejected on a lyrics doc.
+    Returns the updated doc (used to read submitted_by, track_name).
+    """
+    try:
+        return await db.lyrics.find_one_and_update(
+            {"_id": ObjectId(doc_id)},
+            {"$set": {"status": "rejected"}},
+            return_document=True,
+        )
+    except Exception:
+        logger.exception("reject_lyrics failed doc_id=%s", doc_id)
+        return None
+
+
+async def set_file_has_lyrics(db, file_id: str, value: bool) -> None:
+    """
+    Write has_lyrics=True/False onto the files doc identified by Telegram file_id.
+    Called immediately after approving or rejecting lyrics so that
+    featured/search/library can do O(1) reads instead of a cross-collection check.
+    Fire-and-forget — errors are logged but not re-raised.
+    """
+    try:
+        await db.files.update_one(
+            {"file_id": file_id},
+            {"$set": {"has_lyrics": value}},
+        )
+    except Exception:
+        logger.exception("set_file_has_lyrics failed file_id=%s", file_id)
+
+
+async def has_pending_lyrics(db, file_id: str, user_id: int) -> bool:
+    """
+    Check whether this user already has a pending submission for this track.
+    Used by the POST /api/webapp/lyrics route to block duplicate submissions.
+    """
+    try:
+        doc = await db.lyrics.find_one(
+            {"file_id": file_id, "submitted_by": user_id, "status": "pending"},
+            {"_id": 1},
+        )
+        return doc is not None
+    except Exception:
+        logger.exception("has_pending_lyrics failed")
+        return False
+
+
+```
