@@ -1,39 +1,40 @@
+```javascript
 /**
  * api/webapp/library.js
  * ---------------------
  * GET /api/webapp/library
  *
  * Returns everything needed to render the Personal Library screen:
- *   - User's favorited tracks (full track objects, not just IDs)
- *   - Listening stats: total plays, total favorites, most-played tracks
+ * - User's favorited tracks (full track objects, not just IDs)
+ * - Listening stats: total plays, total favorites, most-played tracks
  *
  * All DB work is done in parallel (Promise.all) — single round-trip feel.
  *
  * STATS DATA MODEL (written by play.js on every track delivery):
- *   users.total_plays:    integer — lifetime play count
- *   users.listen_history: array (capped at 50) of
- *     { track_id: string, name: string, played_at: Date }
+ * users.total_plays:    integer — lifetime play count
+ * users.listen_history: array (capped at 50) of
+ * { track_id: string, name: string, played_at: Date }
  *
  * "Most Played" is computed by aggregating listen_history client-side
  * (max 50 items, so O(50) — cheaper than a MongoDB aggregation pipeline
  * on cold serverless invocations).
  *
  * RESPONSE 200:
- *  {
- *    "ok": true,
- *    "stats": {
- *      "total_plays":    47,
- *      "total_favorites": 12,
- *      "most_played": [
- *        { "track_id": "...", "name": "Husni Sultan...", "play_count": 6 },
- *        ...  (up to 3)
- *      ]
- *    },
- *    "favorites": [
- *      { "id": "...", "name": "...", "is_favorite": true },
- *      ...
- *    ]
- *  }
+ * {
+ * "ok": true,
+ * "stats": {
+ * "total_plays":    47,
+ * "total_favorites": 12,
+ * "most_played": [
+ * { "track_id": "...", "name": "Husni Sultan...", "play_count": 6 },
+ * ...  (up to 3)
+ * ]
+ * },
+ * "favorites": [
+ * { "id": "...", "name": "...", "is_favorite": true },
+ * ...
+ * ]
+ * }
  */
 
 const { withAuth }          = require("./_auth");
@@ -66,7 +67,7 @@ module.exports = withAuth(async function handler(req, res) {
       ? await db.collection("files")
           .find(
             { file_id: { $in: favoriteFileIds } },
-            { projection: { display_name: 1, thumb_file_id: 1 } }   // never expose file_id
+            { projection: { display_name: 1, thumb_file_id: 1, has_lyrics: 1 } }   // never expose file_id
           )
           .limit(50)
           .toArray()
@@ -87,6 +88,7 @@ module.exports = withAuth(async function handler(req, res) {
       name:        doc.display_name || "Unknown",
       is_favorite: true,
       has_thumb:   !!doc.thumb_file_id,
+      has_lyrics:  !!doc.has_lyrics,
     }));
 
     // ── Compute most-played from listen_history (O(50) max) ───────────────────
@@ -123,3 +125,5 @@ module.exports = withAuth(async function handler(req, res) {
     return res.status(500).json({ ok: false, error: "Database error." });
   }
 });
+
+```
