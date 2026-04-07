@@ -1,4 +1,3 @@
-```javascript
 /**
  * api/webapp/library.js
  * ---------------------
@@ -126,4 +125,3 @@ module.exports = withAuth(async function handler(req, res) {
   }
 });
 
-```
