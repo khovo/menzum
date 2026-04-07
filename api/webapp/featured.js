@@ -1,3 +1,4 @@
+```javascript
 /**
  * api/webapp/featured.js
  * ----------------------
@@ -6,23 +7,23 @@
  * PAGINATION MODEL: cursor-based using MongoDB _id.
  *
  * WHY CURSOR NOT SKIP:
- *   .skip(N) on a 1,150-document collection requires MongoDB to scan and discard
- *   N documents on every request. Cursor-based pagination filters _id < cursor
- *   which uses the _id index directly — O(log n) at any scroll depth.
+ * .skip(N) on a 1,150-document collection requires MongoDB to scan and discard
+ * N documents on every request. Cursor-based pagination filters _id < cursor
+ * which uses the _id index directly — O(log n) at any scroll depth.
  *
  * FIRST PAGE:  GET /api/webapp/featured
- *              (no cursor) → returns first 20, sorted by _id desc
+ * (no cursor) → returns first 20, sorted by _id desc
  *
  * NEXT PAGES:  GET /api/webapp/featured?cursor=<next_cursor_from_previous_response>
- *              → returns next 20 tracks with _id < cursor
+ * → returns next 20 tracks with _id < cursor
  *
  * RESPONSE 200:
- *   {
- *     "ok": true,
- *     "tracks":      [...],         // up to `limit` tracks
- *     "has_more":    true,          // false when the catalog is exhausted
- *     "next_cursor": "64a1b2..."    // pass this as cursor on the next call
- *   }
+ * {
+ * "ok": true,
+ * "tracks":      [...],         // up to `limit` tracks
+ * "has_more":    true,          // false when the catalog is exhausted
+ * "next_cursor": "64a1b2..."    // pass this as cursor on the next call
+ * }
  */
 
 const { withAuth }          = require("./_auth");
@@ -56,7 +57,7 @@ module.exports = withAuth(async function handler(req, res) {
     // Fetch limit+1 to cheaply detect whether another page exists
     const [tracks, dbUser] = await Promise.all([
       db.collection("files")
-        .find(filter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1 } })
+        .find(filter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1, has_lyrics: 1 } })
         .sort({ _id: -1 })
         .limit(limit + 1)
         .toArray(),
@@ -76,6 +77,7 @@ module.exports = withAuth(async function handler(req, res) {
       name:        t.display_name || "Unknown",
       is_favorite: favoriteSet.has(t.file_id ?? ""),
       has_thumb:   !!t.thumb_file_id,
+      has_lyrics:  !!t.has_lyrics,
     }));
 
     return res.status(200).json({
@@ -90,3 +92,5 @@ module.exports = withAuth(async function handler(req, res) {
     return res.status(500).json({ ok: false, error: "Database error." });
   }
 });
+
+```
