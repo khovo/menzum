@@ -1,4 +1,3 @@
-```javascript
 /**
  * api/webapp/search.js
  * --------------------
@@ -119,4 +118,3 @@ module.exports = withAuth(async function handler(req, res) {
   }
 });
 
-```
