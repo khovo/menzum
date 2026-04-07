@@ -1,4 +1,3 @@
-```python
 """
 handlers.py
 -----------
@@ -511,4 +510,3 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         return
 
 
-```
