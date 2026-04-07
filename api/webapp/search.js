@@ -1,3 +1,4 @@
+```javascript
 /**
  * api/webapp/search.js
  * --------------------
@@ -6,24 +7,24 @@
  * Live search with cursor-based pagination.
  *
  * SEARCH LOGIC (mirrors Python build_search_query):
- *   - Empty query    → return latest 20 tracks (same as /featured)
- *   - Single char    → prefix match
- *   - Multiple words → AND-regex (every word must appear)
+ * - Empty query    → return latest 20 tracks (same as /featured)
+ * - Single char    → prefix match
+ * - Multiple words → AND-regex (every word must appear)
  *
  * PAGINATION:
- *   Same cursor model as /featured. First call omits cursor. Subsequent
- *   calls pass next_cursor to get the next page of results.
- *   The UI uses a "Load more" button (better than auto-scroll for search —
- *   users decide whether to dig deeper into results).
+ * Same cursor model as /featured. First call omits cursor. Subsequent
+ * calls pass next_cursor to get the next page of results.
+ * The UI uses a "Load more" button (better than auto-scroll for search —
+ * users decide whether to dig deeper into results).
  *
  * RESPONSE 200:
- *   {
- *     "ok": true,
- *     "query": "husni",
- *     "tracks": [...],
- *     "has_more": false,
- *     "next_cursor": null
- *   }
+ * {
+ * "ok": true,
+ * "query": "husni",
+ * "tracks": [...],
+ * "has_more": false,
+ * "next_cursor": null
+ * }
  */
 
 const { withAuth }          = require("./_auth");
@@ -81,7 +82,7 @@ module.exports = withAuth(async function handler(req, res) {
 
     const [tracks, dbUser] = await Promise.all([
       db.collection("files")
-        .find(filter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1 } })
+        .find(filter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1, has_lyrics: 1 } })
         .sort({ _id: -1 })
         .limit(limit + 1)
         .toArray(),
@@ -101,6 +102,7 @@ module.exports = withAuth(async function handler(req, res) {
       name:        t.display_name || "Unknown",
       is_favorite: favoriteSet.has(t.file_id ?? ""),
       has_thumb:   !!t.thumb_file_id,
+      has_lyrics:  !!t.has_lyrics,
     }));
 
     return res.status(200).json({
@@ -116,3 +118,5 @@ module.exports = withAuth(async function handler(req, res) {
     return res.status(500).json({ ok: false, error: "Database error." });
   }
 });
+
+```
