@@ -508,5 +508,31 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         await send_message(session, chat_id, "✅ **መልእክትዎ ደርሶናል!** ጀዛኩሙላሁ ኸይረን!\n\n_ወደ ዋናው ገጽ ተመልሰዋል።_", reply_markup=get_main_menu_kb())
         await set_user_state(db, user_id, "idle")
         return
+async def process_telegram_update(data: dict) -> None:
+    if not MONGO_URL or not BOT_TOKEN:
+        logger.error("MONGO_URL or BOT_TOKEN not set — aborting.")
+        return
+
+    db_client = AsyncIOMotorClient(MONGO_URL)
+    db        = db_client[DB_NAME]
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            channels = get_channels_cache()
+            if channels is None:
+                channels = await get_force_channels(db)
+                set_channels_cache(channels)
+
+            if "callback_query" in data:
+                await handle_callback(session, db, data["callback_query"], channels)
+            elif "message" in data:
+                await handle_message(session, db, data["message"], channels)
+            elif "inline_query" in data:
+                await handle_inline_query(session, db, data["inline_query"], channels)
+
+        except Exception:
+            logger.exception("Unhandled error in process_telegram_update")
+        finally:
+            db_client.close()
 
 
