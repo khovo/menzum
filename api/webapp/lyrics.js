@@ -1,4 +1,3 @@
-```javascript
 /**
  * api/webapp/lyrics.js
  * --------------------
@@ -227,4 +226,3 @@ async function handlePost(req, res) {
   }
 }
 
-```
