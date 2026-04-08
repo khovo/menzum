@@ -2,6 +2,13 @@
 handlers.py
 -----------
 Pure business logic.
+
+V4 additions:
+  - lyrics_approve_{doc_id} callback: approve a pending lyrics submission,
+    flip has_lyrics on the files doc, notify the submitter.
+  - lyrics_reject_{doc_id} callback: reject a pending lyrics submission,
+    notify the submitter.
+  All other handlers are unchanged from V3.
 """
 import asyncio
 import logging
@@ -81,7 +88,7 @@ def _is_admin(user_id) -> bool:
     return str(user_id) == str(ADMIN_ID)
 
 def _normalize_text(text: str) -> str:
-    return text.replace("️", "").replace("︎", "")
+    return text.replace("\ufe0f", "").replace("\ufe0e", "")
 
 _ADMIN_KB_TEXTS = {
     "📊 Statistics",
@@ -239,7 +246,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             await edit_message_text(session, chat_id, message_id, "❌ Failed to save playlist.", reply_markup=get_main_menu_kb())
             return
 
-        deep_link = f"https://t.me/{BOT_USERNAME}?start={playlist_id}"
+        deep_link  = f"https://t.me/{BOT_USERNAME}?start={playlist_id}"
         share_text = f"✅ *Playlist Saved!*\n\n🔗 *Share this link:*\n`{deep_link}`\n\n_ይህን ሊንክ የሚጫን ማንኛውም ሰው ያዘጋጁትን Playlist ወዲያውኑ ማዳመጥ ይችላል!_"
         await edit_message_text(
             session, chat_id, message_id, share_text,
@@ -297,6 +304,10 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             await answer_callback_query(session, cb_id, "❌ Error")
         return
 
+    # ── V4: Lyrics approval / rejection (admin only) ─────────────────────────
+    # These two branches MUST come before the generic report_ handler so the
+    # longer prefix "lyrics_approve_" / "lyrics_reject_" is matched first.
+
     if data_str.startswith("lyrics_approve_") and _is_admin(user_id):
         doc_id     = data_str[len("lyrics_approve_"):]
         lyrics_doc = await approve_lyrics(db, doc_id)
@@ -339,6 +350,8 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         )
         await answer_callback_query(session, cb_id)
         return
+
+    # ── End V4 additions ──────────────────────────────────────────────────────
 
     if data_str.startswith("report_"):
         doc_id = data_str.split("report_")[1]
@@ -508,6 +521,183 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         await send_message(session, chat_id, "✅ **መልእክትዎ ደርሶናል!** ጀዛኩሙላሁ ኸይረን!\n\n_ወደ ዋናው ገጽ ተመልሰዋል።_", reply_markup=get_main_menu_kb())
         await set_user_state(db, user_id, "idle")
         return
+
+    if state == "playlist_builder" and text and not text.startswith("/") and not (_is_admin(user_id) and text in _ADMIN_KB_TEXTS):
+        sq  = build_search_query(text)
+        doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
+        if doc:
+            kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
+            await send_audio(session, chat_id, doc["file_id"], f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
+        else:
+            suggestions = await get_fuzzy_suggestions(db, text, limit=5)
+            if suggestions:
+                await send_message(session, chat_id, "😔 የፈለጉት መንዙማ በቀጥታ አልተገኘም።\n\n_ወደ ፕሌይሊስትዎ ለመጨመር ➕ ይጫኑ፦_", reply_markup=get_playlist_fuzzy_kb(suggestions))
+            else:
+                await send_message(session, chat_id, "😔 የፈለጉት መንዙማ አልተገኘም።\nእባክዎ የተለየ ቃል ጽፈው ይሞክሩ።", reply_markup=get_not_found_kb())
+        return
+
+    if _is_admin(user_id):
+        if state == "admin_add_channel_wait":
+            if text and not text.startswith("/"):
+                username = text.lstrip("@").strip()
+                added    = await add_force_channel(db, username)
+                invalidate_channels_cache()
+                invalidate_all_membership_cache()
+                # Wrapped in backticks to protect from markdown errors
+                result_text = f"✅ `@{username}` added!" if added else f"⚠️ `@{username}` already exists."
+                await send_message(
+                    session, chat_id, result_text,
+                    reply_markup={"inline_keyboard": [[{"text": "📢 Manage Channels", "callback_data": "admin_ch_menu"}]]},
+                )
+                await set_user_state(db, user_id, "idle")
+            else:
+                await send_message(session, chat_id, "⚠️ Please send a plain username, e.g. `Al_madih`.")
+            return
+
+        if state == "admin_reply_wait" and text not in _ADMIN_KB_TEXTS:
+            target_user = (user_data or {}).get("target_user_id")
+            if target_user:
+                try:
+                    await send_message(session, target_user, "🔔 **ከአድሚኑ የተሰጠ መልስ:**")
+                    await copy_message(session, target_user, chat_id, msg_id)
+                    await send_message(session, chat_id, "✅ መልሱ ተልኳል!")
+                except Exception as e:
+                    await send_message(session, chat_id, f"❌ አልተላከም: {e}")
+                await set_user_state(db, user_id, "idle")
+            return
+
+        if state == "broadcast_wait" and text != "🔙 Back" and text not in _ADMIN_KB_TEXTS and msg_id:
+            await set_user_state(
+                db, user_id, "broadcast_confirm",
+                {"broadcast_msg_id": msg_id, "broadcast_markup": message.get("reply_markup")},
+            )
+            await copy_message(session, chat_id, chat_id, msg_id, reply_markup=message.get("reply_markup"))
+            await send_message(
+                session, chat_id, "Confirm broadcast?",
+                reply_markup={"inline_keyboard": [[{"text": "✅ Post", "callback_data": "broadcast_confirm"}], [{"text": "❌ Cancel", "callback_data": "broadcast_cancel"}]]},
+            )
+            return
+
+        if text == "/admin":
+            await send_message(
+                session, chat_id, "⚙️ *Admin Panel*",
+                reply_markup={
+                    "keyboard": [[{"text": "📊 Statistics"}, {"text": "📅 Daily Stats"}], [{"text": "📢 Broadcast"}, {"text": "📂 Total Files"}], [{"text": "🔧 Manage Channels"}]],
+                    "resize_keyboard": True,
+                },
+            )
+            return
+
+        if text == "📊 Statistics":
+            u = await db.users.count_documents({})
+            f = await db.files.count_documents({})
+            await send_message(session, chat_id, f"👥 Users: `{u}`\n📂 Files: `{f}`")
+            return
+
+        if text == "📅 Daily Stats":
+            await send_message(session, chat_id, await get_daily_stats(db))
+            return
+
+        if text == "📢 Broadcast":
+            await set_user_state(db, user_id, "broadcast_wait")
+            await send_message(session, chat_id, "📢 Send the message you want to broadcast.")
+            return
+
+        if text == "📂 Total Files":
+            f_count = await db.files.count_documents({})
+            await send_message(session, chat_id, f"📂 Total Files in DB: `{f_count}`")
+            return
+
+        if "audio" in message or "voice" in message:
+            f    = message.get("audio") or message.get("voice")
+            cap  = message.get("caption", "").split("\n")[0].strip()
+            name = cap if cap else f.get("file_name", "Unknown")
+            if len(name) > 3:
+                # ── Safe thumbnail extraction ────────────────────────────────
+                # Telegram audio objects MAY carry a thumbnail (PhotoSize).
+                # Voice messages never do. We use chained .get() so a missing
+                # key at any level silently produces None — never a KeyError.
+                # The DB write happens whether or not a thumbnail exists.
+                thumb_file_id = (
+                    message.get("audio", {})
+                           .get("thumbnail", {})
+                           .get("file_id")
+                    or
+                    message.get("audio", {})
+                           .get("thumb", {})   # legacy field name, still sent by some clients
+                           .get("file_id")
+                )  # None if audio has no thumbnail, or if message is a voice note
+
+                # Build the update payload — include thumb_file_id only when present
+                update_fields = {"file_id": f["file_id"], "display_name": name}
+                if thumb_file_id:
+                    update_fields["thumb_file_id"] = thumb_file_id
+
+                try:
+                    await db.files.update_one(
+                        {"display_name": {"$regex": re.escape(name), "$options": "i"}},
+                        {"$set": update_fields},
+                        upsert=True,
+                    )
+                    thumb_status = " 🖼" if thumb_file_id else ""
+                    await send_message(session, chat_id, f"✅ Saved: `{name}`{thumb_status}")
+                except Exception as db_err:
+                    logger.error("db.files.update_one failed: %s", db_err)
+                    await send_message(session, chat_id, f"❌ DB error saving `{name}`. Please retry.")
+            return
+
+    if text and not text.startswith("/"):
+        sq  = build_search_query(text)
+        doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
+
+        if doc:
+            kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
+            await send_audio(session, chat_id, doc["file_id"], f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
+        else:
+            suggestions = await get_fuzzy_suggestions(db, text, limit=5)
+            if suggestions:
+                await send_message(session, chat_id, "😔 የፈለጉት መንዙማ በቀጥታ አልተገኘም።\n\n_ምናልባት ከታች ያሉት ሊሆኑ ይችላሉ? አንዱን ይምረጡ፦_", reply_markup=get_fuzzy_suggestions_kb(suggestions))
+            else:
+                await send_message(session, chat_id, "😔 የፈለጉት መንዙማ አልተገኘም።\nእባክዎ የተለየ ቃል ጽፈው ይሞክሩ ወይም 'ሙሉ ዝርዝር' የሚለውን ይጫኑ።", reply_markup=get_not_found_kb())
+
+
+async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> None:
+    query_id   = iq["id"]
+    query      = iq.get("query", "").strip().lower()
+    user_info  = iq.get("from", {})
+    user_id    = user_info.get("id")
+    first_name = user_info.get("first_name", "User")
+
+    await track_and_get_user(db, user_id, first_name)
+    results: list = []
+
+    if query.startswith("#favorites"):
+        user    = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
+        fav_ids = (user or {}).get("favorites", [])
+        if fav_ids:
+            docs = await db.files.find({"file_id": {"$in": fav_ids}}, {"file_id": 1, "display_name": 1}).limit(50).to_list(length=50)
+            for doc in docs:
+                results.append({"type": "audio", "id": str(doc["_id"]), "audio_file_id": doc["file_id"], "caption": f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", "reply_markup": {"inline_keyboard": [[{"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}"}]]}})
+        else:
+            results.append({"type": "article", "id": "no_favorites", "title": "No Favorites Yet", "input_message_content": {"message_text": "No favorites saved yet."}})
+    elif not query:
+        cached = get_inline_empty_cache()
+        if cached is not None:
+            await answer_inline_query(session, query_id, cached, cache_time=300)
+            return
+        docs = await db.files.find({"file_id": {"$exists": True}}, {"file_id": 1, "display_name": 1}).sort("_id", -1).limit(20).to_list(length=20)
+        for doc in docs:
+            results.append({"type": "audio", "id": str(doc["_id"]), "audio_file_id": doc["file_id"], "caption": f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}})
+        set_inline_empty_cache(results)
+    else:
+        sq   = build_search_query(query)
+        docs = await db.files.find(sq, {"file_id": 1, "display_name": 1}).limit(20).to_list(length=20)
+        for doc in docs:
+            results.append({"type": "audio", "id": str(doc["_id"]), "audio_file_id": doc["file_id"], "caption": f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}})
+
+    await answer_inline_query(session, query_id, results, cache_time=300)
+
+
 async def process_telegram_update(data: dict) -> None:
     if not MONGO_URL or not BOT_TOKEN:
         logger.error("MONGO_URL or BOT_TOKEN not set — aborting.")
@@ -534,5 +724,3 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
-
-
