@@ -10,16 +10,11 @@
  *   Tracks with thumb_file_id show their Telegram thumbnail via the
  *   /api/webapp/thumb proxy. Tracks without show a deterministic gradient.
  *
- * V4 — Lyrics Button:
- *   When track.has_lyrics === true, a 📖 icon button appears.
- *   Tapping it navigates to /lyrics?track_id=<id>&name=<encoded-name>.
- *   The button is conditionally rendered — no layout shift for tracks
- *   without lyrics.
- *
- * FALLBACK CONTRACT:
- *   CoverImage renders the gradient immediately as a background layer.
- *   If track.has_thumb is true, an <img> sits on top. If the image errors,
- *   the gradient shows through — the user never sees a broken image icon.
+ * V4 — Lyrics Button (always visible):
+ *   track.has_lyrics === true  →  "📖 Lyrics"   navigates to /lyrics
+ *   track.has_lyrics === false →  "+ Lyrics"  navigates to /submit-lyrics
+ *   The button is always rendered so users can always reach the submission
+ *   form even when the lyrics database is empty.
  */
 
 import { useState } from 'react';
@@ -43,7 +38,7 @@ function trackGradient(id = '') {
   const [angle, c1, c2] = palette;
   const midL = 15 + (seed % 10);
   const midH = parseInt(id.slice(-4, -2) || 'a0', 16) % 360;
-  return `linear-gradient(${angle}, ${c1} 0%, hsl(${midH},40%,${midL}%) 55%, ${c2} 100%)`;
+  return 'linear-gradient(' + angle + ', ' + c1 + ' 0%, hsl(' + midH + ',40%,' + midL + '%) 55%, ' + c2 + ' 100%)';
 }
 
 function trackAccentColor(id = '') {
@@ -52,15 +47,15 @@ function trackAccentColor(id = '') {
 }
 
 /**
- * CoverImage — gradient always rendered as background, <img> layered on top.
+ * CoverImage — gradient always rendered as background, img layered on top.
  * If image loads: covers gradient. If image errors: gradient shows through.
- * If has_thumb is false: no <img> at all — zero wasted network request.
+ * If has_thumb is false: no img at all — zero wasted network request.
  */
 function CoverImage({ track, fill = false, children }) {
   const [imgFailed, setImgFailed] = useState(false);
   const gradient = trackGradient(track.id);
   const thumbUrl = track.has_thumb && !imgFailed
-    ? `${API_BASE}/api/webapp/thumb?id=${track.id}`
+    ? API_BASE + '/api/webapp/thumb?id=' + track.id
     : null;
 
   const baseStyle = fill
@@ -94,7 +89,7 @@ function WaveformIcon({ size = 18, color = 'currentColor' }) {
   const bars = [3, 6, 9, 7, 4, 8, 5, 3, 7, 5];
   const w    = bars.length * 3 - 1;
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${w} 10`} fill="none">
+    <svg width={size} height={size} viewBox={'0 0 ' + w + ' 10'} fill="none">
       {bars.map((h, i) => (
         <rect key={i} x={i * 3} y={(10 - h) / 2} width={2} height={h} rx={1}
           fill={color} opacity={0.7 + (i % 3) * 0.1} />
@@ -121,14 +116,32 @@ function HeartIcon({ size = 14, filled = false, color = 'currentColor' }) {
 }
 
 /**
- * Navigate to the full-screen lyrics page for a track.
- * Uses window.location to avoid importing next/router into this component.
- * The `name` param is a display hint during loading — canonical name comes
- * from the API response.
+ * Navigate to the lyrics player page (approved lyrics exist).
+ * Uses window.location — avoids importing next/router into this component.
  */
 function openLyricsPage(track) {
-  const nameParam = track.name ? `&name=${encodeURIComponent(track.name)}` : '';
-  window.location.href = `/lyrics?track_id=${track.id}${nameParam}`;
+  const nameParam = track.name ? '&name=' + encodeURIComponent(track.name) : '';
+  window.location.href = '/lyrics?track_id=' + track.id + nameParam;
+}
+
+/**
+ * Navigate to the lyrics submission form (no approved lyrics yet).
+ */
+function openSubmitPage(track) {
+  const nameParam = track.name ? '&name=' + encodeURIComponent(track.name) : '';
+  window.location.href = '/submit-lyrics?track_id=' + track.id + nameParam;
+}
+
+/**
+ * Unified handler: routes to player if lyrics exist, submission form if not.
+ */
+function handleLyricsClick(e, track) {
+  e.stopPropagation();
+  if (track.has_lyrics) {
+    openLyricsPage(track);
+  } else {
+    openSubmitPage(track);
+  }
 }
 
 function FeaturedCard({ track, onPlay, onFavorite, style, isFav: controlledFav }) {
@@ -156,14 +169,19 @@ function FeaturedCard({ track, onPlay, onFavorite, style, isFav: controlledFav }
     }
   };
 
-  const handleLyrics = (e) => {
-    e.stopPropagation();
-    openLyricsPage(track);
-  };
+  // Label and aria-label change based on whether lyrics exist
+  const lyricsLabel    = track.has_lyrics ? 'View lyrics' : 'Add lyrics';
+  const lyricsEmoji    = track.has_lyrics ? '📖' : '➕';
+  const lyricsText     = track.has_lyrics ? 'Lyrics' : 'Add Lyrics';
+  // Muted border when no lyrics yet; gold when lyrics exist
+  const lyricsBorder   = track.has_lyrics
+    ? '1px solid rgba(232,184,75,0.45)'
+    : '1px solid rgba(255,255,255,0.15)';
+  const lyricsColor    = track.has_lyrics ? '#e8b84b' : 'rgba(240,244,255,0.6)';
 
   return (
     <div className="featured-card" style={style} onClick={handlePlay}
-      role="button" aria-label={`Play ${track.name}`}>
+      role="button" aria-label={'Play ' + track.name}>
 
       <CoverImage track={track} fill>
         {!track.has_thumb && (
@@ -178,39 +196,37 @@ function FeaturedCard({ track, onPlay, onFavorite, style, isFav: controlledFav }
 
       <div className="featured-card-overlay" />
 
-      {/* ── Lyrics badge — top-left, only when has_lyrics is true ────── */}
-      {track.has_lyrics && (
-        <button
-          onClick={handleLyrics}
-          aria-label="View lyrics"
-          style={{
-            position:     'absolute',
-            top:          8,
-            left:         8,
-            background:   'rgba(8,13,26,0.72)',
-            border:       '1px solid rgba(232,184,75,0.35)',
-            borderRadius: '6px',
-            padding:      '3px 7px',
-            cursor:       'pointer',
-            display:      'flex',
-            alignItems:   'center',
-            gap:          '3px',
-            backdropFilter: 'blur(4px)',
-          }}
-        >
-          <span style={{ fontSize: 10 }}>📖</span>
-          <span style={{
-            fontFamily:   "var(--font-body, 'Nunito', sans-serif)",
-            fontSize:     9,
-            fontWeight:   700,
-            color:        '#e8b84b',
-            letterSpacing:'0.04em',
-            textTransform:'uppercase',
-          }}>
-            Lyrics
-          </span>
-        </button>
-      )}
+      {/* Lyrics badge — top-left, always visible */}
+      <button
+        onClick={(e) => handleLyricsClick(e, track)}
+        aria-label={lyricsLabel}
+        style={{
+          position:       'absolute',
+          top:            8,
+          left:           8,
+          background:     'rgba(8,13,26,0.72)',
+          border:         lyricsBorder,
+          borderRadius:   '6px',
+          padding:        '3px 7px',
+          cursor:         'pointer',
+          display:        'flex',
+          alignItems:     'center',
+          gap:            '3px',
+          backdropFilter: 'blur(4px)',
+        }}
+      >
+        <span style={{ fontSize: 10 }}>{lyricsEmoji}</span>
+        <span style={{
+          fontFamily:    "var(--font-body, 'Nunito', sans-serif)",
+          fontSize:      9,
+          fontWeight:    700,
+          color:         lyricsColor,
+          letterSpacing: '0.04em',
+          textTransform: 'uppercase',
+        }}>
+          {lyricsText}
+        </span>
+      </button>
 
       <button className="featured-card-fav" onClick={handleFav}
         aria-label={isFav ? 'Remove from favorites' : 'Add to favorites'}>
@@ -251,14 +267,13 @@ function ListTrack({ track, onPlay, onFavorite, index, isFav: controlledFav }) {
     }
   };
 
-  const handleLyrics = (e) => {
-    e.stopPropagation();
-    openLyricsPage(track);
-  };
+  const lyricsEmoji = track.has_lyrics ? '📖' : '➕';
+  const lyricsTitle = track.has_lyrics ? 'View lyrics' : 'Add lyrics';
+  const lyricsColor = track.has_lyrics ? '#e8b84b' : 'var(--text-muted, #4a6a9a)';
 
   return (
-    <div className="track-item" style={{ animationDelay: `${index * 35}ms` }}
-      onClick={handlePlay} role="button" aria-label={`Play ${track.name}`}>
+    <div className="track-item" style={{ animationDelay: (index * 35) + 'ms' }}
+      onClick={handlePlay} role="button" aria-label={'Play ' + track.name}>
 
       <div className="track-thumb">
         <CoverImage track={track}>
@@ -282,20 +297,18 @@ function ListTrack({ track, onPlay, onFavorite, index, isFav: controlledFav }) {
       </div>
 
       <div className="track-actions" onClick={(e) => e.stopPropagation()}>
-        {/* 📖 Lyrics button — only rendered when has_lyrics is true */}
-        {track.has_lyrics && (
-          <button
-            className="btn-icon"
-            onClick={handleLyrics}
-            aria-label="View lyrics"
-            title="View lyrics"
-            style={{ color: '#e8b84b' }}
-          >
-            <span style={{ fontSize: 15 }}>📖</span>
-          </button>
-        )}
+        {/* Lyrics button — always rendered; emoji and destination vary by has_lyrics */}
+        <button
+          className="btn-icon"
+          onClick={(e) => handleLyricsClick(e, track)}
+          aria-label={lyricsTitle}
+          title={lyricsTitle}
+          style={{ color: lyricsColor }}
+        >
+          <span style={{ fontSize: 15 }}>{lyricsEmoji}</span>
+        </button>
 
-        <button className={`btn-icon ${isFav ? 'is-fav' : ''}`} onClick={handleFav}
+        <button className={'btn-icon ' + (isFav ? 'is-fav' : '')} onClick={handleFav}
           aria-label={isFav ? 'Remove from favorites' : 'Add to favorites'}>
           <HeartIcon size={15} filled={isFav} color={isFav ? '#e8b84b' : 'currentColor'} />
         </button>
