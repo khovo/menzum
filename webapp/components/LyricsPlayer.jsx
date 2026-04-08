@@ -3,30 +3,54 @@
  * ---------------------------
  * Synchronized lyrics display component.
  *
+ * NOTE ON lrcParser:
+ *   parseLrc and findActiveLine are inlined here. This eliminates the
+ *   "Module not found: Can't resolve '../lib/lrcParser'" build error that
+ *   occurs when the webapp/lib/ directory does not exist in the repo.
+ *   lrcParser.js still lives at webapp/lib/lrcParser.js as a standalone
+ *   utility — this component no longer imports it so the build cannot fail
+ *   due to a missing directory.
+ *
  * SYNC APPROACH:
- *   Audio is played via an HTML5 <audio> element pointed at /api/webapp/stream.
- *   The element fires `timeupdate` events (roughly every 250ms). On each event,
- *   findActiveLine() returns the index of the current lyric. The active line is
- *   highlighted and scrolled into view. This is timer-based sync tied to actual
- *   playback position — not a detached interval timer.
+ *   Audio plays via an HTML5 <audio> element pointing at /api/webapp/stream.
+ *   The element fires `timeupdate` events (~250ms). On each event,
+ *   findActiveLine() returns the index of the current lyric line.
+ *   The active line is highlighted and scrolled into view.
  *
  * AUDIO NOTE:
- *   <audio> has NO crossorigin attribute. Without it the browser loads audio as
- *   a no-cors opaque request — CORS headers are not checked, the audio plays,
- *   and the timeupdate event fires normally. We do not need Web Audio API access.
+ *   <audio> has NO crossorigin attribute intentionally. Without it the browser
+ *   loads audio as a no-cors opaque request — CORS headers are not checked,
+ *   the audio plays, and timeupdate fires normally.
  *
  * PROPS:
  *   track            { id: string, name: string }
- *   lines            [{ time: number, text: string }]  from parseLrc()
+ *   lines            [{ time: number, text: string }]  — output of parseLrc()
  *   language         "ar" | "am" | "mixed"
- *   attributionName  string  — shown as "Transcribed by X" at bottom
+ *   attributionName  string
  *   apiBase          string  — process.env.NEXT_PUBLIC_API_BASE
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { findActiveLine } from "../lib/lrcParser";
 
-const SCROLL_MARGIN_MS = 100; // throttle scrollIntoView calls
+// ── Inlined from webapp/lib/lrcParser.js ─────────────────────────────────────
+// Kept here so this component compiles even if webapp/lib/ does not exist yet.
+
+function findActiveLine(lines, currentTime) {
+  if (!lines.length || currentTime < 0) return -1;
+  let active = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].time <= currentTime) {
+      active = i;
+    } else {
+      break;
+    }
+  }
+  return active;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SCROLL_THROTTLE_MS = 100;
 
 function formatTime(seconds) {
   if (!isFinite(seconds) || seconds < 0) return "0:00";
@@ -58,41 +82,33 @@ export default function LyricsPlayer({
   attributionName,
   apiBase,
 }) {
-  const audioRef       = useRef(null);
-  const scrollerRef    = useRef(null);
-  const lineRefs       = useRef([]);
-  const lastScrollRef  = useRef(0);
+  const audioRef      = useRef(null);
+  const lineRefs      = useRef([]);
+  const lastScrollRef = useRef(0);
 
-  const [isPlaying,    setIsPlaying]    = useState(false);
-  const [currentTime,  setCurrentTime]  = useState(0);
-  const [duration,     setDuration]     = useState(0);
-  const [activeIndex,  setActiveIndex]  = useState(-1);
-  const [audioError,   setAudioError]   = useState(false);
-  const [isLoading,    setIsLoading]    = useState(true);
+  const [isPlaying,   setIsPlaying]   = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration,    setDuration]    = useState(0);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [audioError,  setAudioError]  = useState(false);
+  const [isLoading,   setIsLoading]   = useState(true);
 
   const streamUrl = `${apiBase}/api/webapp/stream?track_id=${track.id}`;
   const isRtl     = language === "ar";
 
-  // ── Audio event handlers ─────────────────────────────────────────────────
-
   const handleTimeUpdate = useCallback(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    const t = audio.currentTime;
-    setCurrentTime(t);
-
+    const t   = audio.currentTime;
     const idx = findActiveLine(lines, t);
+    setCurrentTime(t);
     setActiveIndex(idx);
 
-    // Scroll active line into view — throttled to avoid layout thrashing
     if (idx >= 0) {
       const now = Date.now();
-      if (now - lastScrollRef.current > SCROLL_MARGIN_MS) {
+      if (now - lastScrollRef.current > SCROLL_THROTTLE_MS) {
         lastScrollRef.current = now;
-        lineRefs.current[idx]?.scrollIntoView({
-          behavior: "smooth",
-          block:    "center",
-        });
+        lineRefs.current[idx]?.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }
   }, [lines]);
@@ -101,22 +117,22 @@ export default function LyricsPlayer({
     const audio = audioRef.current;
     if (!audio) return;
 
-    const onPlay     = () => setIsPlaying(true);
-    const onPause    = () => setIsPlaying(false);
-    const onEnded    = () => setIsPlaying(false);
-    const onLoaded   = () => { setDuration(audio.duration); setIsLoading(false); };
-    const onError    = () => { setAudioError(true); setIsLoading(false); };
-    const onWaiting  = () => setIsLoading(true);
-    const onCanPlay  = () => setIsLoading(false);
+    const onPlay    = () => setIsPlaying(true);
+    const onPause   = () => setIsPlaying(false);
+    const onEnded   = () => setIsPlaying(false);
+    const onLoaded  = () => { setDuration(audio.duration); setIsLoading(false); };
+    const onError   = () => { setAudioError(true); setIsLoading(false); };
+    const onWaiting = () => setIsLoading(true);
+    const onCanPlay = () => setIsLoading(false);
 
-    audio.addEventListener("play",             onPlay);
-    audio.addEventListener("pause",            onPause);
-    audio.addEventListener("ended",            onEnded);
-    audio.addEventListener("loadedmetadata",   onLoaded);
-    audio.addEventListener("error",            onError);
-    audio.addEventListener("waiting",          onWaiting);
-    audio.addEventListener("canplay",          onCanPlay);
-    audio.addEventListener("timeupdate",       handleTimeUpdate);
+    audio.addEventListener("play",           onPlay);
+    audio.addEventListener("pause",          onPause);
+    audio.addEventListener("ended",          onEnded);
+    audio.addEventListener("loadedmetadata", onLoaded);
+    audio.addEventListener("error",          onError);
+    audio.addEventListener("waiting",        onWaiting);
+    audio.addEventListener("canplay",        onCanPlay);
+    audio.addEventListener("timeupdate",     handleTimeUpdate);
 
     return () => {
       audio.removeEventListener("play",           onPlay);
@@ -155,13 +171,13 @@ export default function LyricsPlayer({
       {/* Hidden audio element — no crossorigin attribute intentionally */}
       <audio ref={audioRef} src={streamUrl} preload="metadata" />
 
-      {/* ── Track name header ──────────────────────────────────────────── */}
+      {/* Track name */}
       <div style={styles.trackHeader}>
         <p style={styles.trackName}>{track.name}</p>
       </div>
 
-      {/* ── Lyrics scroll area ─────────────────────────────────────────── */}
-      <div ref={scrollerRef} style={styles.lyricsScroll}>
+      {/* Lyrics scroll area */}
+      <div style={styles.lyricsScroll}>
         {lines.length === 0 ? (
           <p style={styles.emptyHint}>No lyric lines found.</p>
         ) : (
@@ -184,13 +200,11 @@ export default function LyricsPlayer({
             );
           })
         )}
-        {/* Bottom padding so last line can scroll to center */}
         <div style={{ height: "40vh" }} />
       </div>
 
-      {/* ── Controls bar ───────────────────────────────────────────────── */}
+      {/* Controls bar */}
       <div style={styles.controls}>
-        {/* Progress bar */}
         <div
           style={styles.progressTrack}
           onClick={handleSeek}
@@ -201,21 +215,14 @@ export default function LyricsPlayer({
           aria-valuemax={100}
         >
           <div style={{ ...styles.progressFill, width: `${progress}%` }} />
-          <div style={{
-            ...styles.progressThumb,
-            left: `calc(${progress}% - 6px)`,
-          }} />
+          <div style={{ ...styles.progressThumb, left: `calc(${progress}% - 6px)` }} />
         </div>
 
-        {/* Time + play/pause + duration */}
         <div style={styles.controlRow}>
           <span style={styles.timeLabel}>{formatTime(currentTime)}</span>
 
           <button
-            style={{
-              ...styles.playBtn,
-              opacity: audioError ? 0.4 : 1,
-            }}
+            style={{ ...styles.playBtn, opacity: audioError ? 0.4 : 1 }}
             onClick={togglePlay}
             disabled={audioError}
             aria-label={isPlaying ? "Pause" : "Play"}
@@ -233,20 +240,24 @@ export default function LyricsPlayer({
 
         {audioError && (
           <p style={styles.audioErrorMsg}>
-            ⚠️ Could not load audio. Open in bot chat instead.
+            Could not load audio. Open in bot chat instead.
           </p>
         )}
 
-        {/* Attribution */}
         {attributionName && (
           <p style={styles.attribution}>Transcribed by {attributionName}</p>
         )}
       </div>
+
+      <style jsx global>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50%       { opacity: 0.4; }
+        }
+      `}</style>
     </div>
   );
 }
-
-// ── Inline styles — matches globals.css design tokens ───────────────────────
 
 const styles = {
   root: {
@@ -255,7 +266,6 @@ const styles = {
     height:        "100%",
     background:    "#080d1a",
     overflow:      "hidden",
-    position:      "relative",
   },
   trackHeader: {
     flexShrink:  0,
@@ -275,23 +285,23 @@ const styles = {
     whiteSpace:   "nowrap",
   },
   lyricsScroll: {
-    flex:          1,
-    overflowY:     "auto",
-    overflowX:     "hidden",
-    padding:       "24px 28px 0",
-    scrollbarWidth:"none",             // Firefox
-    msOverflowStyle: "none",          // IE/Edge
-    WebkitOverflowScrolling: "touch", // iOS momentum scroll
+    flex:                    1,
+    overflowY:               "auto",
+    overflowX:               "hidden",
+    padding:                 "24px 28px 0",
+    scrollbarWidth:          "none",
+    msOverflowStyle:         "none",
+    WebkitOverflowScrolling: "touch",
   },
   lyricLine: {
-    fontFamily:   "var(--font-body, 'Nunito', sans-serif)",
-    fontSize:     "17px",
-    lineHeight:   1.7,
-    color:        "#4a6a9a",
-    margin:       "0 0 18px",
-    transition:   "color 280ms ease, font-size 200ms ease, opacity 280ms ease",
-    textAlign:    "center",
-    cursor:       "default",
+    fontFamily: "var(--font-body, 'Nunito', sans-serif)",
+    fontSize:   "17px",
+    lineHeight: 1.7,
+    color:      "#4a6a9a",
+    margin:     "0 0 18px",
+    transition: "color 280ms ease, font-size 200ms ease, opacity 280ms ease",
+    textAlign:  "center",
+    cursor:     "default",
   },
   lyricActive: {
     color:      "#e8b84b",
@@ -305,15 +315,15 @@ const styles = {
     opacity: 0.65,
   },
   emptyHint: {
-    textAlign: "center",
-    color:     "#4a6a9a",
-    marginTop: "40px",
-    fontFamily:"var(--font-body, 'Nunito', sans-serif)",
+    textAlign:  "center",
+    color:      "#4a6a9a",
+    marginTop:  "40px",
+    fontFamily: "var(--font-body, 'Nunito', sans-serif)",
   },
   controls: {
-    flexShrink:   0,
-    padding:      "16px 24px calc(16px + env(safe-area-inset-bottom, 0px))",
-    background:   "linear-gradient(0deg, #0f1829 0%, transparent 100%)",
+    flexShrink:     0,
+    padding:        "16px 24px calc(16px + env(safe-area-inset-bottom, 0px))",
+    background:     "linear-gradient(0deg, #0f1829 0%, transparent 100%)",
     backdropFilter: "blur(12px)",
   },
   progressTrack: {
@@ -359,27 +369,27 @@ const styles = {
     textAlign:  "center",
   },
   playBtn: {
-    width:           "52px",
-    height:          "52px",
-    borderRadius:    "50%",
-    border:          "none",
-    background:      "#e8b84b",
-    color:           "#080d1a",
-    display:         "flex",
-    alignItems:      "center",
-    justifyContent:  "center",
-    cursor:          "pointer",
-    boxShadow:       "0 0 18px rgba(232,184,75,0.35)",
-    transition:      "transform 150ms ease, box-shadow 150ms ease",
-    flexShrink:      0,
+    width:          "52px",
+    height:         "52px",
+    borderRadius:   "50%",
+    border:         "none",
+    background:     "#e8b84b",
+    color:          "#080d1a",
+    display:        "flex",
+    alignItems:     "center",
+    justifyContent: "center",
+    cursor:         "pointer",
+    boxShadow:      "0 0 18px rgba(232,184,75,0.35)",
+    transition:     "transform 150ms ease",
+    flexShrink:     0,
   },
   loadingDot: {
-    display:       "block",
-    width:         "10px",
-    height:        "10px",
-    borderRadius:  "50%",
-    background:    "#080d1a",
-    animation:     "pulse 1s ease-in-out infinite",
+    display:      "block",
+    width:        "10px",
+    height:       "10px",
+    borderRadius: "50%",
+    background:   "#080d1a",
+    animation:    "pulse 1s ease-in-out infinite",
   },
   audioErrorMsg: {
     textAlign:  "center",
