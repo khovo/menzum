@@ -1,4 +1,3 @@
-```python
 """
 utils.py
 --------
@@ -421,5 +420,3 @@ def get_channel_mgmt_kb() -> dict:
         ]
     }
 
-
-```
