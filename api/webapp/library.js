@@ -53,10 +53,11 @@ module.exports = withAuth(async function handler(req, res) {
     // ── Single user doc fetch: favorites + history + counters ─────────────────
     const dbUser = await db.collection("users").findOne(
       { _id: userId },
-      { projection: { favorites: 1, listen_history: 1, total_plays: 1 } }
+      { projection: { favorites: 1, pdf_favorites: 1, listen_history: 1, total_plays: 1 } }
     );
 
     const favoriteFileIds  = dbUser?.favorites       ?? [];
+    const pdfFavoriteIds   = (dbUser?.pdf_favorites  ?? []).map(String);
     const listenHistory    = dbUser?.listen_history  ?? [];
     const totalPlays       = dbUser?.total_plays     ?? 0;
 
@@ -67,6 +68,17 @@ module.exports = withAuth(async function handler(req, res) {
           .find(
             { file_id: { $in: favoriteFileIds } },
             { projection: { display_name: 1, thumb_file_id: 1 } }   // never expose file_id
+          )
+          .limit(50)
+          .toArray()
+      : [];
+
+    // ── Resolve PDF favorite ids ────────────────────────────────────────────
+    const pdfFavDocs = pdfFavoriteIds.length > 0
+      ? await db.collection("pdfs")
+          .find(
+            { _id: { $in: pdfFavoriteIds.map((id) => { try { return new ObjectId(id); } catch { return null; } }).filter(Boolean) } },
+            { projection: { title: 1, file_name: 1 } }
           )
           .limit(50)
           .toArray()
@@ -108,6 +120,13 @@ module.exports = withAuth(async function handler(req, res) {
         play_count: count,
       }));
 
+    const pdfFavorites = pdfFavDocs.map((p) => ({
+      id:          p._id.toString(),
+      name:        p.title || p.file_name || "Untitled",
+      is_favorite: true,
+      type:        "pdf",
+    }));
+
     return res.status(200).json({
       ok: true,
       stats: {
@@ -116,6 +135,7 @@ module.exports = withAuth(async function handler(req, res) {
         most_played:     mostPlayed,
       },
       favorites,
+      pdf_favorites: pdfFavorites,
     });
 
   } catch (err) {

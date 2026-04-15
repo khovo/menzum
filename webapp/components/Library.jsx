@@ -20,6 +20,7 @@
 
 import { useState, useCallback } from 'react';
 import { ListTrack } from './TrackCard';
+import PDFCard from './PDFCard';
 
 // ── Stat Card ─────────────────────────────────────────────────────────────────
 function StatCard({ value, label, icon, delay = 0 }) {
@@ -192,6 +193,29 @@ export default function Library({ stats, favorites: initialFavorites, loading, o
             />
           ))}
         </div>
+      )}
+
+      {/* ── PDF Favorites ──────────────────────────────────────────────── */}
+      {initialPdfFavorites && initialPdfFavorites.length > 0 && (
+        <>
+          <div className="section-header" style={{ marginTop: 16 }}>
+            <div className="section-title">📄 Saved PDFs</div>
+            <div className="section-count">{initialPdfFavorites.length} saved</div>
+          </div>
+          <div className="track-list">
+            {initialPdfFavorites.map((pdf, i) => (
+              <PDFCard
+                key={pdf.id}
+                pdf={pdf}
+                isFav={pdfFavIds ? pdfFavIds.has(pdf.id) : pdf.is_favorite}
+                onRead={onPdfRead}
+                onDeliver={onPdfDeliver}
+                onFavorite={onPdfFavorite}
+                index={i}
+              />
+            ))}
+          </div>
+        </>
       )}
 
     </div>

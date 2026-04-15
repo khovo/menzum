@@ -177,6 +177,27 @@ async def send_audio(
         return None
 
 
+async def send_document(
+    session, chat_id, document_file_id: str, caption: str = "", reply_markup=None
+) -> dict | None:
+    if not BOT_TOKEN:
+        return None
+    payload = {"chat_id": chat_id, "document": document_file_id}
+    if caption:
+        payload["caption"]    = caption
+        payload["parse_mode"] = "Markdown"
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        async with session.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument", json=payload
+        ) as resp:
+            return await resp.json()
+    except Exception:
+        logger.exception("send_document failed chat_id=%s", chat_id)
+        return None
+
+
 async def send_media_group(session, chat_id, media: list) -> dict | None:
     """
     Send 2–10 media items (audio/photo/video/document) as a single grouped message.
@@ -312,18 +333,16 @@ async def copy_message(
 # ── UI / Keyboard Builders ────────────────────────────────────────────────────
 
 def get_main_menu_kb() -> dict:
-    """Main menu. 'Open Al-Madih' Mini App button added as the flagship feature."""
+    """Main menu. V4: PDF submission button added."""
     return {
         "inline_keyboard": [
-            [
-                {"text": "🎵 Open Al-Madih", "web_app": {"url": "https://almadih.vercel.app"}}
-            ],
             [
                 {"text": "❤️ Favorites",      "switch_inline_query_current_chat": "#favorites"},
                 {"text": "📂 Catalog (List)",  "callback_data": "pg_1"},
             ],
             [
                 {"text": "🎧 Create Playlist", "callback_data": "pl_start"},
+                {"text": "📄 Send PDF",         "callback_data": "pdf_submit_start"},
             ],
             [{"text": "📞 አስተያየት ለመስጠት (Support)", "callback_data": "support_start"}],
             [{"text": "🔍 Search Name", "switch_inline_query_current_chat": ""}],
@@ -397,4 +416,3 @@ def get_channel_mgmt_kb() -> dict:
             [{"text": "❌ Close", "callback_data": "admin_ch_close"}],
         ]
     }
-
