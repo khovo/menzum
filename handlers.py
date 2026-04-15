@@ -40,6 +40,7 @@ from utils import (
     invalidate_channels_cache,
     send_message,
     send_audio,
+    send_document,
     send_media_group,
     edit_message_text,
     delete_message,
@@ -87,6 +88,7 @@ _ADMIN_KB_TEXTS = {
     "📂 Total Files",
     "🔧 Manage Channels",
 }
+# V4 user states: "pdf_wait" — waiting for user to send PDF document
 
 async def _channel_mgmt_menu_text(db) -> str:
     channels = await get_force_channels(db)
@@ -443,6 +445,37 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
         return
 
+    # ── PDF Wait: user was prompted to send a PDF ────────────────────────────
+    if state == "pdf_wait":
+        doc = message.get("document")
+        if doc:
+            mime = doc.get("mime_type", "")
+            fname = doc.get("file_name", "")
+            if mime == "application/pdf" or fname.lower().endswith(".pdf"):
+                try:
+                    await copy_message(session, ADMIN_ID, chat_id, message.get("message_id"))
+                    await send_message(
+                        session, ADMIN_ID,
+                        f"📄 *New PDF Submission*\n"
+                        f"From: {first_name} (`{user_id}`)\n"
+                        f"File: `{fname or 'unnamed.pdf'}`\n"
+                        f"Size: {doc.get('file_size', 0) // 1024} KB",
+                    )
+                except Exception as e:
+                    logger.error("PDF forward to admin failed: %s", e)
+                await set_user_state(db, user_id, "idle")
+                await send_message(
+                    session, chat_id,
+                    "✅ *JazakAllahu Khairan!*\n\nWe have received your PDF. "
+                    "It will be reviewed and added to the library.",
+                    reply_markup=get_main_menu_kb(),
+                )
+            else:
+                await send_message(session, chat_id, "⚠️ Please send a *PDF file* only.")
+        elif text:
+            await send_message(session, chat_id, "📄 Please *send a PDF file* — not text.")
+        return
+
     if text == "🔧 Manage Channels" and _is_admin(user_id):
         mgmt_text = await _channel_mgmt_menu_text(db)
         result = await send_message(session, chat_id, mgmt_text, reply_markup=get_channel_mgmt_kb())
@@ -667,3 +700,26 @@ async def process_telegram_update(data: dict) -> None:
             db_client.close()
 
 
+
+    # ── PDF Submit: start flow ────────────────────────────────────────────────
+    if data_str == "pdf_submit_start":
+        await set_user_state(db, user_id, "pdf_wait")
+        kb = {"inline_keyboard": [[{"text": "❌ Cancel", "callback_data": "pdf_submit_cancel"}]]}
+        await edit_message_text(
+            session, chat_id, message_id,
+            "📄 *Send a PDF*\n\nPlease send the PDF file now.\n\n"
+            "_We will review it before adding it to the library._",
+            reply_markup=kb,
+        )
+        await answer_callback_query(session, cb_id)
+        return
+
+    if data_str == "pdf_submit_cancel":
+        await set_user_state(db, user_id, "idle")
+        welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
+        await edit_message_text(
+            session, chat_id, message_id, welcome,
+            reply_markup=get_main_menu_kb(),
+        )
+        await answer_callback_query(session, cb_id)
+        return
