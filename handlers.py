@@ -192,6 +192,29 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         await answer_callback_query(session, cb_id)
         return
 
+    # ── PDF Submit: start flow ────────────────────────────────────────────────
+    if data_str == "pdf_submit_start":
+        await set_user_state(db, user_id, "pdf_wait")
+        kb = {"inline_keyboard": [[{"text": "❌ Cancel", "callback_data": "pdf_submit_cancel"}]]}
+        await edit_message_text(
+            session, chat_id, message_id,
+            "📄 *Send a PDF*\n\nPlease send the PDF file now.\n\n"
+            "_We will review it before adding it to the library._",
+            reply_markup=kb,
+        )
+        await answer_callback_query(session, cb_id)
+        return
+
+    if data_str == "pdf_submit_cancel":
+        await set_user_state(db, user_id, "idle")
+        welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
+        await edit_message_text(
+            session, chat_id, message_id, welcome,
+            reply_markup=get_main_menu_kb(),
+        )
+        await answer_callback_query(session, cb_id)
+        return
+
     if data_str == "pl_start":
         await set_user_state(db, user_id, "playlist_builder", {"building_playlist": [], "pl_ctrl_msg_id": message_id})
         await edit_message_text(
@@ -700,26 +723,4 @@ async def process_telegram_update(data: dict) -> None:
             db_client.close()
 
 
-
-    # ── PDF Submit: start flow ────────────────────────────────────────────────
-    if data_str == "pdf_submit_start":
-        await set_user_state(db, user_id, "pdf_wait")
-        kb = {"inline_keyboard": [[{"text": "❌ Cancel", "callback_data": "pdf_submit_cancel"}]]}
-        await edit_message_text(
-            session, chat_id, message_id,
-            "📄 *Send a PDF*\n\nPlease send the PDF file now.\n\n"
-            "_We will review it before adding it to the library._",
-            reply_markup=kb,
-        )
-        await answer_callback_query(session, cb_id)
-        return
-
-    if data_str == "pdf_submit_cancel":
-        await set_user_state(db, user_id, "idle")
-        welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
-        await edit_message_text(
-            session, chat_id, message_id, welcome,
-            reply_markup=get_main_menu_kb(),
-        )
-        await answer_callback_query(session, cb_id)
-        return
+```
