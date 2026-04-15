@@ -1,3 +1,4 @@
+```python
 """
 utils.py
 --------
@@ -333,9 +334,12 @@ async def copy_message(
 # ── UI / Keyboard Builders ────────────────────────────────────────────────────
 
 def get_main_menu_kb() -> dict:
-    """Main menu. V4: PDF submission button added."""
+    """Main menu. WebApp button added alongside PDF submission."""
     return {
         "inline_keyboard": [
+            [
+                {"text": "🌐 Open Al-Madih", "web_app": {"url": "https://almadih.vercel.app/"}}
+            ],
             [
                 {"text": "❤️ Favorites",      "switch_inline_query_current_chat": "#favorites"},
                 {"text": "📂 Catalog (List)",  "callback_data": "pg_1"},
@@ -416,3 +420,6 @@ def get_channel_mgmt_kb() -> dict:
             [{"text": "❌ Close", "callback_data": "admin_ch_close"}],
         ]
     }
+
+
+```
