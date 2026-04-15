@@ -32,6 +32,8 @@ import BottomNav from '../components/BottomNav';
 import NowPlaying from '../components/NowPlaying';
 import Library from '../components/Library';
 import ErrorState from '../components/ErrorState';
+import PDFCard from '../components/PDFCard';
+import PDFViewer from '../components/PDFViewer';
 
 // ── API base URL — same origin as the Mini App (Vercel) ─────────────────────
 // In dev, Next runs on :3001 and API on :5000, so we allow an override.
@@ -122,6 +124,19 @@ export default function Home() {
   const [libraryFavorites, setLibraryFavorites] = useState([]);
   const [libraryLoading,   setLibraryLoading]   = useState(false);
   const [libraryLoaded,    setLibraryLoaded]     = useState(false);
+
+  // ── PDF state ───────────────────────────────────────────────────────────
+  const [pdfs,           setPdfs]           = useState([]);
+  const [pdfCursor,      setPdfCursor]      = useState(null);
+  const [pdfHasMore,     setPdfHasMore]     = useState(true);
+  const [pdfLoading,     setPdfLoading]     = useState(false);
+  const [pdfLoaded,      setPdfLoaded]      = useState(false);
+  const [pdfError,       setPdfError]       = useState(null);
+  const [pdfFavIds,      setPdfFavIds]      = useState(() => new Set());
+  const [pdfFavorites,   setPdfFavorites]   = useState([]);
+  const [activePdf,      setActivePdf]      = useState(null);   // PDF open in viewer
+  const pdfSentinelRef   = useRef(null);
+  const pdfObserverRef   = useRef(null);
 
   const searchInputRef  = useRef(null);
   const debounceRef     = useRef(null);
@@ -355,6 +370,15 @@ export default function Home() {
         });
         setLibraryLoaded(true);
         setLibraryError(null);
+        // Merge PDF favorites from library response
+        if (data.pdf_favorites) {
+          setPdfFavorites(data.pdf_favorites);
+          setPdfFavIds((prev) => {
+            const n = new Set(prev);
+            data.pdf_favorites.forEach((p) => n.add(p.id));
+            return n;
+          });
+        }
       } else {
         setLibraryError('Could not load your library.');
       }
@@ -366,7 +390,7 @@ export default function Home() {
   }, [libraryLoaded, authHeader]);
 
   // ── Handle view switch ─────────────────────────────────────────────────────
-  const VIEW_ORDER = { home: 0, search: 1, library: 2 };
+  const VIEW_ORDER = { home: 0, search: 1, pdf: 2, library: 3 };
   function handleViewChange(v) {
     if (v === view) return;
     setPrevView(view);
@@ -377,9 +401,11 @@ export default function Home() {
       setSearchError(null);
     }
     if (v === 'library') {
-      // Reset so a retry re-fetches fresh
       if (libraryError) setLibraryLoaded(false);
       loadLibrary();
+    }
+    if (v === 'pdf') {
+      if (!pdfLoaded && !pdfLoading) loadPdfs();
     }
   }
 
@@ -478,6 +504,93 @@ export default function Home() {
       return false;
     }
   }, [authHeader, hapticImpact, favoritedIds]);
+
+  // ── PDF: load first/next page ───────────────────────────────────────────
+  const loadPdfs = useCallback(async (cursor = null) => {
+    if (pdfLoading) return;
+    setPdfLoading(true);
+    if (!cursor) setPdfError(null);
+    try {
+      const url = cursor
+        ? `${API_BASE}/api/webapp/pdfs?cursor=${cursor}`
+        : `${API_BASE}/api/webapp/pdfs`;
+      const res  = await fetch(url, { headers: authHeader() });
+      const data = await res.json();
+      if (data.ok) {
+        if (cursor) {
+          setPdfs((prev) => [...prev, ...(data.pdfs || [])]);
+        } else {
+          setPdfs(data.pdfs || []);
+        }
+        setPdfCursor(data.next_cursor ?? null);
+        setPdfHasMore(data.has_more ?? false);
+        setPdfLoaded(true);
+        // Seed PDF fav registry
+        setPdfFavIds((prev) => {
+          const next = new Set(prev);
+          (data.pdfs || []).filter((p) => p.is_favorite).forEach((p) => next.add(p.id));
+          return next;
+        });
+      } else {
+        if (!cursor) setPdfError('Could not load PDFs.');
+      }
+    } catch {
+      if (!cursor) setPdfError('No connection.');
+    } finally {
+      setPdfLoading(false);
+    }
+  }, [pdfLoading, authHeader]);
+
+  const loadMorePdfs = useCallback(async () => {
+    if (!pdfHasMore || !pdfCursor) return;
+    loadPdfs(pdfCursor);
+  }, [pdfHasMore, pdfCursor, loadPdfs]);
+
+  const handlePdfFavorite = useCallback(async (pdf) => {
+    hapticImpact('light');
+    const wasFav = pdfFavIds.has(pdf.id);
+    setPdfFavIds((prev) => { const n = new Set(prev); wasFav ? n.delete(pdf.id) : n.add(pdf.id); return n; });
+    if (wasFav) setPdfFavorites((prev) => prev.filter((p) => p.id !== pdf.id));
+    else setPdfFavorites((prev) => prev.find((p) => p.id === pdf.id) ? prev : [{ id: pdf.id, name: pdf.name, is_favorite: true, type: 'pdf' }, ...prev]);
+    try {
+      const res  = await fetch(`${API_BASE}/api/webapp/pdfs`, {
+        method: 'POST', headers: authHeader(),
+        body: JSON.stringify({ action: 'favorite', pdf_id: pdf.id }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setPdfFavIds((prev) => { const n = new Set(prev); wasFav ? n.add(pdf.id) : n.delete(pdf.id); return n; });
+        if (wasFav) setPdfFavorites((prev) => [{ id: pdf.id, name: pdf.name, is_favorite: true, type: 'pdf' }, ...prev]);
+        else setPdfFavorites((prev) => prev.filter((p) => p.id !== pdf.id));
+      }
+    } catch {
+      setPdfFavIds((prev) => { const n = new Set(prev); wasFav ? n.add(pdf.id) : n.delete(pdf.id); return n; });
+    }
+  }, [pdfFavIds, authHeader, hapticImpact]);
+
+  const handlePdfDeliver = useCallback(async (pdf) => {
+    hapticImpact('medium');
+    try {
+      await fetch(`${API_BASE}/api/webapp/pdfs`, {
+        method: 'POST', headers: authHeader(),
+        body: JSON.stringify({ action: 'deliver', pdf_id: pdf.id }),
+      });
+    } catch {}
+  }, [authHeader, hapticImpact]);
+
+  // ── PDF IntersectionObserver ─────────────────────────────────────────────
+  useEffect(() => {
+    if (!pdfSentinelRef.current) return;
+    pdfObserverRef.current = new IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) loadMorePdfs(); },
+      { rootMargin: '200px' }
+    );
+    pdfObserverRef.current.observe(pdfSentinelRef.current);
+    return () => pdfObserverRef.current?.disconnect();
+  }, [loadMorePdfs]);
+
+  // ── Merge library pdf_favorites on load ──────────────────────────────────
+  // (called in loadLibrary success branch — we add this as a side-effect below)
 
   // ── Search: load more results ────────────────────────────────────────────
   const loadMoreSearch = useCallback(async () => {
@@ -823,16 +936,28 @@ export default function Home() {
                     </div>
                   </div>
                   <div className="track-list">
-                    {results.map((track, i) => (
-                      <ListTrack
-                        key={track.id}
-                        track={track}
-                        onPlay={handlePlay}
-                        onFavorite={handleFavorite}
-                        isFav={favoritedIds.has(track.id)}
-                        index={i}
-                      />
-                    ))}
+                    {results.map((item, i) =>
+                      item.type === 'pdf' ? (
+                        <PDFCard
+                          key={item.id}
+                          pdf={item}
+                          isFav={pdfFavIds.has(item.id)}
+                          onRead={(p) => setActivePdf(p)}
+                          onDeliver={handlePdfDeliver}
+                          onFavorite={handlePdfFavorite}
+                          index={i}
+                        />
+                      ) : (
+                        <ListTrack
+                          key={item.id}
+                          track={item}
+                          onPlay={handlePlay}
+                          onFavorite={handleFavorite}
+                          isFav={favoritedIds.has(item.id)}
+                          index={i}
+                        />
+                      )
+                    )}
                   </div>
 
                   {/* Load more button — explicit for search (better UX than auto-scroll) */}
@@ -861,17 +986,72 @@ export default function Home() {
             </div>
           )}
 
+          {/* ════════════════════════════════════════════ PDF VIEW */}
+          {view === 'pdf' && (
+            <div className={viewTransitionClass('pdf')}>
+
+              <div className="section-header" style={{ paddingTop: 16 }}>
+                <div className="section-title">📄 PDF Library</div>
+                {pdfLoaded && <div className="section-count">{pdfs.length}{pdfHasMore ? '+' : ''} books</div>}
+              </div>
+
+              {pdfError && (
+                <div style={{ padding: '0 16px 8px' }}>
+                  <ErrorState icon="📄" title="Could not load PDFs" message={pdfError}
+                    onRetry={() => { setPdfLoaded(false); loadPdfs(); }} compact />
+                </div>
+              )}
+
+              {!pdfError && pdfs.length === 0 && pdfLoading && (
+                <div>{[...Array(4)].map((_, i) => (
+                  <div key={i} className="skeleton skeleton-track" style={{ margin: '4px 16px', animationDelay: `${i * 80}ms` }} />
+                ))}</div>
+              )}
+
+              {pdfs.length > 0 && (
+                <div className="track-list">
+                  {pdfs.map((pdf, i) => (
+                    <PDFCard
+                      key={pdf.id}
+                      pdf={pdf}
+                      isFav={pdfFavIds.has(pdf.id)}
+                      onRead={(p) => setActivePdf(p)}
+                      onDeliver={handlePdfDeliver}
+                      onFavorite={handlePdfFavorite}
+                      index={i}
+                    />
+                  ))}
+                </div>
+              )}
+
+              <div ref={pdfSentinelRef} style={{ height: 1 }} />
+              {pdfLoading && pdfs.length > 0 && (
+                <div className="load-more-spinner">
+                  <div className="loading-dot"/><div className="loading-dot"/><div className="loading-dot"/>
+                </div>
+              )}
+              {!pdfHasMore && pdfs.length > 0 && (
+                <div className="catalog-end-msg">✦ All {pdfs.length} PDFs loaded</div>
+              )}
+            </div>
+          )}
+
           {/* ════════════════════════════════════════════ LIBRARY VIEW */}
           {view === 'library' && (
             <div className={viewTransitionClass('library')}>
               <Library
                 stats={libraryStats}
                 favorites={libraryFavorites}
+                pdfFavorites={pdfFavorites}
+                pdfFavIds={pdfFavIds}
                 loading={libraryLoading}
                 error={libraryError}
                 onRetry={() => { setLibraryLoaded(false); loadLibrary(); }}
                 onPlay={handlePlay}
                 onFavorite={handleFavorite}
+                onPdfRead={(p) => setActivePdf(p)}
+                onPdfDeliver={handlePdfDeliver}
+                onPdfFavorite={handlePdfFavorite}
               />
             </div>
           )}
@@ -880,6 +1060,17 @@ export default function Home() {
 
         {/* ── Bottom Navigation ────────────────────────────────────────────── */}
         <BottomNav view={view} onViewChange={handleViewChange} />
+
+        {/* ── PDF Viewer Overlay ──────────────────────────────────────────── */}
+        {activePdf && (
+          <PDFViewer
+            pdf={activePdf}
+            authHeader={authHeader}
+            isFav={pdfFavIds.has(activePdf.id)}
+            onFavorite={handlePdfFavorite}
+            onClose={() => setActivePdf(null)}
+          />
+        )}
 
         {/* ── NowPlaying Sheet ─────────────────────────────────────────────── */}
         {nowPlaying && (
