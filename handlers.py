@@ -60,7 +60,6 @@ from utils import (
 
 logger = logging.getLogger(__name__)
 
-# Bot username for deep links.  Set BOT_USERNAME in Vercel env vars.
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "Almadihbot")
 
 WELCOME_TEXT = (
@@ -88,13 +87,11 @@ _ADMIN_KB_TEXTS = {
     "📂 Total Files",
     "🔧 Manage Channels",
 }
-# V4 user states: "pdf_wait" — waiting for user to send PDF document
 
 async def _channel_mgmt_menu_text(db) -> str:
     channels = await get_force_channels(db)
     text = "📢 *Channel Management*\n\n"
     if channels:
-        # Wrapped in backticks to prevent markdown errors from underscores in usernames
         text += "\n".join(f"• `@{ch['username']}`" for ch in channels) + "\n"
     else:
         text += "No channels configured. Bot is in open access mode.\n"
@@ -534,6 +531,28 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         return
 
     if _is_admin(user_id):
+        # ── Admin PDF Upload to Database ──────────────────────────────────
+        if "document" in message:
+            doc = message.get("document")
+            mime = doc.get("mime_type", "")
+            fname = doc.get("file_name", "")
+            
+            if mime == "application/pdf" or fname.lower().endswith(".pdf"):
+                cap = message.get("caption", "").split("\n")[0].strip()
+                title = cap if cap else fname.replace(".pdf", "").strip()
+                
+                try:
+                    await db.pdfs.update_one(
+                        {"title": {"$regex": re.escape(title), "$options": "i"}},
+                        {"$set": {"file_id": doc["file_id"], "title": title, "download_count": 0}},
+                        upsert=True,
+                    )
+                    await send_message(session, chat_id, f"✅ PDF Saved to DB:\n📄 `{title}`")
+                except Exception as db_err:
+                    logger.error("db.pdfs.update_one failed: %s", db_err)
+                    await send_message(session, chat_id, f"❌ DB error saving PDF `{title}`. Please retry.")
+                return
+
         if state == "admin_add_channel_wait":
             if text and not text.startswith("/"):
                 username = text.lstrip("@").strip()
@@ -611,21 +630,16 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             name = cap if cap else f.get("file_name", "Unknown")
             if len(name) > 3:
                 # ── Safe thumbnail extraction ────────────────────────────────
-                # Telegram audio objects MAY carry a thumbnail (PhotoSize).
-                # Voice messages never do. We use chained .get() so a missing
-                # key at any level silently produces None — never a KeyError.
-                # The DB write happens whether or not a thumbnail exists.
                 thumb_file_id = (
                     message.get("audio", {})
                            .get("thumbnail", {})
                            .get("file_id")
                     or
                     message.get("audio", {})
-                           .get("thumb", {})   # legacy field name, still sent by some clients
+                           .get("thumb", {})
                            .get("file_id")
-                )  # None if audio has no thumbnail, or if message is a voice note
+                ) 
 
-                # Build the update payload — include thumb_file_id only when present
                 update_fields = {"file_id": f["file_id"], "display_name": name}
                 if thumb_file_id:
                     update_fields["thumb_file_id"] = thumb_file_id
@@ -721,3 +735,4 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
+
