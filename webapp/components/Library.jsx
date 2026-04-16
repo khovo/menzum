@@ -3,19 +3,24 @@
  * -----------
  * Personal Library screen — two sections:
  *
- *   📊 Stats Row    — total plays + total favorites as glowing stat cards,
- *                     plus up to 3 "Most Played" tracks
+ * 📊 Stats Row    — total plays + total favorites as glowing stat cards,
+ * plus up to 3 "Most Played" tracks
  *
- *   ❤️ Favorites    — full scrollable list of the user's hearted tracks,
- *                     identical ListTrack component as Home/Search
+ * ❤️ Favorites    — full scrollable list of the user's hearted tracks,
+ * identical ListTrack component as Home/Search
  *
  * Props:
- *   stats        { total_plays, total_favorites, most_played[] }
- *   favorites    TrackCard[]
- *   loading      boolean
- *   onPlay       (track) => Promise<void>
- *   onFavorite   (track) => Promise<bool>
- *   onUnfavorite (track) => void   — removes track from local list immediately
+ * stats        { total_plays, total_favorites, most_played[] }
+ * favorites    TrackCard[]
+ * pdfFavorites PDFCard[] // Added this to fix the reference error
+ * pdfFavIds    Set<string> // Added this to fix the reference error
+ * loading      boolean
+ * onPlay       (track) => Promise<void>
+ * onFavorite   (track) => Promise<bool>
+ * onUnfavorite (track) => void   — removes track from local list immediately
+ * onPdfRead    (pdf) => void
+ * onPdfDeliver (pdf) => void
+ * onPdfFavorite(pdf) => void
  */
 
 import { useState, useCallback } from 'react';
@@ -76,9 +81,9 @@ function EmptyFavorites() {
   return (
     <div className="library-empty">
       <div className="library-empty-icon">🌙</div>
-      <div className="library-empty-title">No Favorites Yet</div>
+      <div className="library-empty-title">ምንም አልተመረጠም (No Favorites Yet)</div>
       <div className="library-empty-sub">
-        Tap ❤️ on any track in Home or Search to save it here.
+        መንዙማዎችን ወይም ፒዲኤፎችን ❤️ በመጫን እዚህ ማስቀመጥ ይችላሉ።
       </div>
     </div>
   );
@@ -103,7 +108,18 @@ function LibrarySkeleton() {
 }
 
 // ── Main Library Component ────────────────────────────────────────────────────
-export default function Library({ stats, favorites: initialFavorites, loading, onPlay, onFavorite }) {
+export default function Library({ 
+  stats, 
+  favorites: initialFavorites, 
+  pdfFavorites: initialPdfFavorites = [], // Destructured to fix ReferenceError
+  pdfFavIds,                              // Destructured to fix ReferenceError
+  loading, 
+  onPlay, 
+  onFavorite,
+  onPdfRead,
+  onPdfDeliver,
+  onPdfFavorite
+}) {
   // Local copy of favorites so we can reflect un-fav immediately without refetch
   const [favorites, setFavorites] = useState(initialFavorites ?? []);
 
@@ -127,6 +143,7 @@ export default function Library({ stats, favorites: initialFavorites, loading, o
 
   const hasMostPlayed = stats?.most_played?.length > 0;
   const hasFavorites  = favorites.length > 0;
+  const hasPdfFavorites = initialPdfFavorites?.length > 0;
 
   return (
     <div className="view-enter">
@@ -179,7 +196,7 @@ export default function Library({ stats, favorites: initialFavorites, loading, o
         </div>
       </div>
 
-      {!hasFavorites ? (
+      {!hasFavorites && !hasPdfFavorites ? (
         <EmptyFavorites />
       ) : (
         <div className="track-list">
@@ -196,14 +213,15 @@ export default function Library({ stats, favorites: initialFavorites, loading, o
       )}
 
       {/* ── PDF Favorites ──────────────────────────────────────────────── */}
-      {initialPdfFavorites && initialPdfFavorites.length > 0 && (
+      {/* Safely mapping over initialPdfFavorites using optional chaining (?.) */}
+      {hasPdfFavorites && (
         <>
           <div className="section-header" style={{ marginTop: 16 }}>
             <div className="section-title">📄 Saved PDFs</div>
             <div className="section-count">{initialPdfFavorites.length} saved</div>
           </div>
           <div className="track-list">
-            {initialPdfFavorites.map((pdf, i) => (
+            {initialPdfFavorites?.map((pdf, i) => (
               <PDFCard
                 key={pdf.id}
                 pdf={pdf}
