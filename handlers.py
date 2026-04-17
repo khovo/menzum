@@ -465,36 +465,37 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
         return
 
-    # ── PDF Wait: user was prompted to send a PDF ────────────────────────────
+        # ── PDF Wait: user was prompted to send a document ────────────────────────────
     if state == "pdf_wait":
         doc = message.get("document")
         if doc:
-            mime = doc.get("mime_type", "")
             fname = doc.get("file_name", "")
-            if mime == "application/pdf" or fname.lower().endswith(".pdf"):
+            # ፒዲኤፍ ብቻ ሳይሆን txt, doc, docx, epub ይቀበላል
+            if fname.lower().endswith((".pdf", ".txt", ".doc", ".docx", ".epub")):
                 try:
                     await copy_message(session, ADMIN_ID, chat_id, message.get("message_id"))
                     await send_message(
                         session, ADMIN_ID,
-                        f"📄 *New PDF Submission*\n"
+                        f"📄 *New Document Submission*\n"
                         f"From: {first_name} (`{user_id}`)\n"
-                        f"File: `{fname or 'unnamed.pdf'}`\n"
+                        f"File: `{fname or 'unnamed_file'}`\n"
                         f"Size: {doc.get('file_size', 0) // 1024} KB",
                     )
                 except Exception as e:
-                    logger.error("PDF forward to admin failed: %s", e)
+                    logger.error("Document forward to admin failed: %s", e)
                 await set_user_state(db, user_id, "idle")
                 await send_message(
                     session, chat_id,
-                    "✅ *JazakAllahu Khairan!*\n\nWe have received your PDF. "
-                    "It will be reviewed and added to the library.",
+                    "✅ *JazakAllahu Khairan!*\n\nፋይሉን ተቀብለናል (We have received your document). "
+                    "አድሚኖች አይተውት ወደ ማህደሩ የሚያስገቡት ይሆናል።",
                     reply_markup=get_main_menu_kb(),
                 )
             else:
-                await send_message(session, chat_id, "⚠️ Please send a *PDF file* only.")
+                await send_message(session, chat_id, "⚠️ እባክዎ ትክክለኛ ፋይል (PDF, TXT, DOCX) ብቻ ይላኩ።")
         elif text:
-            await send_message(session, chat_id, "📄 Please *send a PDF file* — not text.")
+            await send_message(session, chat_id, "📄 እባክዎ ፋይል (Document) አያይዘው ይላኩ — ፅሁፍ (Text) ብቻ አይላኩ።")
         return
+
 
     if text == "🔧 Manage Channels" and _is_admin(user_id):
         mgmt_text = await _channel_mgmt_menu_text(db)
@@ -531,15 +532,19 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         return
 
     if _is_admin(user_id):
-        # ── Admin PDF Upload to Database ──────────────────────────────────
+                # ── Admin Document Upload to Database ──────────────────────────────────
         if "document" in message:
             doc = message.get("document")
-            mime = doc.get("mime_type", "")
             fname = doc.get("file_name", "")
             
-            if mime == "application/pdf" or fname.lower().endswith(".pdf"):
+            # ብዙ አይነት ፋይሎችን እንዲቀበል ተደርጓል
+            if fname.lower().endswith((".pdf", ".txt", ".doc", ".docx", ".epub")):
                 cap = message.get("caption", "").split("\n")[0].strip()
-                title = cap if cap else fname.replace(".pdf", "").strip()
+                
+                # የፋይሉን extension (.txt, .pdf ወዘተ) ከርዕሱ ላይ ለማጥፋት
+                import os
+                clean_fname = os.path.splitext(fname)[0].strip()
+                title = cap if cap else clean_fname
                 
                 try:
                     await db.pdfs.update_one(
@@ -547,10 +552,10 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                         {"$set": {"file_id": doc["file_id"], "title": title, "download_count": 0}},
                         upsert=True,
                     )
-                    await send_message(session, chat_id, f"✅ PDF Saved to DB:\n📄 `{title}`")
+                    await send_message(session, chat_id, f"✅ Document Saved to DB:\n📄 `{title}`")
                 except Exception as db_err:
                     logger.error("db.pdfs.update_one failed: %s", db_err)
-                    await send_message(session, chat_id, f"❌ DB error saving PDF `{title}`. Please retry.")
+                    await send_message(session, chat_id, f"❌ DB error saving Document `{title}`. Please retry.")
                 return
 
         if state == "admin_add_channel_wait":
