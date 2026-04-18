@@ -1,6 +1,76 @@
+```react
 import { useState, useEffect, useRef } from 'react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '';
+
+// ── Lazy Rendered Page Subcomponent ──
+// Renders the canvas ONLY when it scrolls into view, saving immense amounts of RAM.
+function PdfPageItem({ pageNum, pdfDoc, scale = 2.0 }) {
+  const canvasRef = useRef(null);
+  const [rendered, setRendered] = useState(false);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisible(true);
+          observer.disconnect(); // Trigger render once visible
+        }
+      },
+      { rootMargin: '600px 0px' } // Pre-load pages when they are 600px away
+    );
+    if (canvasRef.current) observer.observe(canvasRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!visible || rendered || !pdfDoc) return;
+    let renderTask;
+    
+    async function renderPage() {
+      try {
+        const page = await pdfDoc.getPage(pageNum);
+        const viewport = page.getViewport({ scale });
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        
+        // Disable alpha channel to save VRAM on mobile browsers
+        const context = canvas.getContext('2d', { alpha: false }); 
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        
+        renderTask = page.render({ canvasContext: context, viewport });
+        await renderTask.promise;
+        setRendered(true);
+        
+        // Garbage collect PDF page to prevent cumulative memory bloat
+        page.cleanup(); 
+      } catch (err) {
+        if (err.name !== 'RenderingCancelledException') {
+          console.warn(`Error rendering page ${pageNum}:`, err);
+        }
+      }
+    }
+    renderPage();
+    
+    return () => {
+      if (renderTask) renderTask.cancel();
+    };
+  }, [visible, rendered, pdfDoc, pageNum, scale]);
+
+  return (
+    <canvas 
+      ref={canvasRef}
+      id={`pdf-canvas-${pageNum}`} 
+      className="pdf-page-canvas"
+      style={{ 
+        minHeight: rendered ? 'auto' : '600px', // Placeholder height prevents violent layout shifts
+        backgroundColor: rendered ? 'transparent' : 'rgba(255,255,255,0.05)'
+      }}
+    />
+  );
+}
 
 export default function PDFViewer({ pdf, authHeader, onClose, onFavorite, isFav }) {
   const [viewerUrl, setViewerUrl] = useState(null);
@@ -9,11 +79,12 @@ export default function PDFViewer({ pdf, authHeader, onClose, onFavorite, isFav 
   const [delivering, setDelivering] = useState(false);
   const [delivered, setDelivered] = useState(false);
   const [favLoading, setFavLoading] = useState(false);
+  
+  const [pdfDoc, setPdfDoc] = useState(null);
   const [numPages, setNumPages] = useState(0);
   
   const canvasContainerRef = useRef(null);
 
-  // ── Telegram Haptic Feedback Helper ──
   const triggerHaptic = (style = 'light') => {
     if (typeof window !== 'undefined' && window.Telegram?.WebApp?.HapticFeedback) {
       window.Telegram.WebApp.HapticFeedback.impactOccurred(style);
@@ -26,18 +97,12 @@ export default function PDFViewer({ pdf, authHeader, onClose, onFavorite, isFav 
     async function loadPDF() {
       setLoading(true);
       try {
-        // 1. Fetch the PDF URL from your backend
-        const res = await fetch(`${API_BASE}/api/webapp/pdf-view?id=${pdf.id}`, {
-          headers: authHeader(),
-        });
-        const data = await res.json();
-        
-        if (cancelled || !data.ok) throw new Error("Failed to get URL");
+        // Fetch original JSON url solely for Google Docs fallback (if needed)
+        fetch(`${API_BASE}/api/webapp/pdf-view?id=${pdf.id}`, { headers: authHeader() })
+          .then(r => r.json())
+          .then(d => { if (d.ok) setViewerUrl(d.url); })
+          .catch(e => console.warn("Failed fetching fallback URL"));
 
-        const rawUrl = data.url;
-        setViewerUrl(rawUrl);
-
-        // 2. Dynamically load PDF.js (CDN) for native rendering
         if (!window.pdfjsLib) {
           const script = document.createElement('script');
           script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js';
@@ -48,34 +113,29 @@ export default function PDFViewer({ pdf, authHeader, onClose, onFavorite, isFav 
           window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
         }
 
-        // 3. Try to render the PDF natively onto Canvases
-        const loadingTask = window.pdfjsLib.getDocument(rawUrl);
-        const pdfDoc = await loadingTask.promise;
+        // Trigger our new Progressive Streaming API Route
+        const streamUrl = `${API_BASE}/api/webapp/pdf-view?id=${pdf.id}&action=stream`;
+
+        const loadingTask = window.pdfjsLib.getDocument({
+          url: streamUrl,
+          httpHeaders: authHeader(),
+          disableAutoFetch: true,  // MANDATORY: Forces Range-Requests. Doesn't download entire file at once.
+          disableStream: false,
+          cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/cmaps/',
+          cMapPacked: true,
+        });
+
+        const doc = await loadingTask.promise;
         
         if (cancelled) return;
-        setNumPages(pdfDoc.numPages);
+        setPdfDoc(doc);
+        setNumPages(doc.numPages);
         setUseIframeFallback(false);
-
-        // Render pages sequentially
-        for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
-          if (cancelled) break;
-          const page = await pdfDoc.getPage(pageNum);
-          const viewport = page.getViewport({ scale: window.devicePixelRatio || 2.0 }); // High-Res Rendering
-          
-          const canvas = document.getElementById(`pdf-canvas-${pageNum}`);
-          if (canvas) {
-            const context = canvas.getContext('2d');
-            canvas.height = viewport.height;
-            canvas.width = viewport.width;
-            
-            await page.render({ canvasContext: context, viewport: viewport }).promise;
-          }
-        }
         
         triggerHaptic('success');
 
       } catch (err) {
-        console.warn("Native render failed (likely CORS), falling back to Iframe:", err);
+        console.warn("Native render failed, falling back to Iframe:", err);
         if (!cancelled) setUseIframeFallback(true);
       } finally {
         if (!cancelled) setLoading(false);
@@ -161,19 +221,20 @@ export default function PDFViewer({ pdf, authHeader, onClose, onFavorite, isFav 
         )}
 
         {/* NATIVE CANVAS RENDERER (Supports Native OS Pinch-to-Zoom smoothly) */}
-        {!useIframeFallback && numPages > 0 && (
+        {!useIframeFallback && numPages > 0 && pdfDoc && (
           <div className="pdf-canvas-wrapper">
             {Array.from(new Array(numPages), (el, index) => (
-              <canvas 
+              <PdfPageItem 
                 key={`page_${index + 1}`} 
-                id={`pdf-canvas-${index + 1}`} 
-                className="pdf-page-canvas"
+                pageNum={index + 1} 
+                pdfDoc={pdfDoc}
+                scale={window.devicePixelRatio || 2.0}
               />
             ))}
           </div>
         )}
 
-        {/* GOOGLE DOCS IFRAME FALLBACK (If Telegram CORS blocks direct fetch) */}
+        {/* GOOGLE DOCS IFRAME FALLBACK */}
         {!loading && useIframeFallback && viewerUrl && (
           <iframe
             src={`https://docs.google.com/viewer?url=${encodeURIComponent(viewerUrl)}&embedded=true`}
@@ -202,3 +263,5 @@ export default function PDFViewer({ pdf, authHeader, onClose, onFavorite, isFav 
     </div>
   );
 }
+
+```
