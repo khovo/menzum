@@ -1,3 +1,4 @@
+```css
 /* ─────────────────────────────────────────────────────────────────────────────
    Al-Madih Mini App — Global Design System
    Palette: Deep Navy + Gold  |  Fonts: Cinzel (display) + Nunito (body)
@@ -652,113 +653,6 @@ body::before {
 .loading-dot:nth-child(2) { animation-delay: 0.2s; }
 .loading-dot:nth-child(3) { animation-delay: 0.4s; }
 
-/* Skeleton loaders */
-.skeleton {
-  background: linear-gradient(
-    90deg,
-    var(--bg-elevated) 25%,
-    var(--bg-card-hover) 50%,
-    var(--bg-elevated) 75%
-  );
-  background-size: 200% 100%;
-  animation: skeletonShimmer 1.4s ease infinite;
-  border-radius: var(--radius-sm);
-}
-
-.skeleton-featured {
-  flex-shrink: 0;
-  width: 160px;
-  height: 180px;
-  border-radius: var(--radius-lg);
-}
-
-.skeleton-track {
-  height: 68px;
-  border-radius: var(--radius-md);
-  margin: 4px 16px;
-}
-
-/* ── NowPlaying Sheet ──────────────────────────────────────────────────────── */
-.now-playing-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  pointer-events: none;
-}
-
-.now-playing-sheet {
-  position: absolute;
-  bottom: calc(var(--nav-h) + var(--safe-bot) + 12px);
-  left: 16px;
-  right: 16px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-accent);
-  border-radius: var(--radius-lg);
-  padding: 14px 16px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  box-shadow: var(--shadow-card), var(--shadow-glow);
-  pointer-events: auto;
-  animation: slideUpIn 350ms var(--transition-spring) both;
-}
-
-.now-playing-sheet.exit {
-  animation: slideDownOut 250ms ease forwards;
-}
-
-.now-playing-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-sm);
-  background: var(--gold-glow);
-  border: 1px solid var(--gold-dim);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  animation: pulseGlow 1.5s ease infinite;
-}
-
-.now-playing-text {
-  flex: 1;
-  min-width: 0;
-}
-
-.now-playing-status {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--gold-primary);
-}
-
-.now-playing-name {
-  font-size: 12px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-top: 1px;
-}
-
-.now-playing-check {
-  font-size: 20px;
-  flex-shrink: 0;
-}
-
-/* ── Error States ──────────────────────────────────────────────────────────── */
-.error-banner {
-  margin: 12px 16px;
-  padding: 12px 14px;
-  background: rgba(220, 60, 60, 0.1);
-  border: 1px solid rgba(220, 60, 60, 0.3);
-  border-radius: var(--radius-md);
-  font-size: 13px;
-  color: #ff8080;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 /* ── View Transitions ──────────────────────────────────────────────────────── */
 .view-enter {
   animation: fadeIn 250ms ease both;
@@ -804,161 +698,9 @@ body::before {
   40%            { transform: scale(1.2); opacity: 1.0; }
 }
 
-@keyframes skeletonShimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
-
-
-/* ── Library: Stats Cards ──────────────────────────────────────────────────── */
-.stats-row {
-  display: flex;
-  gap: 12px;
-  padding: 4px 20px 16px;
-}
-
-.stat-card {
-  flex: 1;
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  padding: 18px 16px 14px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  animation: fadeSlideUp 350ms ease both;
-  position: relative;
-  overflow: hidden;
-}
-
-.stat-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(ellipse at 50% 0%, var(--gold-glow), transparent 70%);
-  pointer-events: none;
-}
-
-.stat-icon {
-  font-size: 20px;
-  line-height: 1;
-  margin-bottom: 2px;
-}
-
-.stat-value {
-  font-family: var(--font-display);
-  font-size: 28px;
-  font-weight: 700;
-  background: linear-gradient(135deg, var(--gold-bright) 0%, var(--gold-primary) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  line-height: 1.1;
-}
-
-.stat-label {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.8px;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-/* ── Library: Most Played ──────────────────────────────────────────────────── */
-.most-played-list {
-  padding: 0 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.most-played-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 11px 14px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  cursor: pointer;
-  transition: border-color var(--transition-fast), transform var(--transition-fast);
-  animation: fadeSlideUp 350ms ease both;
-}
-
-.most-played-item:active {
-  transform: scale(0.98);
-  border-color: var(--border-accent);
-}
-
-.most-played-rank {
-  font-family: var(--font-display);
-  font-size: 13px;
-  font-weight: 700;
-  width: 28px;
-  text-align: center;
-  flex-shrink: 0;
-}
-
-.most-played-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.most-played-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.most-played-count {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 2px;
-}
-
-.most-played-play {
-  font-size: 14px;
-  flex-shrink: 0;
-  width: 24px;
-  text-align: center;
-  opacity: 0.8;
-}
-
-/* ── Library: Empty State ──────────────────────────────────────────────────── */
-.library-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 40px 32px;
-  gap: 10px;
-  text-align: center;
-}
-
-.library-empty-icon {
-  font-size: 38px;
-  animation: pulse 2.5s ease infinite;
-}
-
-.library-empty-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.library-empty-sub {
-  font-size: 13px;
-  color: var(--text-muted);
-  line-height: 1.5;
-}
-
-
 /* ════════════════════════════════════════════════════════════════════════════
    ADMIN DASHBOARD (Baraka Analytics)
 ════════════════════════════════════════════════════════════════════════════ */
-/* (Skipped redundant admin CSS for brevity, leaving original unchanged) */
 .a-root { min-height: 100vh; background: #050a14; font-family: 'Courier New', 'Monaco', monospace; color: #c8d8f0; padding: 0 0 60px; }
 .a-login { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 40px 24px; background: radial-gradient(ellipse at 50% 20%, #051a2e 0%, #050a14 70%); }
 .a-login-icon { font-size: 48px; margin-bottom: 8px; }
@@ -993,20 +735,10 @@ body::before {
 .a-loading::before { content: '⟳'; font-size: 18px; color: #00e5ff; animation: spinLoop 1s linear infinite; display: inline-block; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-/* ── Pull-to-Refresh & Directional Views (Unchanged) ─────────────────────── */
-.view-slide-left { animation: slideInFromRight 280ms cubic-bezier(0.4, 0, 0.2, 1) both; }
-.view-slide-right { animation: slideInFromLeft 280ms cubic-bezier(0.4, 0, 0.2, 1) both; }
-@keyframes slideInFromRight { from { opacity: 0.4; transform: translateX(28px); } to { opacity: 1; transform: translateX(0); } }
-@keyframes slideInFromLeft { from { opacity: 0.4; transform: translateX(-28px); } to { opacity: 1; transform: translateX(0); } }
-.pull-indicator { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; justify-content: center; height: 0; pointer-events: none; }
-.pull-spinner { width: 32px; height: 32px; border-radius: 50%; background: var(--bg-elevated); border: 1px solid var(--border-accent); display: flex; align-items: center; justify-content: center; font-size: 16px; color: var(--gold-primary); box-shadow: 0 2px 12px rgba(0,0,0,0.4); transition: transform var(--transition-fast); }
-.pull-spinner--spinning { animation: spinLoop 0.7s linear infinite; }
-@keyframes spinLoop { to { transform: rotate(360deg); } }
-
 
 /* ════════════════════════════════════════════════════════════════════════════
    2026 ULTRA-MODERN PDF VIEWER 
-   Features: Native Pinch-to-Zoom, Neo-Glassmorphism, Floating Action Button
+   Compact UI & Native Pinch-to-Zoom
 ════════════════════════════════════════════════════════════════════════════ */
 
 /* ── Container Overlay ── */
@@ -1041,21 +773,21 @@ body::before {
   z-index: 5;
 }
 
-/* ── Neo-Glassmorphism Header ── */
+/* ── Neo-Glassmorphism Header (COMPACT) ── */
 .pdf-glass-header {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  height: 60px;
+  height: 48px; /* Compact height */
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
+  padding: 0 10px; /* Reduced padding */
   padding-top: var(--safe-top);
-  background: rgba(10, 15, 26, 0.45);
-  backdrop-filter: blur(15px);
-  -webkit-backdrop-filter: blur(15px);
+  background: rgba(10, 15, 26, 0.55);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   z-index: 10;
 }
@@ -1066,12 +798,12 @@ body::before {
   align-items: center;
   flex: 1;
   min-width: 0;
-  padding: 0 12px;
+  padding: 0 8px;
 }
 
 .pdf-title-text {
   font-family: var(--font-display);
-  font-size: 15px;
+  font-size: 14px; /* Scaled down */
   font-weight: 700;
   color: var(--tg-theme-text-color, #fff);
   white-space: nowrap;
@@ -1082,15 +814,15 @@ body::before {
 
 .pdf-subtitle-text {
   font-family: var(--font-body);
-  font-size: 11px;
+  font-size: 10px; /* Scaled down */
   color: var(--tg-theme-hint-color, #8aacdb);
   margin-top: 2px;
   letter-spacing: 0.5px;
 }
 
 .pdf-action-btn {
-  width: 38px;
-  height: 38px;
+  width: 32px; /* Smaller button targets */
+  height: 32px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.05);
@@ -1100,6 +832,11 @@ body::before {
   color: var(--tg-theme-text-color, #fff);
   cursor: pointer;
   transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pdf-action-btn svg {
+  width: 18px;
+  height: 18px;
 }
 
 .pdf-action-btn:active {
@@ -1113,15 +850,15 @@ body::before {
   border-color: rgba(232, 184, 75, 0.2);
 }
 
-/* ── Viewer Body (Pinch-to-Zoom Engine) ── */
+/* ── Viewer Body (Stretches 100vh) ── */
 .pdf-body-container {
   flex: 1;
   position: relative;
   overflow: auto; /* Allows native scrolling */
   touch-action: pan-x pan-y pinch-zoom; /* NATIVE MULTI-TOUCH GESTURES */
   background: #0f141e;
-  padding-top: calc(60px + var(--safe-top) + 16px);
-  padding-bottom: 120px; /* Space for FAB */
+  padding-top: calc(48px + var(--safe-top) + 12px);
+  padding-bottom: 84px; /* Reduced to stretch fully while allowing the last line to clear the FAB */
   scroll-behavior: smooth;
   -webkit-overflow-scrolling: touch;
 }
@@ -1153,46 +890,83 @@ body::before {
   height: 100%;
   border: none;
   background: #fff;
+  border-radius: 12px;
 }
 
-/* ── Ultra-Modern Loading State ── */
-.pdf-ultra-loading {
-  position: absolute;
-  inset: 0;
+/* ── Realistic Skeleton Screen ── */
+.pdf-skeleton-wrapper {
+  width: 100%;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
   gap: 16px;
-  color: var(--tg-theme-hint-color, #8aacdb);
-  font-size: 13px;
-  letter-spacing: 1px;
 }
 
-.glow-spinner {
-  width: 40px;
-  height: 40px;
-  border: 3px solid rgba(232, 184, 75, 0.1);
-  border-top-color: var(--tg-theme-button-color, var(--gold-primary));
-  border-radius: 50%;
-  animation: adminSpin 0.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-  box-shadow: 0 0 20px rgba(232, 184, 75, 0.3);
+.pdf-skeleton-page {
+  width: 100%;
+  aspect-ratio: 1 / 1.414; /* A4 aspect ratio */
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  padding: 32px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  position: relative;
+  overflow: hidden;
+  opacity: 0.85;
 }
 
-/* ── Floating Action Button (FAB) CTA ── */
+/* Shimmer Sweep Animation */
+.pdf-skeleton-page::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(232, 184, 75, 0.08) 50%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  animation: skeletonShimmer 1.8s infinite;
+}
+
+@keyframes skeletonShimmer {
+  100% { transform: translateX(100%); }
+}
+
+.pdf-skeleton-title {
+  width: 50%;
+  height: 20px;
+  background: #e2e8f0;
+  border-radius: 4px;
+  margin-bottom: 24px;
+}
+
+.pdf-skeleton-line {
+  width: 100%;
+  height: 10px;
+  background: #f1f5f9;
+  border-radius: 4px;
+}
+
+.pdf-skeleton-line.short { width: 85%; }
+.pdf-skeleton-line.shorter { width: 65%; }
+
+/* ── True Floating Action Button (FAB) ── */
 .pdf-fab-container {
   position: absolute;
-  bottom: 32px;
+  bottom: 24px; /* Floating cleanly above bottom */
   left: 0;
   right: 0;
   display: flex;
   justify-content: center;
-  pointer-events: none; /* Let touches pass through surrounding area */
+  pointer-events: none; /* Touches pass through container to the PDF below */
   z-index: 20;
 }
 
 .pdf-fab-btn {
-  pointer-events: auto;
+  pointer-events: auto; /* Intercept touches on the button itself */
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1200,25 +974,26 @@ body::before {
   background: var(--tg-theme-button-color, var(--gold-primary));
   color: var(--tg-theme-button-text-color, #fff);
   border: none;
-  border-radius: 50px; /* Pill Shape */
+  border-radius: 50px; /* Premium Pill Shape */
   font-family: var(--font-body);
-  font-size: 15px;
+  font-size: 14px; /* Slightly smaller text */
   font-weight: 700;
   letter-spacing: 0.5px;
-  box-shadow: 0 8px 24px -6px var(--tg-theme-button-color, var(--gold-primary));
+  box-shadow: 0 10px 30px -6px rgba(0, 0, 0, 0.6), 0 0 15px rgba(232, 184, 75, 0.3);
   cursor: pointer;
-  transition: all 250ms cubic-bezier(0.34, 1.56, 0.64, 1); /* Spring transition */
+  backdrop-filter: blur(10px); /* Clean floating effect */
+  transition: all 250ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 /* Micro-interaction on Tap */
 .pdf-fab-btn:active:not(:disabled) {
-  transform: scale(0.92);
-  box-shadow: 0 4px 12px -4px var(--tg-theme-button-color, var(--gold-primary));
+  transform: scale(0.92) translateY(2px);
+  box-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.8);
 }
 
 .pdf-fab-btn.delivered {
   background: #34c759;
-  box-shadow: 0 8px 24px -6px #34c759;
+  box-shadow: 0 10px 30px -6px rgba(0, 0, 0, 0.5), 0 0 15px rgba(52, 199, 89, 0.3);
   color: #fff;
 }
 
@@ -1229,5 +1004,7 @@ body::before {
 }
 
 .pdf-fab-icon {
-  font-size: 18px;
+  font-size: 16px;
 }
+
+```
