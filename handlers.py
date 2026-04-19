@@ -7,6 +7,9 @@ import asyncio
 import logging
 import os
 import re
+import random
+import time
+from datetime import datetime, timezone
 from bson import ObjectId
 import aiohttp
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -96,6 +99,175 @@ async def _channel_mgmt_menu_text(db) -> str:
     else:
         text += "No channels configured. Bot is in open access mode.\n"
     return text + "\nWhat would you like to do?"
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  AL-MADIH ELITE BROADCAST ENGINE HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+_BML_TOKEN_RE = re.compile(
+    r"\[(?P<label>[^\]]+)\]\((?P<type>url|app|cb|switch|switch_cur):(?P<value>[^)]*)\)"
+)
+_BML_MACRO_RE = re.compile(
+    r"\{(?P<macro>latest_tracks|trending|latest_pdfs|random_track):?(?P<arg>\d*)\}"
+)
+
+async def _resolve_macro(db, macro: str, arg: str) -> list[dict]:
+    n = max(1, min(int(arg), 8)) if arg.isdigit() else 3
+    try:
+        if macro == "latest_tracks":
+            docs = await (
+                db.files
+                .find({"file_id": {"$exists": True}}, {"_id": 1, "display_name": 1})
+                .sort("_id", -1)
+                .limit(n)
+                .to_list(length=n)
+            )
+            return [{"text": f"🎵 {doc.get('display_name', 'Track')[:40]}", "callback_data": f"play_{doc['_id']}"} for doc in docs]
+
+        if macro == "trending":
+            pipeline = [
+                {"$match": {"listen_history": {"$exists": True, "$not": {"$size": 0}}}},
+                {"$unwind": "$listen_history"},
+                {"$match": {"listen_history.played_at": {"$gte": datetime(datetime.now(timezone.utc).year, datetime.now(timezone.utc).month, 1, tzinfo=timezone.utc)}}},
+                {"$group": {"_id": "$listen_history.track_id", "plays": {"$sum": 1}, "name": {"$first": "$listen_history.name"}}},
+                {"$sort": {"plays": -1}},
+                {"$limit": n},
+            ]
+            cursor = db.users.aggregate(pipeline)
+            docs   = await cursor.to_list(length=n)
+            buttons = []
+            for doc in docs:
+                try:
+                    file_doc = await db.files.find_one({"display_name": {"$regex": re.escape(doc.get("name", "")), "$options": "i"}}, {"_id": 1})
+                    oid = str(file_doc["_id"]) if file_doc else doc["_id"]
+                    buttons.append({"text": f"🔥 {doc.get('name', 'Track')[:38]} ({doc['plays']}▶)", "callback_data": f"play_{oid}"})
+                except Exception:
+                    continue
+            return buttons
+
+        if macro == "latest_pdfs":
+            docs = await (
+                db.pdfs
+                .find({"status": "approved"}, {"_id": 1, "title": 1})
+                .sort("approved_at", -1)
+                .limit(n)
+                .to_list(length=n)
+            )
+            return [{"text": f"📄 {doc.get('title', 'PDF')[:40]}", "callback_data": f"pdf_dl_{doc['_id']}"} for doc in docs]
+
+        if macro == "random_track":
+            count = await db.files.count_documents({"file_id": {"$exists": True}})
+            if count == 0: return []
+            skip  = random.randint(0, max(0, count - 1))
+            doc   = await db.files.find_one({"file_id": {"$exists": True}}, {"_id": 1, "display_name": 1}, skip=skip)
+            if not doc: return []
+            return [{"text": f"🎲 {doc.get('display_name', 'Discover')[:42]}", "callback_data": f"play_{doc['_id']}"}]
+
+    except Exception as exc:
+        logger.warning("_resolve_macro(%s) failed: %s", macro, exc)
+    return []
+
+async def _parse_bml(db, bml_text: str) -> tuple[list[list[dict]] | None, list[str]]:
+    keyboard: list[list[dict]] = []
+    errors:   list[str]        = []
+    for line_no, raw_line in enumerate(bml_text.strip().splitlines(), start=1):
+        line = raw_line.strip()
+        if not line: continue
+        macro_match = _BML_MACRO_RE.fullmatch(line)
+        if macro_match:
+            macro, arg = macro_match.group("macro"), macro_match.group("arg")
+            buttons = await _resolve_macro(db, macro, arg)
+            if not buttons:
+                errors.append(f"Line {line_no}: macro `{{{macro}}}` returned no results.")
+                continue
+            for btn in buttons: keyboard.append([btn])
+            continue
+
+        row: list[dict] = []
+        for seg in [s.strip() for s in line.split("|")]:
+            m = _BML_TOKEN_RE.fullmatch(seg)
+            if not m:
+                errors.append(f"Line {line_no}: could not parse `{seg[:60]}`. Expected format: [Label](type:value)")
+                continue
+            label, btype, value = m.group("label").strip(), m.group("type"), m.group("value").strip()
+
+            if btype == "url":
+                if not value.startswith(("http://", "https://", "tg://")): errors.append(f"Line {line_no}: URL must start with http/https/tg://")
+                else: row.append({"text": label, "url": value})
+            elif btype == "app":
+                if not value.startswith(("http://", "https://")): errors.append(f"Line {line_no}: WebApp URL must start with http/https")
+                else: row.append({"text": label, "web_app": {"url": value}})
+            elif btype == "cb":
+                if len(value.encode()) > 64: errors.append(f"Line {line_no}: callback_data exceeds 64 bytes.")
+                else: row.append({"text": label, "callback_data": value})
+            elif btype == "switch": row.append({"text": label, "switch_inline_query": value})
+            elif btype == "switch_cur": row.append({"text": label, "switch_inline_query_current_chat": value})
+
+        if row: keyboard.append(row)
+    return (keyboard if keyboard else None), errors
+
+def _bml_syntax_guide() -> str:
+    return (
+        "📋 *Broadcast Button Syntax (BML)*\n\n"
+        "Each line = one keyboard row. Use `|` to put buttons side by side.\n\n"
+        "*Button types:*\n"
+        "`[Label](url:https://...)` — link\n"
+        "`[Label](app:https://...)` — Mini App\n"
+        "`[Label](cb:callback_data)` — callback\n"
+        "`[Label](switch:query)` — inline search\n"
+        "`[Label](switch_cur:query)` — inline search in this chat\n\n"
+        "*Smart macros (one per line):*\n"
+        "`{latest_tracks:3}` — 3 newest tracks\n"
+        "`{trending:5}` — 5 most played this month\n"
+        "`{latest_pdfs:3}` — 3 newest approved PDFs\n"
+        "`{random_track}` — one surprise track\n\n"
+        "*Example:*\n"
+        "`[📖 Open App](app:https://almadih.vercel.app) | [📢 Channel](url:https://t.me/Al_madih)`\n"
+        "`{trending:3}`\n"
+        "`[🔀 Share](switch:)`\n\n"
+        "Send your BML now, or send /skip for no buttons."
+    )
+
+async def _execute_broadcast(session, db, admin_chat_id: int, msg_id: int, markup: dict | None) -> str:
+    total, failed, consecutive = 0, 0, 0
+    CIRCUIT_BREAKER, CHUNK_SLEEP, CHUNK_SIZE = 10, 0.025, 25
+
+    all_user_ids = []
+    async for u in db.users.find({}, {"_id": 1}): all_user_ids.append(u["_id"])
+    total_target = len(all_user_ids)
+
+    for i, uid in enumerate(all_user_ids):
+        if consecutive >= CIRCUIT_BREAKER:
+            return f"⚠️ Broadcast aborted at {total}/{total_target} — {CIRCUIT_BREAKER} consecutive errors triggered circuit breaker.\n✅ Delivered: {total}  ❌ Failed: {failed}"
+        try:
+            result = await copy_message(session, uid, admin_chat_id, msg_id, reply_markup=markup)
+            if result and result.get("ok") is False:
+                err_code = result.get("error_code", 0)
+                if err_code == 429:
+                    retry_after = result.get("parameters", {}).get("retry_after", 5)
+                    await asyncio.sleep(retry_after)
+                    result2 = await copy_message(session, uid, admin_chat_id, msg_id, reply_markup=markup)
+                    if result2 and result2.get("ok"):
+                        total += 1; consecutive = 0
+                    else:
+                        failed += 1; consecutive += 1
+                    continue
+                if err_code in (400, 403):
+                    failed += 1; consecutive = 0
+                    continue
+                failed += 1; consecutive += 1
+            else:
+                total += 1; consecutive = 0
+        except Exception as exc:
+            logger.warning("Broadcast send to %s failed: %s", uid, exc)
+            failed += 1; consecutive += 1
+
+        if (i + 1) % CHUNK_SIZE == 0: await asyncio.sleep(CHUNK_SLEEP * CHUNK_SIZE)
+        else: await asyncio.sleep(CHUNK_SLEEP)
+
+    return f"✅ Broadcast complete.\n📤 Delivered: *{total}* / {total_target}\n❌ Failed / blocked: {failed}"
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 async def _send_menu(session, db, chat_id, user_id: int, user_data: dict | None) -> None:
     result  = await send_message(session, chat_id, WELCOME_TEXT, reply_markup=get_main_menu_kb())
@@ -189,7 +361,6 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         await answer_callback_query(session, cb_id)
         return
 
-    # ── PDF Submit: start flow ────────────────────────────────────────────────
     if data_str == "pdf_submit_start":
         await set_user_state(db, user_id, "pdf_wait")
         kb = {"inline_keyboard": [[{"text": "❌ Cancel", "callback_data": "pdf_submit_cancel"}]]}
@@ -330,23 +501,22 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
     if data_str.startswith("broadcast_") and _is_admin(user_id):
         if data_str == "broadcast_confirm":
             admin_data = await get_user_data(db, user_id)
-            msg_id     = (admin_data or {}).get("broadcast_msg_id")
-            markup     = (admin_data or {}).get("broadcast_markup")
-            if msg_id:
-                await edit_message_text(session, chat_id, message_id, "🚀 Sending...")
-                count = 0
-                async for u in db.users.find({}, {"_id": 1}):
-                    try:
-                        await copy_message(session, u["_id"], chat_id, msg_id, reply_markup=markup)
-                        count += 1
-                        await asyncio.sleep(0.05)
-                    except Exception:
-                        pass
-                await send_message(session, chat_id, f"✅ Sent to {count} users.")
+            msg_id_bc  = (admin_data or {}).get("broadcast_msg_id")
+            markup_bc  = (admin_data or {}).get("broadcast_markup")
+            if msg_id_bc:
+                await edit_message_text(session, chat_id, message_id, "🚀 *Broadcasting…* please wait.")
+                summary = await _execute_broadcast(session, db, chat_id, msg_id_bc, markup_bc)
+                await send_message(session, chat_id, summary)
                 await set_user_state(db, user_id, "idle")
+
         elif data_str == "broadcast_cancel":
             await edit_message_text(session, chat_id, message_id, "❌ Broadcast cancelled.")
             await set_user_state(db, user_id, "idle")
+
+        elif data_str == "broadcast_edit_markup":
+            await set_user_state(db, user_id, "broadcast_markup_wait")
+            await send_message(session, chat_id, _bml_syntax_guide())
+
         await answer_callback_query(session, cb_id)
         return
 
@@ -406,7 +576,6 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             await answer_callback_query(session, cb_id)
             return
 
-
 async def handle_message(session, db, message: dict, channels: list[dict]) -> None:
     chat_id    = message.get("chat", {}).get("id")
     user_info  = message.get("from", {})
@@ -465,12 +634,10 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
         return
 
-        # ── PDF Wait: user was prompted to send a document ────────────────────────────
     if state == "pdf_wait":
         doc = message.get("document")
         if doc:
             fname = doc.get("file_name", "")
-            # ፒዲኤፍ ብቻ ሳይሆን txt, doc, docx, epub ይቀበላል
             if fname.lower().endswith((".pdf", ".txt", ".doc", ".docx", ".epub")):
                 try:
                     await copy_message(session, ADMIN_ID, chat_id, message.get("message_id"))
@@ -496,11 +663,9 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await send_message(session, chat_id, "📄 እባክዎ ፋይል (Document) አያይዘው ይላኩ — ፅሁፍ (Text) ብቻ አይላኩ።")
         return
 
-
     if text == "🔧 Manage Channels" and _is_admin(user_id):
         mgmt_text = await _channel_mgmt_menu_text(db)
         result = await send_message(session, chat_id, mgmt_text, reply_markup=get_channel_mgmt_kb())
-        # Safe error checker with NO markdown
         if not result or result.get("ok") is not True:
             await send_message(session, chat_id, "API Error showing menu: " + str(result)[:200])
         return
@@ -532,16 +697,12 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         return
 
     if _is_admin(user_id):
-                # ── Admin Document Upload to Database ──────────────────────────────────
         if "document" in message:
             doc = message.get("document")
             fname = doc.get("file_name", "")
             
-            # ብዙ አይነት ፋይሎችን እንዲቀበል ተደርጓል
             if fname.lower().endswith((".pdf", ".txt", ".doc", ".docx", ".epub")):
                 cap = message.get("caption", "").split("\n")[0].strip()
-                
-                # የፋይሉን extension (.txt, .pdf ወዘተ) ከርዕሱ ላይ ለማጥፋት
                 import os
                 clean_fname = os.path.splitext(fname)[0].strip()
                 title = cap if cap else clean_fname
@@ -564,7 +725,6 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 added    = await add_force_channel(db, username)
                 invalidate_channels_cache()
                 invalidate_all_membership_cache()
-                # Wrapped in backticks to protect from markdown errors
                 result_text = f"✅ `@{username}` added!" if added else f"⚠️ `@{username}` already exists."
                 await send_message(
                     session, chat_id, result_text,
@@ -587,15 +747,55 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 await set_user_state(db, user_id, "idle")
             return
 
-        if state == "broadcast_wait" and text != "🔙 Back" and text not in _ADMIN_KB_TEXTS and msg_id:
+        if state == "broadcast_wait" and text not in _ADMIN_KB_TEXTS and msg_id:
             await set_user_state(
-                db, user_id, "broadcast_confirm",
-                {"broadcast_msg_id": msg_id, "broadcast_markup": message.get("reply_markup")},
+                db, user_id, "broadcast_markup_wait",
+                {"broadcast_msg_id": msg_id},
             )
-            await copy_message(session, chat_id, chat_id, msg_id, reply_markup=message.get("reply_markup"))
+            await send_message(session, chat_id, _bml_syntax_guide())
+            return
+
+        if state == "broadcast_markup_wait" and text not in _ADMIN_KB_TEXTS:
+            admin_data = await get_user_data(db, user_id)
+            bc_msg_id  = (admin_data or {}).get("broadcast_msg_id")
+
+            if not bc_msg_id:
+                await send_message(session, chat_id, "⚠️ Session lost. Please start over with 📢 Broadcast.")
+                await set_user_state(db, user_id, "idle")
+                return
+
+            skip_markup = text.strip().lower() in ("/skip", "skip")
+            resolved_keyboard = None
+            parse_errors: list[str] = []
+
+            if not skip_markup:
+                resolved_keyboard, parse_errors = await _parse_bml(db, text)
+
+            reply_markup = {"inline_keyboard": resolved_keyboard} if resolved_keyboard else None
+
+            await set_user_state(
+                db, user_id, "broadcast_preview",
+                {"broadcast_markup": reply_markup},
+            )
+
+            if parse_errors:
+                warn_text = "⚠️ *Parse warnings (buttons with errors were skipped):*\n" + "\n".join(f"• {e}" for e in parse_errors)
+                await send_message(session, chat_id, warn_text)
+
+            await send_message(session, chat_id, "👁 *Live preview — this is exactly what users will receive:*")
+            await copy_message(session, chat_id, chat_id, bc_msg_id, reply_markup=reply_markup)
+
+            button_note = f"\n✅ *{sum(len(r) for r in resolved_keyboard)} button(s) attached across {len(resolved_keyboard)} row(s).*" if resolved_keyboard else "\n_(No buttons attached)_"
+
             await send_message(
-                session, chat_id, "Confirm broadcast?",
-                reply_markup={"inline_keyboard": [[{"text": "✅ Post", "callback_data": "broadcast_confirm"}], [{"text": "❌ Cancel", "callback_data": "broadcast_cancel"}]]},
+                session, chat_id,
+                f"Ready to broadcast to all users?{button_note}",
+                reply_markup={
+                    "inline_keyboard": [
+                        [{"text": "✅ Send to everyone", "callback_data": "broadcast_confirm"}, {"text": "✏️ Edit buttons", "callback_data": "broadcast_edit_markup"}],
+                        [{"text": "❌ Cancel", "callback_data": "broadcast_cancel"}],
+                    ]
+                },
             )
             return
 
@@ -621,7 +821,13 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
 
         if text == "📢 Broadcast":
             await set_user_state(db, user_id, "broadcast_wait")
-            await send_message(session, chat_id, "📢 Send the message you want to broadcast.")
+            await send_message(
+                session, chat_id,
+                "📢 *Step 1 of 2 — Broadcast Content*\n\n"
+                "Send the message you want to broadcast.\n"
+                "Supported: text, photo, video, document, audio — anything Telegram supports.\n\n"
+                "_After sending your content, I'll ask you to attach buttons (optional)._",
+            )
             return
 
         if text == "📂 Total Files":
@@ -634,27 +840,11 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             cap  = message.get("caption", "").split("\n")[0].strip()
             name = cap if cap else f.get("file_name", "Unknown")
             if len(name) > 3:
-                # ── Safe thumbnail extraction ────────────────────────────────
-                thumb_file_id = (
-                    message.get("audio", {})
-                           .get("thumbnail", {})
-                           .get("file_id")
-                    or
-                    message.get("audio", {})
-                           .get("thumb", {})
-                           .get("file_id")
-                ) 
-
+                thumb_file_id = (message.get("audio", {}).get("thumbnail", {}).get("file_id") or message.get("audio", {}).get("thumb", {}).get("file_id")) 
                 update_fields = {"file_id": f["file_id"], "display_name": name}
-                if thumb_file_id:
-                    update_fields["thumb_file_id"] = thumb_file_id
-
+                if thumb_file_id: update_fields["thumb_file_id"] = thumb_file_id
                 try:
-                    await db.files.update_one(
-                        {"display_name": {"$regex": re.escape(name), "$options": "i"}},
-                        {"$set": update_fields},
-                        upsert=True,
-                    )
+                    await db.files.update_one({"display_name": {"$regex": re.escape(name), "$options": "i"}}, {"$set": update_fields}, upsert=True)
                     thumb_status = " 🖼" if thumb_file_id else ""
                     await send_message(session, chat_id, f"✅ Saved: `{name}`{thumb_status}")
                 except Exception as db_err:
@@ -713,7 +903,6 @@ async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> No
 
     await answer_inline_query(session, query_id, results, cache_time=300)
 
-
 async def process_telegram_update(data: dict) -> None:
     if not MONGO_URL or not BOT_TOKEN:
         logger.error("MONGO_URL or BOT_TOKEN not set — aborting.")
@@ -740,4 +929,3 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
-
