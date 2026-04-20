@@ -148,7 +148,7 @@ async def _resolve_macro(db, macro: str, arg: str) -> list[dict]:
         if macro == "latest_pdfs":
             docs = await (
                 db.pdfs
-                .find({"status": "approved"}, {"_id": 1, "title": 1})
+                .find({}, {"_id": 1, "title": 1})
                 .sort("approved_at", -1)
                 .limit(n)
                 .to_list(length=n)
