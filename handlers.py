@@ -703,8 +703,16 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         sq  = build_search_query(text)
         doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
         if doc:
-            kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
-            await send_audio(session, chat_id, doc["file_id"], f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
+            matched_file_name = doc.get('display_name', 'Unknown')
+            if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
+                hostage_msg = (
+                    f"🎵 *{matched_file_name}* ተገኝቷል!\n\n"
+                    "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!"
+                )
+                await send_message(session, chat_id, hostage_msg, reply_markup=get_subscription_kb(channels))
+            else:
+                kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
+                await send_audio(session, chat_id, doc["file_id"], f"{matched_file_name}\n\n@{BOT_USERNAME}", reply_markup=kb)
         else:
             suggestions = await get_fuzzy_suggestions(db, text, limit=5)
             if suggestions:
@@ -874,15 +882,22 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
 
         if doc:
-            kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
-            await send_audio(session, chat_id, doc["file_id"], f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
+            matched_file_name = doc.get('display_name', 'Unknown')
+            if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
+                hostage_msg = (
+                    f"🎵 *{matched_file_name}* ተገኝቷል!\n\n"
+                    "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!"
+                )
+                await send_message(session, chat_id, hostage_msg, reply_markup=get_subscription_kb(channels))
+            else:
+                kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
+                await send_audio(session, chat_id, doc["file_id"], f"{matched_file_name}\n\n@{BOT_USERNAME}", reply_markup=kb)
         else:
             suggestions = await get_fuzzy_suggestions(db, text, limit=5)
             if suggestions:
                 await send_message(session, chat_id, "😔 የፈለጉት መንዙማ በቀጥታ አልተገኘም።\n\n_ምናልባት ከታች ያሉት ሊሆኑ ይችላሉ? አንዱን ይምረጡ፦_", reply_markup=get_fuzzy_suggestions_kb(suggestions))
             else:
                 await send_message(session, chat_id, "😔 የፈለጉት መንዙማ አልተገኘም።\nእባክዎ የተለየ ቃል ጽፈው ይሞክሩ ወይም 'ሙሉ ዝርዝር' የሚለውን ይጫኑ።", reply_markup=get_not_found_kb())
-
 
 async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> None:
     query_id   = iq["id"]
