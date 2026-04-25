@@ -148,7 +148,7 @@ async def _resolve_macro(db, macro: str, arg: str) -> list[dict]:
         if macro == "latest_pdfs":
             docs = await (
                 db.pdfs
-                .find({"status": "approved"}, {"_id": 1, "title": 1})
+                .find({}, {"_id": 1, "title": 1})
                 .sort("approved_at", -1)
                 .limit(n)
                 .to_list(length=n)
@@ -317,6 +317,11 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
 
     user_data  = await track_and_get_user(db, user_id, first_name)
 
+    if data_str != "check_subscription" and not _is_admin(user_id):
+        if not await check_membership(session, user_id, channels):
+            await answer_callback_query(session, cb_id, "⚠️ እባክዎ መጀመሪያ ቻናሉን ይቀላቀሉ!", show_alert=True)
+            return
+
     if data_str == "check_subscription":
         invalidate_membership_cache(user_id)
         if await check_membership(session, user_id, channels):
@@ -339,17 +344,6 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         else:
             await answer_callback_query(session, cb_id, "❌ አሁንም አልተቀላቀሉም! ቻናሉን Join ይበሉ", show_alert=True)
         return
-
-    # ── Hook & Lock: Enforce join ONLY when trying to play audio or download PDF ──
-    if data_str.startswith("play_") or data_str.startswith("pdf_dl_"):
-        if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
-            await answer_callback_query(session, cb_id, "⚠️ እባክዎ መጀመሪያ ቻናሉን ይቀላቀሉ!", show_alert=True)
-            await send_message(
-                session, chat_id,
-                "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!",
-                reply_markup=get_subscription_kb(channels)
-            )
-            return
 
     if data_str == "support_start":
         await set_user_state(db, user_id, "support_wait")
@@ -462,28 +456,36 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         except Exception:
             await answer_callback_query(session, cb_id, "❌ Error")
         return
-
+            # ── PDF Download Callback (ለብሮድካስት እና ለሌሎችም) ───────────────
     if data_str.startswith("pdf_dl_"):
-        pdf_id = data_str.replace("pdf_dl_", "")
-        try:
-            pdf_doc = await db.pdfs.find_one({"_id": ObjectId(pdf_id)})
-            if pdf_doc and "file_id" in pdf_doc:
-                bot_token = os.environ.get("BOT_TOKEN")
-                url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
-                payload = {
-                    "chat_id": chat_id,
-                    "document": pdf_doc["file_id"],
-                    "caption": f"📄 {pdf_doc.get('title', '')}\n\n✨ @{BOT_USERNAME}"
-                }
-                await session.post(url, json=payload)
-                await db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$inc": {"download_count": 1}})
-            else:
-                await answer_callback_query(session, cb_id, "❌ ይቅርታ፣ ፋይሉ አልተገኘም!", show_alert=True)
-                return
-        except Exception as e:
-            logger.error("PDF DL Error: %s", e)
-        await answer_callback_query(session, cb_id)
-        return
+            pdf_id = data_str.replace("pdf_dl_", "")
+            from bson import ObjectId
+            import os
+            
+            try:
+                pdf_doc = await db.pdfs.find_one({"_id": ObjectId(pdf_id)})
+                if pdf_doc and "file_id" in pdf_doc:
+                    # ፒዲኤፉን በቀጥታ ለተጠቃሚው መላክ
+                    bot_token = os.environ.get("BOT_TOKEN") # የቦትህን ቶከን ከ environment ይወስዳል
+                    url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+                    payload = {
+                        "chat_id": chat_id,
+                        "document": pdf_doc["file_id"],
+                        "caption": f"📄 {pdf_doc.get('title', '')}\n\n✨ @Almadihbot"
+                    }
+                    await session.post(url, json=payload)
+                    
+                    # የዳውንሎድ ቁጥሩን (Download Count) ማሳደግ
+                    await db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$inc": {"download_count": 1}})
+                else:
+                    # ፋይሉ ከዳታቤዝ ከጠፋ
+                    await answer_callback_query(session, cb_id, "❌ ይቅርታ፣ ፋይሉ አልተገኘም!", show_alert=True)
+                    return
+            except Exception as e:
+                print(f"PDF DL Error: {e}")
+            
+            await answer_callback_query(session, cb_id)
+            return
 
     if data_str.startswith("reply_") and _is_admin(user_id):
         target_user_id = data_str.split("_")[1]
@@ -615,6 +617,19 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     user_data = await track_and_get_user(db, user_id, first_name)
     state     = user_data.get("state")
 
+    if not _is_admin(user_id):
+        if not await check_membership(session, user_id, channels):
+            parts       = text.split(" ", 1) if text.startswith("/start") else []
+            start_param = parts[1].strip() if len(parts) > 1 else None
+            if start_param:
+                await save_pending_start(db, user_id, start_param)
+            await send_message(
+                session, chat_id,
+                "**⚠️ አሰላሙ አለይኩም! ቦቱን ለመጠቀም እባክዎ መጀመሪያ ቻናላችንን ይቀላቀሉ።**",
+                reply_markup=get_subscription_kb(channels),
+            )
+            return
+
     if text and (text == "/start" or text.startswith("/start ")):
         await delete_message(session, chat_id, msg_id)
         old_menu_id = user_data.get("last_menu_msg_id")
@@ -623,8 +638,6 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
 
         parts       = text.split(" ", 1)
         start_param = parts[1].strip() if len(parts) > 1 else None
-        
-        # Free exploration allows this playlist to be played if deep linked
         if start_param and start_param.startswith("pl_"):
             playlist = await get_playlist(db, start_param)
             if playlist:
@@ -703,16 +716,8 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         sq  = build_search_query(text)
         doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
         if doc:
-            matched_file_name = doc.get('display_name', 'Unknown')
-            if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
-                hostage_msg = (
-                    f"🎵 *{matched_file_name}* ተገኝቷል!\n\n"
-                    "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!"
-                )
-                await send_message(session, chat_id, hostage_msg, reply_markup=get_subscription_kb(channels))
-            else:
-                kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
-                await send_audio(session, chat_id, doc["file_id"], f"{matched_file_name}\n\n@{BOT_USERNAME}", reply_markup=kb)
+            kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
+            await send_audio(session, chat_id, doc["file_id"], f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
         else:
             suggestions = await get_fuzzy_suggestions(db, text, limit=5)
             if suggestions:
@@ -882,22 +887,15 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
 
         if doc:
-            matched_file_name = doc.get('display_name', 'Unknown')
-            if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
-                hostage_msg = (
-                    f"🎵 *{matched_file_name}* ተገኝቷል!\n\n"
-                    "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!"
-                )
-                await send_message(session, chat_id, hostage_msg, reply_markup=get_subscription_kb(channels))
-            else:
-                kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
-                await send_audio(session, chat_id, doc["file_id"], f"{matched_file_name}\n\n@{BOT_USERNAME}", reply_markup=kb)
+            kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
+            await send_audio(session, chat_id, doc["file_id"], f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
         else:
             suggestions = await get_fuzzy_suggestions(db, text, limit=5)
             if suggestions:
                 await send_message(session, chat_id, "😔 የፈለጉት መንዙማ በቀጥታ አልተገኘም።\n\n_ምናልባት ከታች ያሉት ሊሆኑ ይችላሉ? አንዱን ይምረጡ፦_", reply_markup=get_fuzzy_suggestions_kb(suggestions))
             else:
                 await send_message(session, chat_id, "😔 የፈለጉት መንዙማ አልተገኘም።\nእባክዎ የተለየ ቃል ጽፈው ይሞክሩ ወይም 'ሙሉ ዝርዝር' የሚለውን ይጫኑ።", reply_markup=get_not_found_kb())
+
 
 async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> None:
     query_id   = iq["id"]
