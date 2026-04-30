@@ -466,11 +466,9 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         return
             # ── PDF Download Callback (ለብሮድካስት እና ለሌሎችም) ───────────────
     if data_str.startswith("pdf_dl_"):
-            pdf_id = data_str.replace("pdf_dl_", "")
-            from bson import ObjectId
-            import os
-            
-            try:
+    pdf_id = data_str.replace("pdf_dl_", "")
+    
+    try:
                 pdf_doc = await db.pdfs.find_one({"_id": ObjectId(pdf_id)})
                 if pdf_doc and "file_id" in pdf_doc:
                     # ፒዲኤፉን በቀጥታ ለተጠቃሚው መላክ
