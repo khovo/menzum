@@ -466,32 +466,32 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         return
             # ── PDF Download Callback (ለብሮድካስት እና ለሌሎችም) ───────────────
     if data_str.startswith("pdf_dl_"):
-    pdf_id = data_str.replace("pdf_dl_", "")
-    
-    try:
-                pdf_doc = await db.pdfs.find_one({"_id": ObjectId(pdf_id)})
-                if pdf_doc and "file_id" in pdf_doc:
-                    # ፒዲኤፉን በቀጥታ ለተጠቃሚው መላክ
-                    bot_token = os.environ.get("BOT_TOKEN") # የቦትህን ቶከን ከ environment ይወስዳል
-                    url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
-                    payload = {
-                        "chat_id": chat_id,
-                        "document": pdf_doc["file_id"],
-                        "caption": f"📄 {pdf_doc.get('title', '')}\n\n✨ @Almadihbot"
-                    }
-                    await session.post(url, json=payload)
-                    
-                    # የዳውንሎድ ቁጥሩን (Download Count) ማሳደግ
-                    await db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$inc": {"download_count": 1}})
-                else:
-                    # ፋይሉ ከዳታቤዝ ከጠፋ
-                    await answer_callback_query(session, cb_id, "❌ ይቅርታ፣ ፋይሉ አልተገኘም!", show_alert=True)
-                    return
-            except Exception as e:
-                print(f"PDF DL Error: {e}")
-            
-            await answer_callback_query(session, cb_id)
-            return
+        pdf_id = data_str.replace("pdf_dl_", "")
+        
+        try:
+            pdf_doc = await db.pdfs.find_one({"_id": ObjectId(pdf_id)})
+            if pdf_doc and "file_id" in pdf_doc:
+                # ፒዲኤፉን በቀጥታ ለተጠቃሚው መላክ
+                bot_token = os.environ.get("BOT_TOKEN")
+                url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+                payload = {
+                    "chat_id": chat_id,
+                    "document": pdf_doc["file_id"],
+                    "caption": f"📄 {pdf_doc.get('title', '')}\n\n✨ @Almadihbot"
+                }
+                await session.post(url, json=payload)
+                
+                # የዳውንሎድ ቁጥሩን (Download Count) ማሳደግ
+                await db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$inc": {"download_count": 1}})
+            else:
+                # ፋይሉ ከዳታቤዝ ከጠፋ
+                await answer_callback_query(session, cb_id, "❌ ይቅርታ፣ ፋይሉ አልተገኘም!", show_alert=True)
+                return
+        except Exception as e:
+            logger.error(f"PDF DL Error: {e}")
+        
+        await answer_callback_query(session, cb_id)
+        return
 
     if data_str.startswith("reply_") and _is_admin(user_id):
         target_user_id = data_str.split("_")[1]
