@@ -1,49 +1,59 @@
-import { useEffect, useState } from 'react';
+/**
+ * hooks/useTelegram.js
+ * --------------------
+ * Initialises the Telegram WebApp SDK and exposes everything the app needs.
+ *
+ * Graceful dev-mode fallback: when opened in a normal browser (not Telegram),
+ * returns dummy data so the UI renders without crashing.
+ */
+
+import { useState, useEffect, useCallback } from 'react';
 
 export function useTelegram() {
-  const [tg, setTg] = useState(null);
+  const [webApp,   setWebApp]   = useState(null);
+  const [initData, setInitData] = useState('');
+  const [tgUser,   setTgUser]   = useState(null);
+  const [isReady,  setIsReady]  = useState(false);
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.Telegram && window.Telegram.WebApp) {
-      const webApp = window.Telegram.WebApp;
+    const tg = typeof window !== 'undefined' ? window?.Telegram?.WebApp : null;
 
-      webApp.ready();
+    if (tg) {
+      // ── Production: running inside Telegram ─────────────────────────────
+      tg.ready();                           // tell Telegram the app is loaded
+      tg.expand();                          // request full-screen mode
+      tg.setHeaderColor('#080d1a');         // match --bg-base
+      tg.setBackgroundColor('#080d1a');
 
-      try {
-        webApp.expand();
-      } catch (error) {
-        console.warn('[useTelegram] Failed to expand WebApp:', error);
-      }
+      // Disable the native Telegram close-confirmation (we handle our own UX)
+      tg.enableClosingConfirmation?.();
 
-      try {
-        webApp.setHeaderColor('#080d1a');
-        webApp.setBackgroundColor('#080d1a');
-        if (webApp.enableClosingConfirmation) {
-          webApp.enableClosingConfirmation();
-        }
-      } catch (error) {
-        console.warn('[useTelegram] Failed to apply UI styles:', error);
-      }
-
-      setTg(webApp);
+      setWebApp(tg);
+      setInitData(tg.initData || '');
+      setTgUser(tg.initDataUnsafe?.user || null);
     } else {
+      // ── Dev mode: running in a browser ──────────────────────────────────
       console.warn('[useTelegram] Not running inside Telegram. Using dev fallback.');
-      setTg({
-        initData: 'dev_mode',
-        initDataUnsafe: {
-          user: { id: 0, first_name: 'Developer', username: 'dev' }
-        },
-        close: () => console.log('[useTelegram] close() called in dev mode')
-      });
+      setInitData('dev_mode');
+      setTgUser({ id: 0, first_name: 'Developer', username: 'dev' });
     }
+
+    setIsReady(true);
   }, []);
 
-  return {
-    tg,
-    user: tg?.initDataUnsafe?.user,
-    initData: tg?.initData,
-    initDataUnsafe: tg?.initDataUnsafe,
-    queryId: tg?.initDataUnsafe?.query_id,
-    close: () => tg?.close(),
-  };
+  // Convenience: show a native Telegram alert
+  const showAlert = useCallback((message) => {
+    if (webApp?.showAlert) {
+      webApp.showAlert(message);
+    } else {
+      alert(message);
+    }
+  }, [webApp]);
+
+  // Convenience: trigger haptic feedback on track play
+  const hapticImpact = useCallback((style = 'medium') => {
+    webApp?.HapticFeedback?.impactOccurred?.(style);
+  }, [webApp]);
+
+  return { webApp, initData, tgUser, isReady, showAlert, hapticImpact };
 }
