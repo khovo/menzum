@@ -1,9 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 export function useTelegram() {
   const [tg, setTg] = useState(null);
-  const [user, setUser] = useState(null);
-  const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
     if (typeof window !== 'undefined' && window.Telegram && window.Telegram.WebApp) {
@@ -28,22 +26,24 @@ export function useTelegram() {
       }
 
       setTg(webApp);
-      setUser(webApp.initDataUnsafe?.user || null);
     } else {
       console.warn('[useTelegram] Not running inside Telegram. Using dev fallback.');
-      setUser({ id: 0, first_name: 'Developer', username: 'dev' });
+      setTg({
+        initData: 'dev_mode',
+        initDataUnsafe: {
+          user: { id: 0, first_name: 'Developer', username: 'dev' }
+        },
+        close: () => console.log('[useTelegram] close() called in dev mode')
+      });
     }
-
-    setIsReady(true);
   }, []);
 
-  const close = () => {
-    if (tg) {
-      tg.close();
-    }
+  return {
+    tg,
+    user: tg?.initDataUnsafe?.user,
+    initData: tg?.initData,
+    initDataUnsafe: tg?.initDataUnsafe,
+    queryId: tg?.initDataUnsafe?.query_id,
+    close: () => tg?.close(),
   };
-
-  const queryId = tg?.initDataUnsafe?.query_id || null;
-
-  return { tg, user, isReady, queryId, close };
 }
