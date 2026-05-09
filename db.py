@@ -403,3 +403,4 @@ async def increment_playlist_plays(db, playlist_id: str) -> None:
         )
     except Exception:
         pass
+
