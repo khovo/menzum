@@ -333,7 +333,7 @@ async def copy_message(
 # ── UI / Keyboard Builders ────────────────────────────────────────────────────
 
 def get_main_menu_kb() -> dict:
-    """Main menu. WebApp button added alongside PDF submission."""
+    """Main menu. WebApp button added alongside Playlist."""
     return {
         "inline_keyboard": [
             [
@@ -345,9 +345,7 @@ def get_main_menu_kb() -> dict:
             ],
             [
                 {"text": "🎧 Create Playlist", "callback_data": "pl_start"},
-                {"text": "📄 Send PDF",         "callback_data": "pdf_submit_start"},
             ],
-            [{"text": "📞 አስተያየት ለመስጠት (Support)", "callback_data": "support_start"}],
             [{"text": "🔍 Search Name", "switch_inline_query_current_chat": ""}],
         ]
     }
@@ -419,4 +417,3 @@ def get_channel_mgmt_kb() -> dict:
             [{"text": "❌ Close", "callback_data": "admin_ch_close"}],
         ]
     }
-
