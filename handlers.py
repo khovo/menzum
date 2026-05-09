@@ -1,4 +1,3 @@
-```python
 """
 handlers.py
 -----------
@@ -890,4 +889,3 @@ async def process_telegram_update(data: dict) -> None:
             db_client.close()
 
 
-```
