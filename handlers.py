@@ -17,7 +17,6 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from config import BOT_TOKEN, MONGO_URL, DB_NAME, ADMIN_ID
 from db import (
     track_and_get_user,
-    update_user_language,
     save_last_menu_msg_id,
     save_pending_start,
     toggle_favorite,
@@ -52,7 +51,6 @@ from utils import (
     copy_message,
     get_inline_empty_cache,
     set_inline_empty_cache,
-    get_main_menu_kb,
     get_not_found_kb,
     get_fuzzy_suggestions_kb,
     get_playlist_fuzzy_kb,
@@ -60,11 +58,19 @@ from utils import (
     get_subscription_kb,
     get_channel_mgmt_kb,
 )
-from texts import get_text
 
 logger = logging.getLogger(__name__)
 
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "Almadihbot")
+
+WELCOME_TEXT = (
+    "<tg-emoji emoji-id=\"5769143090103193926\">🌙</tg-emoji> አሰላሙ አለይኩም! ወደ Al-Madih ቦት እንኳን በደህና መጡ። <tg-emoji emoji-id=\"5769143090103193926\">🌙</tg-emoji>\n\n"
+    "<tg-emoji emoji-id=\"5337110598926766115\">⭐️</tg-emoji> የሚፈልጉትን መንዙማ ወይም ነሺዳ ርዕስ አሁኑኑ ጽፈው ይላኩ። <tg-emoji emoji-id=\"5384110834068783570\">💬</tg-emoji>\n\n"
+    "<tg-emoji emoji-id=\"5384111778961588478\">⚡️</tg-emoji> ፈልግ (Search)\n"
+    "<tg-emoji emoji-id=\"5384485342332093352\">⚡️</tg-emoji> ማውጫ (Catalog)\n"
+    "<tg-emoji emoji-id=\"4904882772637648609\">⏰</tg-emoji> ፕሌይሊስት (Playlist)\n"
+    "<tg-emoji emoji-id=\"5116368680279606270\">♥️</tg-emoji> ተወዳጆች (Favorites)"
+)
 
 def _is_admin(user_id) -> bool:
     return str(user_id) == str(ADMIN_ID)
@@ -83,6 +89,21 @@ _ADMIN_KB_TEXTS = {
 # ─────────────────────────────────────────────────────────────────────────────
 #  CUSTOM LOCAL HELPERS FOR HTML TEXT & REACTIONS
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _get_main_menu_kb_local() -> dict:
+    return {
+        "inline_keyboard": [
+            [{"text": "🌐 Open Al-Madih", "web_app": {"url": "https://almadih.vercel.app/"}}],
+            [
+                {"text": "🔍 ፈልግ (Search)", "switch_inline_query_current_chat": ""},
+                {"text": "📂 ማውጫ (Catalog)", "callback_data": "pg_1"},
+            ],
+            [
+                {"text": "🎧 ፕሌይሊስት (Playlist)", "callback_data": "pl_start"},
+                {"text": "❤️ ተወዳጆች (Favorites)", "switch_inline_query_current_chat": "#favorites"},
+            ]
+        ]
+    }
 
 async def _send_html_message(session, chat_id, text: str, reply_markup=None) -> dict | None:
     if not BOT_TOKEN: return None
@@ -117,6 +138,7 @@ async def _react_to_message(session, chat_id: int, message_id: int, emoji: str):
     except Exception as e:
         print(f"Failed to set reaction: {e}")
 
+
 async def _channel_mgmt_menu_text(db) -> str:
     channels = await get_force_channels(db)
     text = "📢 *Channel Management*\n\n"
@@ -137,7 +159,7 @@ _BML_MACRO_RE = re.compile(
     r"\{(?P<macro>latest_tracks|trending|latest_pdfs|random_track):?(?P<arg>\d*)\}"
 )
 
-async def _resolve_macro(db, macro: str, arg: str, lang: str = "am") -> list[dict]:
+async def _resolve_macro(db, macro: str, arg: str) -> list[dict]:
     n = max(1, min(int(arg), 8)) if arg.isdigit() else 3
     try:
         if macro == "latest_tracks":
@@ -193,7 +215,7 @@ async def _resolve_macro(db, macro: str, arg: str, lang: str = "am") -> list[dic
         logger.warning("_resolve_macro(%s) failed: %s", exc)
     return []
 
-async def _parse_bml(db, bml_text: str, lang: str = "am") -> tuple[list[list[dict]] | None, list[str]]:
+async def _parse_bml(db, bml_text: str) -> tuple[list[list[dict]] | None, list[str]]:
     keyboard: list[list[dict]] = []
     errors:   list[str]        = []
     for line_no, raw_line in enumerate(bml_text.strip().splitlines(), start=1):
@@ -202,7 +224,7 @@ async def _parse_bml(db, bml_text: str, lang: str = "am") -> tuple[list[list[dic
         macro_match = _BML_MACRO_RE.fullmatch(line)
         if macro_match:
             macro, arg = macro_match.group("macro"), macro_match.group("arg")
-            buttons = await _resolve_macro(db, macro, arg, lang)
+            buttons = await _resolve_macro(db, macro, arg)
             if not buttons:
                 errors.append(f"Line {line_no}: macro `{{{macro}}}` returned no results.")
                 continue
@@ -296,15 +318,14 @@ async def _execute_broadcast(session, db, admin_chat_id: int, msg_id: int, marku
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _send_menu(session, db, chat_id, user_id: int, user_data: dict | None) -> None:
-    lang = user_data.get("language", "am") if user_data else "am"
-    result  = await _send_html_message(session, chat_id, get_text(lang, "WELCOME"), reply_markup=get_main_menu_kb(lang))
+    result  = await _send_html_message(session, chat_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
     if result and result.get("ok"):
         await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
 
-async def _deliver_playlist(session, db, chat_id, playlist: dict, lang: str = "am") -> None:
+async def _deliver_playlist(session, db, chat_id, playlist: dict) -> None:
     tracks = playlist.get("tracks", [])
     if not tracks:
-        await send_message(session, chat_id, get_text(lang, "PL_EMPTY"))
+        await send_message(session, chat_id, "⚠️ ፕሌይሊስቱ ባዶ ነው! ቢያንስ አንድ መንዙማ ያክሉ።")
         return
 
     playlist_id = playlist["_id"]
@@ -312,7 +333,7 @@ async def _deliver_playlist(session, db, chat_id, playlist: dict, lang: str = "a
 
     if len(tracks) == 1:
         t  = tracks[0]
-        kb = {"inline_keyboard": [[{"text": get_text(lang, "BTN_FAV_ADD"), "switch_inline_query_current_chat": t["name"][:30]}]]}
+        kb = {"inline_keyboard": [[{"text": "❤️ Fav", "switch_inline_query_current_chat": t["name"][:30]}]]}
         res = await send_audio(
             session, chat_id, t["file_id"],
             f"🎵 {t['name']}\n\n📋 Playlist by user {creator_id}\n@{BOT_USERNAME}",
@@ -347,30 +368,26 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
     first_name = user.get("first_name", "User")
 
     user_data  = await track_and_get_user(db, user_id, first_name)
-    lang       = user_data.get("language", "am") if user_data else "am"
-
-    if data_str.startswith("setlang_"):
-        new_lang = data_str.split("_")[1]
-        await update_user_language(db, user_id, new_lang)
-        await answer_callback_query(session, cb_id, get_text(new_lang, "LANG_UPDATED"))
-        await _edit_html_message(session, chat_id, message_id, get_text(new_lang, "WELCOME"), reply_markup=get_main_menu_kb(new_lang))
-        return
 
     # ── Hook & Lock: Enforce join ONLY when trying to play audio or download PDF ──
     if data_str.startswith("play_") or data_str.startswith("pdf_dl_"):
         if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
-            await answer_callback_query(session, cb_id, get_text(lang, "MSG_JOIN_REQ"), show_alert=True)
+            await answer_callback_query(session, cb_id, "⚠️ እባክዎ መጀመሪያ ቻናሉን ይቀላቀሉ!", show_alert=True)
             await send_message(
                 session, chat_id,
-                get_text(lang, "MSG_JOIN_DESC"),
-                reply_markup=get_subscription_kb(lang, channels)
+                "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!",
+                reply_markup=get_subscription_kb(channels)
             )
             return
+
+    if data_str != "check_subscription" and not _is_admin(user_id):
+        # We bypass global gatekeeper here, we only gatekeep specific actions like playback
+        pass
 
     if data_str == "check_subscription":
         invalidate_membership_cache(user_id)
         if await check_membership(session, user_id, channels):
-            await answer_callback_query(session, cb_id, "✅")
+            await answer_callback_query(session, cb_id, "✅ እንኳን ደህና መጡ!")
             pending = user_data.get("pending_start")
             if pending and pending.startswith("pl_"):
                 await save_pending_start(db, user_id, None)
@@ -380,22 +397,22 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
                         session, chat_id, message_id,
                         f"🎧 *Playing playlist* `{pending}` — {len(playlist.get('tracks', []))} tracks\n\n@{BOT_USERNAME}",
                     )
-                    await _deliver_playlist(session, db, chat_id, playlist, lang)
-                    result = await _send_html_message(session, chat_id, get_text(lang, "WELCOME"), reply_markup=get_main_menu_kb(lang))
+                    await _deliver_playlist(session, db, chat_id, playlist)
+                    result = await _send_html_message(session, chat_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
                     if result and result.get("ok"):
                         await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
                     return
-            await _edit_html_message(session, chat_id, message_id, get_text(lang, "WELCOME"), reply_markup=get_main_menu_kb(lang))
+            await _edit_html_message(session, chat_id, message_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
         else:
-            await answer_callback_query(session, cb_id, get_text(lang, "MSG_JOIN_REQ"), show_alert=True)
+            await answer_callback_query(session, cb_id, "❌ አሁንም አልተቀላቀሉም! ቻናሉን Join ይበሉ", show_alert=True)
         return
 
     if data_str == "pl_start":
         await set_user_state(db, user_id, "playlist_builder", {"building_playlist": [], "pl_ctrl_msg_id": message_id})
         await edit_message_text(
             session, chat_id, message_id,
-            get_text(lang, "PL_BUILDER", count=0),
-            reply_markup=get_playlist_builder_kb(lang, 0),
+            "🎧 *የፕሌይሊስት ማዘጋጃ (Playlist Builder)* — 0/10\n\nየመንዙማውን ስም ይፈልጉ እና ➕ የሚለውን በመጫን ወደ ስብስብዎ ያክሉ።\n\n_እስከ 10 መንዙማ መምረጥ ይችላሉ። ሲጨርሱ ✅ Save የሚለውን ይጫኑ።_",
+            reply_markup=get_playlist_builder_kb(0),
         )
         await answer_callback_query(session, cb_id)
         return
@@ -404,20 +421,20 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         doc_id = data_str.split("pl_add_")[1]
         count  = await add_track_to_building_playlist(db, user_id, doc_id)
         if count == -2:
-            await answer_callback_query(session, cb_id, get_text(lang, "PL_EXISTS"), show_alert=False)
+            await answer_callback_query(session, cb_id, "⚠️ Already in playlist!", show_alert=False)
             return
         if count == -1:
-            await answer_callback_query(session, cb_id, get_text(lang, "PL_MAX"), show_alert=True)
+            await answer_callback_query(session, cb_id, "🎵 ከ 10 በላይ መንዙማ መጨመር አይቻልም!", show_alert=True)
             return
 
-        await answer_callback_query(session, cb_id, get_text(lang, "PL_ADDED", count=count))
+        await answer_callback_query(session, cb_id, f"➕ Added! ({count}/10)")
         user_data = await get_user_data(db, user_id)
         ctrl_msg_id = (user_data or {}).get("pl_ctrl_msg_id")
         if ctrl_msg_id:
             await edit_message_text(
                 session, chat_id, ctrl_msg_id,
-                get_text(lang, "PL_BUILDER", count=count),
-                reply_markup=get_playlist_builder_kb(lang, count),
+                f"🎧 *የፕሌይሊስት ማዘጋጃ (Playlist Builder)* — {count}/10\n\nየመንዙማውን ስም ይፈልጉ እና ➕ የሚለውን በመጫን ወደ ስብስብዎ ያክሉ።\n\n_እስከ 10 መንዙማ መምረጥ ይችላሉ። ሲጨርሱ ✅ Save የሚለውን ይጫኑ።_",
+                reply_markup=get_playlist_builder_kb(count),
             )
         return
 
@@ -425,7 +442,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         user_data   = await get_user_data(db, user_id)
         doc_ids     = (user_data or {}).get("building_playlist", [])
         if not doc_ids:
-            await answer_callback_query(session, cb_id, get_text(lang, "PL_EMPTY"), show_alert=True)
+            await answer_callback_query(session, cb_id, "⚠️ ቢያንስ አንድ መንዙማ ያክሉ!", show_alert=True)
             return
 
         await answer_callback_query(session, cb_id, "⏳ Saving playlist...")
@@ -433,19 +450,20 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         await set_user_state(db, user_id, "idle", {"building_playlist": [], "pl_ctrl_msg_id": None})
 
         if not playlist_id:
-            await _edit_html_message(session, chat_id, message_id, "❌ Failed to save playlist.", reply_markup=get_main_menu_kb(lang))
+            await _edit_html_message(session, chat_id, message_id, "❌ Failed to save playlist.", reply_markup=_get_main_menu_kb_local())
             return
 
         deep_link = f"https://t.me/{BOT_USERNAME}?start={playlist_id}"
+        share_text = f"✅ *Playlist Saved!*\n\n🔗 *Share this link:*\n`{deep_link}`\n\n_ይህን ሊንክ የሚጫን ማንኛውም ሰው ያዘጋጁትን Playlist ወዲያውኑ ማዳመጥ ይችላል!_"
         await edit_message_text(
-            session, chat_id, message_id, get_text(lang, "PL_SAVED", link=deep_link),
+            session, chat_id, message_id, share_text,
             reply_markup={"inline_keyboard": [[{"text": "🏠 Main Menu", "callback_data": "pg_close"}]]},
         )
         return
 
     if data_str == "pl_cancel":
         await set_user_state(db, user_id, "idle", {"building_playlist": [], "pl_ctrl_msg_id": None})
-        await _edit_html_message(session, chat_id, message_id, get_text(lang, "WELCOME"), reply_markup=get_main_menu_kb(lang))
+        await _edit_html_message(session, chat_id, message_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
         await answer_callback_query(session, cb_id, "❌ Playlist cancelled.")
         return
 
@@ -461,7 +479,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
                     file_doc = None
 
             if file_doc and file_doc.get("file_id"):
-                kb = {"inline_keyboard": [[{"text": get_text(lang, "BTN_ADD_PLAYLIST"), "callback_data": f"pl_add_{doc_id}"}], [{"text": get_text(lang, "BTN_FAV_ADD"), "callback_data": f"fav_{doc_id}"}]]}
+                kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{doc_id}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{doc_id}"}]]}
                 res = await send_audio(session, chat_id, file_doc.get("file_id"), f"{file_doc.get('display_name', 'Unknown')}\n\n@{BOT_USERNAME}", reply_markup=kb)
                 if res and res.get("ok"):
                     await _react_to_message(session, chat_id, res["result"]["message_id"], "🥰")
@@ -493,7 +511,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
                     await _react_to_message(session, chat_id, res_data["result"]["message_id"], "🥰")
                 await db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$inc": {"download_count": 1}})
             else:
-                await answer_callback_query(session, cb_id, "❌", show_alert=True)
+                await answer_callback_query(session, cb_id, "❌ ይቅርታ፣ ፋይሉ አልተገኘም!", show_alert=True)
                 return
         except Exception as e:
             logger.error(f"PDF DL Error: {e}")
@@ -503,7 +521,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
 
     if data_str.startswith("pg_"):
         if data_str == "pg_close":
-            await _edit_html_message(session, chat_id, message_id, get_text(lang, "WELCOME"), reply_markup=get_main_menu_kb(lang))
+            await _edit_html_message(session, chat_id, message_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
         else:
             new_page = int(data_str.split("_")[1])
             text, kb = await get_catalog_page(db, new_page)
@@ -512,25 +530,27 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         return
 
     if data_str.startswith("fav_"):
-        from bson.errors import InvalidId
         doc_id = data_str.split("fav_")[1]
         try:
-            file_doc = None
-            if len(doc_id) == 24:
-                try:
-                    file_doc = await db.files.find_one({"_id": ObjectId(doc_id)}, {"_id": 1, "file_id": 1})
-                except InvalidId:
-                    pass
-            
-            if file_doc and "file_id" in file_doc:
+            file_doc = await db.files.find_one({"_id": ObjectId(doc_id)}, {"_id": 1, "file_id": 1}) if len(doc_id) == 24 else None
+            if file_doc:
                 added = await toggle_favorite(db, user_id, file_doc["file_id"])
-                msg = get_text(lang, "FAV_SAVED") if added else get_text(lang, "FAV_REMOVED")
-                await answer_callback_query(session, cb_id, msg)
+                await answer_callback_query(session, cb_id, "❤️ Saved" if added else "💔 Removed")
             else:
                 await answer_callback_query(session, cb_id, "⚠️ Missing")
         except Exception:
-            logger.exception("Fav callback failed")
             await answer_callback_query(session, cb_id, "❌ Error")
+        return
+
+    if data_str.startswith("report_"):
+        doc_id = data_str.split("report_")[1]
+        try:
+            file_doc = await db.files.find_one({"_id": ObjectId(doc_id)}, {"display_name": 1})
+            if file_doc:
+                await send_message(session, ADMIN_ID, f"🚨 Report: `{file_doc.get('display_name')}`\nID: `{doc_id}`")
+                await answer_callback_query(session, cb_id, "✅ Reported!", show_alert=True)
+        except Exception:
+            pass
         return
 
     if data_str.startswith("broadcast_") and _is_admin(user_id):
@@ -621,21 +641,10 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
 
     user_data = await track_and_get_user(db, user_id, first_name)
     state     = user_data.get("state")
-    lang      = user_data.get("language", "am") if user_data else "am"
-
-    if text and text in ("/lang", "/language"):
-        await delete_message(session, chat_id, msg_id)
-        kb = {"inline_keyboard": [
-            [{"text": "🇪🇹 አማርኛ", "callback_data": "setlang_am"}],
-            [{"text": "🇬🇧 English", "callback_data": "setlang_en"}],
-            [{"text": "🇸🇦 العربية", "callback_data": "setlang_ar"}]
-        ]}
-        await send_message(session, chat_id, get_text(lang, "LANG_MENU"), reply_markup=kb)
-        return
 
     if text and (text == "/start" or text.startswith("/start ")):
         await delete_message(session, chat_id, msg_id)
-        old_menu_id = user_data.get("last_menu_msg_id") if user_data else None
+        old_menu_id = user_data.get("last_menu_msg_id")
         if old_menu_id:
             await delete_message(session, chat_id, old_menu_id)
 
@@ -645,18 +654,18 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             playlist = await get_playlist(db, start_param)
             if playlist:
                 await send_message(session, chat_id, f"🎧 *Playing playlist* `{start_param}` — {len(playlist.get('tracks', []))} tracks\n\n@{BOT_USERNAME}")
-                await _deliver_playlist(session, db, chat_id, playlist, lang)
-                result = await _send_html_message(session, chat_id, get_text(lang, "WELCOME"), reply_markup=get_main_menu_kb(lang))
+                await _deliver_playlist(session, db, chat_id, playlist)
+                result = await _send_html_message(session, chat_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
                 if result and result.get("ok"):
                     await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
                 return
 
-        result = await _send_html_message(session, chat_id, get_text(lang, "WELCOME"), reply_markup=get_main_menu_kb(lang))
+        result = await _send_html_message(session, chat_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
         if result and result.get("ok"):
             await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
         return
 
-    if text in ("/list", "📂 Catalog (List)", "📂 ማውጫ", "📂 الفهرس"):
+    if text in ("/list", "📂 Catalog (List)"):
         await delete_message(session, chat_id, msg_id)
         old_menu_id = (user_data or {}).get("last_menu_msg_id")
         if old_menu_id:
@@ -679,16 +688,16 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         sq  = build_search_query(text)
         doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
         if doc:
-            kb = {"inline_keyboard": [[{"text": get_text(lang, "BTN_ADD_PLAYLIST"), "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": get_text(lang, "BTN_FAV_ADD"), "callback_data": f"fav_{str(doc['_id'])}"}]]}
+            kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
             res = await send_audio(session, chat_id, doc["file_id"], f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
             if res and res.get("ok"):
                 await _react_to_message(session, chat_id, res["result"]["message_id"], "🥰")
         else:
             suggestions = await get_fuzzy_suggestions(db, text, limit=5)
             if suggestions:
-                await send_message(session, chat_id, get_text(lang, "MSG_SUGGESTIONS"), reply_markup=get_playlist_fuzzy_kb(lang, suggestions))
+                await send_message(session, chat_id, "😔 የፈለጉት መንዙማ በቀጥታ አልተገኘም።\n\n_ወደ ፕሌይሊስትዎ ለመጨመር ➕ ይጫኑ፦_", reply_markup=get_playlist_fuzzy_kb(suggestions))
             else:
-                await send_message(session, chat_id, get_text(lang, "MSG_NOT_FOUND"), reply_markup=get_not_found_kb(lang))
+                await send_message(session, chat_id, "😔 የፈለጉት መንዙማ አልተገኘም።\nእባክዎ የተለየ ቃል ጽፈው ይሞክሩ።", reply_markup=get_not_found_kb())
         return
 
     if _is_admin(user_id):
@@ -730,7 +739,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             parse_errors: list[str] = []
 
             if not skip_markup:
-                resolved_keyboard, parse_errors = await _parse_bml(db, text, lang)
+                resolved_keyboard, parse_errors = await _parse_bml(db, text)
 
             reply_markup = {"inline_keyboard": resolved_keyboard} if resolved_keyboard else None
 
@@ -805,20 +814,21 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             matched_file_name = doc.get('display_name', 'Unknown')
             if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
                 hostage_msg = (
-                    f"🎵 *{matched_file_name}*\n\n" + get_text(lang, "MSG_JOIN_DESC")
+                    f"🎵 *{matched_file_name}* ተገኝቷል!\n\n"
+                    "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!"
                 )
-                await _send_html_message(session, chat_id, hostage_msg, reply_markup=get_subscription_kb(lang, channels))
+                await _send_html_message(session, chat_id, hostage_msg, reply_markup=get_subscription_kb(channels))
             else:
-                kb = {"inline_keyboard": [[{"text": get_text(lang, "BTN_ADD_PLAYLIST"), "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": get_text(lang, "BTN_FAV_ADD"), "callback_data": f"fav_{str(doc['_id'])}"}]]}
+                kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
                 res = await send_audio(session, chat_id, doc["file_id"], f"{matched_file_name}\n\n@{BOT_USERNAME}", reply_markup=kb)
                 if res and res.get("ok"):
                     await _react_to_message(session, chat_id, res["result"]["message_id"], "🥰")
         else:
             suggestions = await get_fuzzy_suggestions(db, text, limit=5)
             if suggestions:
-                await send_message(session, chat_id, get_text(lang, "MSG_SUGGESTIONS"), reply_markup=get_fuzzy_suggestions_kb(lang, suggestions))
+                await send_message(session, chat_id, "😔 የፈለጉት መንዙማ በቀጥታ አልተገኘም።\n\n_ምናልባት ከታች ያሉት ሊሆኑ ይችላሉ? አንዱን ይምረጡ፦_", reply_markup=get_fuzzy_suggestions_kb(suggestions))
             else:
-                await send_message(session, chat_id, get_text(lang, "MSG_NOT_FOUND"), reply_markup=get_not_found_kb(lang))
+                await send_message(session, chat_id, "😔 የፈለጉት መንዙማ አልተገኘም።\nእባክዎ የተለየ ቃል ጽፈው ይሞክሩ ወይም 'ሙሉ ዝርዝር' የሚለውን ይጫኑ።", reply_markup=get_not_found_kb())
 
 
 async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> None:
@@ -828,8 +838,7 @@ async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> No
     user_id    = user_info.get("id")
     first_name = user_info.get("first_name", "User")
 
-    user_data = await track_and_get_user(db, user_id, first_name)
-    lang      = user_data.get("language", "am") if user_data else "am"
+    await track_and_get_user(db, user_id, first_name)
     results: list = []
 
     if query.startswith("#favorites"):
@@ -838,7 +847,7 @@ async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> No
         if fav_ids:
             docs = await db.files.find({"file_id": {"$in": fav_ids}}, {"file_id": 1, "display_name": 1}).limit(50).to_list(length=50)
             for doc in docs:
-                results.append({"type": "audio", "id": str(doc["_id"]), "audio_file_id": doc["file_id"], "caption": f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", "reply_markup": {"inline_keyboard": [[{"text": get_text(lang, "BTN_FAV_REMOVE"), "callback_data": f"fav_{str(doc['_id'])}"}]]}})
+                results.append({"type": "audio", "id": str(doc["_id"]), "audio_file_id": doc["file_id"], "caption": f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", "reply_markup": {"inline_keyboard": [[{"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}"}]]}})
         else:
             results.append({"type": "article", "id": "no_favorites", "title": "No Favorites Yet", "input_message_content": {"message_text": "No favorites saved yet."}})
     elif not query:
@@ -848,13 +857,13 @@ async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> No
             return
         docs = await db.files.find({"file_id": {"$exists": True}}, {"file_id": 1, "display_name": 1}).sort("_id", -1).limit(20).to_list(length=20)
         for doc in docs:
-            results.append({"type": "audio", "id": str(doc["_id"]), "audio_file_id": doc["file_id"], "caption": f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", "reply_markup": {"inline_keyboard": [[{"text": get_text(lang, "BTN_FAV_ADD"), "callback_data": f"fav_{str(doc['_id'])}"}]]}})
+            results.append({"type": "audio", "id": str(doc["_id"]), "audio_file_id": doc["file_id"], "caption": f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}})
         set_inline_empty_cache(results)
     else:
         sq   = build_search_query(query)
         docs = await db.files.find(sq, {"file_id": 1, "display_name": 1}).limit(20).to_list(length=20)
         for doc in docs:
-            results.append({"type": "audio", "id": str(doc["_id"]), "audio_file_id": doc["file_id"], "caption": f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", "reply_markup": {"inline_keyboard": [[{"text": get_text(lang, "BTN_FAV_ADD"), "callback_data": f"fav_{str(doc['_id'])}"}]]}})
+            results.append({"type": "audio", "id": str(doc["_id"]), "audio_file_id": doc["file_id"], "caption": f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}})
 
     await answer_inline_query(session, query_id, results, cache_time=300)
 
@@ -884,5 +893,3 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
-
-
