@@ -43,7 +43,6 @@ from utils import (
     invalidate_channels_cache,
     send_message,
     send_audio,
-    send_document,
     send_media_group,
     edit_message_text,
     delete_message,
@@ -345,44 +344,6 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             await answer_callback_query(session, cb_id, "❌ አሁንም አልተቀላቀሉም! ቻናሉን Join ይበሉ", show_alert=True)
         return
 
-    if data_str == "support_start":
-        await set_user_state(db, user_id, "support_wait")
-        await edit_message_text(
-            session, chat_id, message_id,
-            "📝 **አስተያየትዎን ወይም ጥያቄዎን እዚህ ይጻፉ...**\n_(ወደ ዋናው ገጽ ለመመለስ 'ተመለስ' የሚለውን ይጫኑ)_",
-            reply_markup={"inline_keyboard": [[{"text": "🔙 ተመለስ", "callback_data": "support_cancel"}]]},
-        )
-        await answer_callback_query(session, cb_id)
-        return
-
-    if data_str == "support_cancel":
-        await set_user_state(db, user_id, "idle")
-        await edit_message_text(session, chat_id, message_id, WELCOME_TEXT, reply_markup=get_main_menu_kb())
-        await answer_callback_query(session, cb_id)
-        return
-
-    if data_str == "pdf_submit_start":
-        await set_user_state(db, user_id, "pdf_wait")
-        kb = {"inline_keyboard": [[{"text": "❌ Cancel", "callback_data": "pdf_submit_cancel"}]]}
-        await edit_message_text(
-            session, chat_id, message_id,
-            "📄 *Send a PDF*\n\nPlease send the PDF file now.\n\n"
-            "_We will review it before adding it to the library._",
-            reply_markup=kb,
-        )
-        await answer_callback_query(session, cb_id)
-        return
-
-    if data_str == "pdf_submit_cancel":
-        await set_user_state(db, user_id, "idle")
-        welcome = "*🌙 እንኳን ወደ አል-ማዲህ (Al-Madih) በደህና መጡ! 🌙*"
-        await edit_message_text(
-            session, chat_id, message_id, welcome,
-            reply_markup=get_main_menu_kb(),
-        )
-        await answer_callback_query(session, cb_id)
-        return
-
     if data_str == "pl_start":
         await set_user_state(db, user_id, "playlist_builder", {"building_playlist": [], "pl_ctrl_msg_id": message_id})
         await edit_message_text(
@@ -464,39 +425,29 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             logger.exception("Play callback failed")
             await answer_callback_query(session, cb_id, "❌ Error")
         return
-            # ── PDF Download Callback (ለብሮድካስት እና ለሌሎችም) ───────────────
+
     if data_str.startswith("pdf_dl_"):
         pdf_id = data_str.replace("pdf_dl_", "")
-        
+        from bson import ObjectId
+        import os
         try:
             pdf_doc = await db.pdfs.find_one({"_id": ObjectId(pdf_id)})
             if pdf_doc and "file_id" in pdf_doc:
-                # ፒዲኤፉን በቀጥታ ለተጠቃሚው መላክ
                 bot_token = os.environ.get("BOT_TOKEN")
                 url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
                 payload = {
                     "chat_id": chat_id,
                     "document": pdf_doc["file_id"],
-                    "caption": f"📄 {pdf_doc.get('title', '')}\n\n✨ @Almadihbot"
+                    "caption": f"📄 {pdf_doc.get('title', '')}\n\n✨ @{BOT_USERNAME}"
                 }
                 await session.post(url, json=payload)
-                
-                # የዳውንሎድ ቁጥሩን (Download Count) ማሳደግ
                 await db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$inc": {"download_count": 1}})
             else:
-                # ፋይሉ ከዳታቤዝ ከጠፋ
                 await answer_callback_query(session, cb_id, "❌ ይቅርታ፣ ፋይሉ አልተገኘም!", show_alert=True)
                 return
         except Exception as e:
             logger.error(f"PDF DL Error: {e}")
         
-        await answer_callback_query(session, cb_id)
-        return
-
-    if data_str.startswith("reply_") and _is_admin(user_id):
-        target_user_id = data_str.split("_")[1]
-        await set_user_state(db, user_id, "admin_reply_wait", {"target_user_id": target_user_id})
-        await send_message(session, chat_id, f"📝 **መልስ ለተጠቃሚ {target_user_id} እየጻፉ ነው:**\n\nመልእክቱን ይጻፉ (Text, Voice, Photo...).")
         await answer_callback_query(session, cb_id)
         return
 
@@ -670,52 +621,11 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
         return
 
-    if state == "pdf_wait":
-        doc = message.get("document")
-        if doc:
-            fname = doc.get("file_name", "")
-            if fname.lower().endswith((".pdf", ".txt", ".doc", ".docx", ".epub")):
-                try:
-                    await copy_message(session, ADMIN_ID, chat_id, message.get("message_id"))
-                    await send_message(
-                        session, ADMIN_ID,
-                        f"📄 *New Document Submission*\n"
-                        f"From: {first_name} (`{user_id}`)\n"
-                        f"File: `{fname or 'unnamed_file'}`\n"
-                        f"Size: {doc.get('file_size', 0) // 1024} KB",
-                    )
-                except Exception as e:
-                    logger.error("Document forward to admin failed: %s", e)
-                await set_user_state(db, user_id, "idle")
-                await send_message(
-                    session, chat_id,
-                    "✅ *JazakAllahu Khairan!*\n\nፋይሉን ተቀብለናል (We have received your document). "
-                    "አድሚኖች አይተውት ወደ ማህደሩ የሚያስገቡት ይሆናል።",
-                    reply_markup=get_main_menu_kb(),
-                )
-            else:
-                await send_message(session, chat_id, "⚠️ እባክዎ ትክክለኛ ፋይል (PDF, TXT, DOCX) ብቻ ይላኩ።")
-        elif text:
-            await send_message(session, chat_id, "📄 እባክዎ ፋይል (Document) አያይዘው ይላኩ — ፅሁፍ (Text) ብቻ አይላኩ።")
-        return
-
     if text == "🔧 Manage Channels" and _is_admin(user_id):
         mgmt_text = await _channel_mgmt_menu_text(db)
         result = await send_message(session, chat_id, mgmt_text, reply_markup=get_channel_mgmt_kb())
         if not result or result.get("ok") is not True:
             await send_message(session, chat_id, "API Error showing menu: " + str(result)[:200])
-        return
-
-    if state == "support_wait":
-        if text == "/start":
-            await set_user_state(db, user_id, "idle")
-            await send_message(session, chat_id, "🏠 ወደ ዋናው ገጽ ተመልሰዋል።", reply_markup=get_main_menu_kb())
-            return
-        kb = {"inline_keyboard": [[{"text": "↩️ መልስ ለመስጠት (Reply)", "callback_data": f"reply_{user_id}"}]]}
-        await send_message(session, ADMIN_ID, f"📩 **New Feedback from:** {first_name} (`{user_id}`)", reply_markup=kb)
-        await copy_message(session, ADMIN_ID, chat_id, msg_id)
-        await send_message(session, chat_id, "✅ **መልእክትዎ ደርሶናል!** ጀዛኩሙላሁ ኸይረን!\n\n_ወደ ዋናው ገጽ ተመልሰዋል።_", reply_markup=get_main_menu_kb())
-        await set_user_state(db, user_id, "idle")
         return
 
     if state == "playlist_builder" and text and not text.startswith("/") and not (_is_admin(user_id) and text in _ADMIN_KB_TEXTS):
@@ -733,28 +643,6 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         return
 
     if _is_admin(user_id):
-        if "document" in message:
-            doc = message.get("document")
-            fname = doc.get("file_name", "")
-            
-            if fname.lower().endswith((".pdf", ".txt", ".doc", ".docx", ".epub")):
-                cap = message.get("caption", "").split("\n")[0].strip()
-                import os
-                clean_fname = os.path.splitext(fname)[0].strip()
-                title = cap if cap else clean_fname
-                
-                try:
-                    await db.pdfs.update_one(
-                        {"title": {"$regex": re.escape(title), "$options": "i"}},
-                        {"$set": {"file_id": doc["file_id"], "title": title, "download_count": 0}},
-                        upsert=True,
-                    )
-                    await send_message(session, chat_id, f"✅ Document Saved to DB:\n📄 `{title}`")
-                except Exception as db_err:
-                    logger.error("db.pdfs.update_one failed: %s", db_err)
-                    await send_message(session, chat_id, f"❌ DB error saving Document `{title}`. Please retry.")
-                return
-
         if state == "admin_add_channel_wait":
             if text and not text.startswith("/"):
                 username = text.lstrip("@").strip()
@@ -769,18 +657,6 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 await set_user_state(db, user_id, "idle")
             else:
                 await send_message(session, chat_id, "⚠️ Please send a plain username, e.g. `Al_madih`.")
-            return
-
-        if state == "admin_reply_wait" and text not in _ADMIN_KB_TEXTS:
-            target_user = (user_data or {}).get("target_user_id")
-            if target_user:
-                try:
-                    await send_message(session, target_user, "🔔 **ከአድሚኑ የተሰጠ መልስ:**")
-                    await copy_message(session, target_user, chat_id, msg_id)
-                    await send_message(session, chat_id, "✅ መልሱ ተልኳል!")
-                except Exception as e:
-                    await send_message(session, chat_id, f"❌ አልተላከም: {e}")
-                await set_user_state(db, user_id, "idle")
             return
 
         if state == "broadcast_wait" and text not in _ADMIN_KB_TEXTS and msg_id:
