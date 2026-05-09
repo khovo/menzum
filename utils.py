@@ -1,3 +1,4 @@
+
 """
 utils.py
 --------
@@ -269,6 +270,24 @@ async def answer_inline_query(
         return None
 
 
+async def copy_message(
+    session, chat_id, from_chat_id, message_id: int, reply_markup=None
+) -> dict | None:
+    if not BOT_TOKEN:
+        return None
+    payload = {"chat_id": chat_id, "from_chat_id": from_chat_id, "message_id": message_id}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        async with session.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage", json=payload
+        ) as resp:
+            return await resp.json()
+    except Exception:
+        logger.exception("copy_message failed chat_id=%s", chat_id)
+        return None
+
+
 # ── UI / Keyboard Builders ────────────────────────────────────────────────────
 
 def get_main_menu_kb(lang: str = "am") -> dict:
@@ -338,4 +357,5 @@ def get_channel_mgmt_kb() -> dict:
             [{"text": "❌ Close", "callback_data": "admin_ch_close"}],
         ]
     }
+
 
