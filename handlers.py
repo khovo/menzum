@@ -133,7 +133,8 @@ async def _react_to_message(session, chat_id: int, message_id: int, emoji: str):
         "reaction": [{"type": "emoji", "emoji": emoji}]
     }
     try:
-        await session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setMessageReaction", json=payload)
+        async with session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setMessageReaction", json=payload) as resp:
+            await resp.read()
     except Exception as e:
         print(f"Failed to set reaction: {e}")
 
@@ -339,7 +340,7 @@ async def _deliver_playlist(session, db, chat_id, playlist: dict) -> None:
             reply_markup=kb,
         )
         if res and res.get("ok"):
-            asyncio.create_task(_react_to_message(session, chat_id, res["result"]["message_id"], "🥰"))
+            await _react_to_message(session, chat_id, res["result"]["message_id"], "🥰")
     else:
         media = []
         for i, t in enumerate(tracks):
@@ -353,7 +354,7 @@ async def _deliver_playlist(session, db, chat_id, playlist: dict) -> None:
             media.append(item)
         res = await send_media_group(session, chat_id, media)
         if res and res.get("ok") and isinstance(res.get("result"), list) and len(res["result"]) > 0:
-            asyncio.create_task(_react_to_message(session, chat_id, res["result"][0]["message_id"], "🥰"))
+            await _react_to_message(session, chat_id, res["result"][0]["message_id"], "🥰")
 
     await increment_playlist_plays(db, playlist_id)
 
@@ -481,7 +482,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
                 kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{doc_id}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{doc_id}"}]]}
                 res = await send_audio(session, chat_id, file_doc.get("file_id"), f"{file_doc.get('display_name', 'Unknown')}\n\n@{BOT_USERNAME}", reply_markup=kb)
                 if res and res.get("ok"):
-                    asyncio.create_task(_react_to_message(session, chat_id, res["result"]["message_id"], "🥰"))
+                    await _react_to_message(session, chat_id, res["result"]["message_id"], "🥰")
                 await answer_callback_query(session, cb_id)
             else:
                 await answer_callback_query(session, cb_id, "⚠️ File not found", show_alert=True)
@@ -507,7 +508,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
                 res_http = await session.post(url, json=payload)
                 res_data = await res_http.json()
                 if res_data and res_data.get("ok"):
-                    asyncio.create_task(_react_to_message(session, chat_id, res_data["result"]["message_id"], "🥰"))
+                    await _react_to_message(session, chat_id, res_data["result"]["message_id"], "🥰")
                 await db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$inc": {"download_count": 1}})
             else:
                 await answer_callback_query(session, cb_id, "❌ ይቅርታ፣ ፋይሉ አልተገኘም!", show_alert=True)
@@ -683,14 +684,14 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         return
 
     if state == "playlist_builder" and text and not text.startswith("/") and not (_is_admin(user_id) and text in _ADMIN_KB_TEXTS):
-        asyncio.create_task(_react_to_message(session, chat_id, msg_id, "👀"))
+        await _react_to_message(session, chat_id, msg_id, "👀")
         sq  = build_search_query(text)
         doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
         if doc:
             kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
             res = await send_audio(session, chat_id, doc["file_id"], f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
             if res and res.get("ok"):
-                asyncio.create_task(_react_to_message(session, chat_id, res["result"]["message_id"], "🥰"))
+                await _react_to_message(session, chat_id, res["result"]["message_id"], "🥰")
         else:
             suggestions = await get_fuzzy_suggestions(db, text, limit=5)
             if suggestions:
@@ -805,7 +806,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             return
 
     if text and not text.startswith("/"):
-        asyncio.create_task(_react_to_message(session, chat_id, msg_id, "👀"))
+        await _react_to_message(session, chat_id, msg_id, "👀")
         sq  = build_search_query(text)
         doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
 
@@ -821,7 +822,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
                 res = await send_audio(session, chat_id, doc["file_id"], f"{matched_file_name}\n\n@{BOT_USERNAME}", reply_markup=kb)
                 if res and res.get("ok"):
-                    asyncio.create_task(_react_to_message(session, chat_id, res["result"]["message_id"], "🥰"))
+                    await _react_to_message(session, chat_id, res["result"]["message_id"], "🥰")
         else:
             suggestions = await get_fuzzy_suggestions(db, text, limit=5)
             if suggestions:
