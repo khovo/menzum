@@ -892,3 +892,4 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
+
