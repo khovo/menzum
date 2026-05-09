@@ -17,6 +17,7 @@ from config import (
     INLINE_EMPTY_CACHE_TTL,
     CHANNELS_CACHE_TTL,
 )
+from texts import get_text
 
 logger = logging.getLogger(__name__)
 
