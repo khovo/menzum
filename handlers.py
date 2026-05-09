@@ -95,13 +95,13 @@ def _get_main_menu_kb_local() -> dict:
         "inline_keyboard": [
             [{"text": "🌐 Open Al-Madih", "web_app": {"url": "https://almadih.vercel.app/"}}],
             [
-                {"text": "❤️ ተወዳጆች (Favorites)", "switch_inline_query_current_chat": "#favorites"},
+                {"text": "🔍 ፈልግ (Search)", "switch_inline_query_current_chat": ""},
                 {"text": "📂 ማውጫ (Catalog)", "callback_data": "pg_1"},
             ],
             [
                 {"text": "🎧 ፕሌይሊስት (Playlist)", "callback_data": "pl_start"},
-            ],
-            [{"text": "🔍 ፈልግ (Search)", "switch_inline_query_current_chat": ""}],
+                {"text": "❤️ ተወዳጆች (Favorites)", "switch_inline_query_current_chat": "#favorites"},
+            ]
         ]
     }
 
@@ -134,8 +134,8 @@ async def _react_to_message(session, chat_id: int, message_id: int, emoji: str):
     }
     try:
         await session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setMessageReaction", json=payload)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Failed to set reaction: {e}")
 
 
 async def _channel_mgmt_menu_text(db) -> str:
@@ -211,7 +211,7 @@ async def _resolve_macro(db, macro: str, arg: str) -> list[dict]:
             return [{"text": f"🎲 {doc.get('display_name', 'Discover')[:42]}", "callback_data": f"play_{doc['_id']}"}]
 
     except Exception as exc:
-        logger.warning("_resolve_macro(%s) failed: %s", macro, exc)
+        logger.warning("_resolve_macro(%s) failed: %s", exc)
     return []
 
 async def _parse_bml(db, bml_text: str) -> tuple[list[list[dict]] | None, list[str]]:
@@ -306,7 +306,7 @@ async def _execute_broadcast(session, db, admin_chat_id: int, msg_id: int, marku
             else:
                 total += 1; consecutive = 0
         except Exception as exc:
-            logger.warning("Broadcast send to %s failed: %s", uid, exc)
+            logger.warning("Broadcast send to %s failed: %s", exc)
             failed += 1; consecutive += 1
 
         if (i + 1) % CHUNK_SIZE == 0: await asyncio.sleep(CHUNK_SLEEP * CHUNK_SIZE)
@@ -816,7 +816,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                     f"🎵 *{matched_file_name}* ተገኝቷል!\n\n"
                     "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!"
                 )
-                await send_message(session, chat_id, hostage_msg, reply_markup=get_subscription_kb(channels))
+                await _send_html_message(session, chat_id, hostage_msg, reply_markup=get_subscription_kb(channels))
             else:
                 kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
                 res = await send_audio(session, chat_id, doc["file_id"], f"{matched_file_name}\n\n@{BOT_USERNAME}", reply_markup=kb)
