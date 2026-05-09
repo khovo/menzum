@@ -66,10 +66,10 @@ BOT_USERNAME = os.environ.get("BOT_USERNAME", "Almadihbot")
 WELCOME_TEXT = (
     "<tg-emoji emoji-id=\"5769143090103193926\">🌙</tg-emoji> አሰላሙ አለይኩም! ወደ Al-Madih ቦት እንኳን በደህና መጡ። <tg-emoji emoji-id=\"5769143090103193926\">🌙</tg-emoji>\n\n"
     "<tg-emoji emoji-id=\"5337110598926766115\">⭐️</tg-emoji> የሚፈልጉትን መንዙማ ወይም ነሺዳ ርዕስ አሁኑኑ ጽፈው ይላኩ። <tg-emoji emoji-id=\"5384110834068783570\">💬</tg-emoji>\n\n"
-    "⚡️ ፈልግ (Search)\n"
-    "⚡️ ማውጫ (Catalog)\n"
-    "⏰ ፕሌይሊስት (Playlist)\n"
-    "♥️ ተወዳጆች (Favorites)"
+    "<tg-emoji emoji-id=\"5384111778961588478\">⚡️</tg-emoji> ፈልግ (Search)\n"
+    "<tg-emoji emoji-id=\"5384485342332093352\">⚡️</tg-emoji> ማውጫ (Catalog)\n"
+    "<tg-emoji emoji-id=\"4904882772637648609\">⏰</tg-emoji> ፕሌይሊስት (Playlist)\n"
+    "<tg-emoji emoji-id=\"5116368680279606270\">♥️</tg-emoji> ተወዳጆች (Favorites)"
 )
 
 def _is_admin(user_id) -> bool:
@@ -368,10 +368,20 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
 
     user_data  = await track_and_get_user(db, user_id, first_name)
 
-    if data_str != "check_subscription" and not _is_admin(user_id):
-        if not await check_membership(session, user_id, channels):
+    # ── Hook & Lock: Enforce join ONLY when trying to play audio or download PDF ──
+    if data_str.startswith("play_") or data_str.startswith("pdf_dl_"):
+        if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
             await answer_callback_query(session, cb_id, "⚠️ እባክዎ መጀመሪያ ቻናሉን ይቀላቀሉ!", show_alert=True)
+            await send_message(
+                session, chat_id,
+                "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!",
+                reply_markup=get_subscription_kb(channels)
+            )
             return
+
+    if data_str != "check_subscription" and not _is_admin(user_id):
+        # We bypass global gatekeeper here, we only gatekeep specific actions like playback
+        pass
 
     if data_str == "check_subscription":
         invalidate_membership_cache(user_id)
@@ -631,19 +641,6 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     user_data = await track_and_get_user(db, user_id, first_name)
     state     = user_data.get("state")
 
-    if not _is_admin(user_id):
-        if not await check_membership(session, user_id, channels):
-            parts       = text.split(" ", 1) if text.startswith("/start") else []
-            start_param = parts[1].strip() if len(parts) > 1 else None
-            if start_param:
-                await save_pending_start(db, user_id, start_param)
-            await send_message(
-                session, chat_id,
-                "**⚠️ አሰላሙ አለይኩም! ቦቱን ለመጠቀም እባክዎ መጀመሪያ ቻናላችንን ይቀላቀሉ።**",
-                reply_markup=get_subscription_kb(channels),
-            )
-            return
-
     if text and (text == "/start" or text.startswith("/start ")):
         await delete_message(session, chat_id, msg_id)
         old_menu_id = user_data.get("last_menu_msg_id")
@@ -813,10 +810,18 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
 
         if doc:
-            kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
-            res = await send_audio(session, chat_id, doc["file_id"], f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
-            if res and res.get("ok"):
-                asyncio.create_task(_react_to_message(session, chat_id, res["result"]["message_id"], "🥰"))
+            matched_file_name = doc.get('display_name', 'Unknown')
+            if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
+                hostage_msg = (
+                    f"🎵 *{matched_file_name}* ተገኝቷል!\n\n"
+                    "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!"
+                )
+                await send_message(session, chat_id, hostage_msg, reply_markup=get_subscription_kb(channels))
+            else:
+                kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
+                res = await send_audio(session, chat_id, doc["file_id"], f"{matched_file_name}\n\n@{BOT_USERNAME}", reply_markup=kb)
+                if res and res.get("ok"):
+                    asyncio.create_task(_react_to_message(session, chat_id, res["result"]["message_id"], "🥰"))
         else:
             suggestions = await get_fuzzy_suggestions(db, text, limit=5)
             if suggestions:
@@ -889,3 +894,4 @@ async def process_telegram_update(data: dict) -> None:
             db_client.close()
 
 
+```
