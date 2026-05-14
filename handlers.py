@@ -381,7 +381,6 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             return
 
     if data_str != "check_subscription" and not _is_admin(user_id):
-        # We bypass global gatekeeper here, we only gatekeep specific actions like playback
         pass
 
     if data_str == "check_subscription":
@@ -473,7 +472,9 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             file_doc = await db.files.find_one({"_id": ObjectId(doc_id)}, {"file_id": 1, "display_name": 1}) if len(doc_id) == 24 else None
             if file_doc:
                 kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{doc_id}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{doc_id}"}]]}
-                await send_audio(session, chat_id, file_doc["file_id"], f"{file_doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
+                res = await send_audio(session, chat_id, file_doc["file_id"], f"{file_doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
+                if res and res.get("ok"):
+                    await _react_to_message(session, chat_id, res["result"]["message_id"], "🥰")
                 await answer_callback_query(session, cb_id)
             else:
                 await answer_callback_query(session, cb_id, "⚠️ File not found", show_alert=True)
@@ -828,23 +829,6 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         if text == "📂 Total Files":
             f_count = await db.files.count_documents({})
             await send_message(session, chat_id, f"📂 Total Files in DB: `{f_count}`")
-            return
-
-        if "audio" in message or "voice" in message:
-            f    = message.get("audio") or message.get("voice")
-            cap  = message.get("caption", "").split("\n")[0].strip()
-            name = cap if cap else f.get("file_name", "Unknown")
-            if len(name) > 3:
-                thumb_file_id = (message.get("audio", {}).get("thumbnail", {}).get("file_id") or message.get("audio", {}).get("thumb", {}).get("file_id")) 
-                update_fields = {"file_id": f["file_id"], "display_name": name}
-                if thumb_file_id: update_fields["thumb_file_id"] = thumb_file_id
-                try:
-                    await db.files.update_one({"display_name": {"$regex": re.escape(name), "$options": "i"}}, {"$set": update_fields}, upsert=True)
-                    thumb_status = " 🖼" if thumb_file_id else ""
-                    await send_message(session, chat_id, f"✅ Saved: `{name}`{thumb_status}")
-                except Exception as db_err:
-                    logger.error("db.files.update_one failed: %s", db_err)
-                    await send_message(session, chat_id, f"❌ DB error saving `{name}`. Please retry.")
             return
 
     if text and not text.startswith("/"):
