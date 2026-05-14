@@ -642,6 +642,19 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     user_data = await track_and_get_user(db, user_id, first_name)
     state     = user_data.get("state")
 
+    if not _is_admin(user_id):
+        if not await check_membership(session, user_id, channels):
+            parts       = text.split(" ", 1) if text.startswith("/start") else []
+            start_param = parts[1].strip() if len(parts) > 1 else None
+            if start_param:
+                await save_pending_start(db, user_id, start_param)
+            await send_message(
+                session, chat_id,
+                "**⚠️ አሰላሙ አለይኩም! ቦቱን ለመጠቀም እባክዎ መጀመሪያ ቻናላችንን ይቀላቀሉ።**",
+                reply_markup=get_subscription_kb(channels),
+            )
+            return
+
     if text and (text == "/start" or text.startswith("/start ")):
         await delete_message(session, chat_id, msg_id)
         old_menu_id = user_data.get("last_menu_msg_id")
@@ -701,6 +714,28 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
         return
 
     if _is_admin(user_id):
+        if "document" in message:
+            doc = message.get("document")
+            fname = doc.get("file_name", "")
+            
+            if fname.lower().endswith((".pdf", ".txt", ".doc", ".docx", ".epub")):
+                cap = message.get("caption", "").split("\n")[0].strip()
+                import os
+                clean_fname = os.path.splitext(fname)[0].strip()
+                title = cap if cap else clean_fname
+                
+                try:
+                    await db.pdfs.update_one(
+                        {"title": {"$regex": re.escape(title), "$options": "i"}},
+                        {"$set": {"file_id": doc["file_id"], "title": title, "download_count": 0}},
+                        upsert=True,
+                    )
+                    await send_message(session, chat_id, f"✅ Document Saved to DB:\n📄 `{title}`")
+                except Exception as db_err:
+                    logger.error("db.pdfs.update_one failed: %s", db_err)
+                    await send_message(session, chat_id, f"❌ DB error saving Document `{title}`. Please retry.")
+                return
+
         if state == "admin_add_channel_wait":
             if text and not text.startswith("/"):
                 username = text.lstrip("@").strip()
@@ -805,6 +840,23 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await send_message(session, chat_id, f"📂 Total Files in DB: `{f_count}`")
             return
 
+        if "audio" in message or "voice" in message:
+            f    = message.get("audio") or message.get("voice")
+            cap  = message.get("caption", "").split("\n")[0].strip()
+            name = cap if cap else f.get("file_name", "Unknown")
+            if len(name) > 3:
+                thumb_file_id = (message.get("audio", {}).get("thumbnail", {}).get("file_id") or message.get("audio", {}).get("thumb", {}).get("file_id")) 
+                update_fields = {"file_id": f["file_id"], "display_name": name}
+                if thumb_file_id: update_fields["thumb_file_id"] = thumb_file_id
+                try:
+                    await db.files.update_one({"display_name": {"$regex": re.escape(name), "$options": "i"}}, {"$set": update_fields}, upsert=True)
+                    thumb_status = " 🖼" if thumb_file_id else ""
+                    await send_message(session, chat_id, f"✅ Saved: `{name}`{thumb_status}")
+                except Exception as db_err:
+                    logger.error("db.files.update_one failed: %s", db_err)
+                    await send_message(session, chat_id, f"❌ DB error saving `{name}`. Please retry.")
+            return
+
     if text and not text.startswith("/"):
         await _react_to_message(session, chat_id, msg_id, "👀")
         sq  = build_search_query(text)
@@ -893,3 +945,5 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
+
+
