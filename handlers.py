@@ -468,16 +468,38 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         return
 
     if data_str.startswith("play_"):
+        from bson.errors import InvalidId
         doc_id = data_str.split("play_")[1]
         try:
-            file_doc = await db.files.find_one({"_id": ObjectId(doc_id)}, {"file_id": 1, "display_name": 1}) if len(doc_id) == 24 else None
-            if file_doc:
-                kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{doc_id}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{doc_id}"}]]}
-                await send_audio(session, chat_id, file_doc["file_id"], f"{file_doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
+            file_doc = None
+            if len(doc_id) == 24:
+                try:
+                    file_doc = await db.files.find_one(
+                        {"_id": ObjectId(doc_id)},
+                        {"file_id": 1, "display_name": 1},
+                    )
+                except InvalidId:
+                    file_doc = None
+
+            if file_doc and file_doc.get("file_id"):
+                kb = {
+                    "inline_keyboard": [
+                        [{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{doc_id}"}],
+                        [{"text": "❤️ Fav", "callback_data": f"fav_{doc_id}"}],
+                    ]
+                }
+                res = await send_audio(
+                    session, chat_id, file_doc.get("file_id"),
+                    f"🎵 {file_doc.get('display_name', 'Unknown')}\n\n@{BOT_USERNAME}",
+                    reply_markup=kb,
+                )
+                if res and res.get("ok"):
+                    await _react_to_message(session, chat_id, res["result"]["message_id"], "🥰")
                 await answer_callback_query(session, cb_id)
             else:
                 await answer_callback_query(session, cb_id, "⚠️ File not found", show_alert=True)
         except Exception:
+            logger.exception("play_ callback failed for doc_id=%s", doc_id)
             await answer_callback_query(session, cb_id, "❌ Error")
         return
 
@@ -520,15 +542,26 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         return
 
     if data_str.startswith("fav_"):
+        from bson.errors import InvalidId
         doc_id = data_str.split("fav_")[1]
         try:
-            file_doc = await db.files.find_one({"_id": ObjectId(doc_id)}, {"_id": 1, "file_id": 1}) if len(doc_id) == 24 else None
+            file_doc = None
+            if len(doc_id) == 24:
+                try:
+                    file_doc = await db.files.find_one(
+                        {"_id": ObjectId(doc_id)},
+                        {"_id": 1, "file_id": 1},
+                    )
+                except InvalidId:
+                    file_doc = None
+
             if file_doc:
                 added = await toggle_favorite(db, user_id, file_doc["file_id"])
                 await answer_callback_query(session, cb_id, "❤️ Saved" if added else "💔 Removed")
             else:
                 await answer_callback_query(session, cb_id, "⚠️ Missing")
         except Exception:
+            logger.exception("fav_ callback failed for doc_id=%s", doc_id)
             await answer_callback_query(session, cb_id, "❌ Error")
         return
 
@@ -935,5 +968,4 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
-
 
