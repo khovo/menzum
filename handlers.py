@@ -11,6 +11,7 @@ import random
 import time
 from datetime import datetime, timezone
 from bson import ObjectId
+from bson.errors import InvalidId
 import aiohttp
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -468,7 +469,6 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         return
 
     if data_str.startswith("play_"):
-        from bson.errors import InvalidId
         doc_id = data_str.split("play_")[1]
         try:
             file_doc = None
@@ -505,8 +505,6 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
 
     if data_str.startswith("pdf_dl_"):
         pdf_id = data_str.replace("pdf_dl_", "")
-        from bson import ObjectId
-        import os
         try:
             pdf_doc = await db.pdfs.find_one({"_id": ObjectId(pdf_id)})
             if pdf_doc and "file_id" in pdf_doc:
@@ -542,7 +540,6 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         return
 
     if data_str.startswith("fav_"):
-        from bson.errors import InvalidId
         doc_id = data_str.split("fav_")[1]
         try:
             file_doc = None
@@ -968,4 +965,5 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
+
 
