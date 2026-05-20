@@ -54,966 +54,890 @@ from utils import (
     set_inline_empty_cache,
     get_not_found_kb,
     get_fuzzy_suggestions_kb,
+    get_playlist_fuzzy_kb,
+    get_playlist_builder_kb,
+    get_subscription_kb,
+    get_channel_mgmt_kb,
 )
 
 logger = logging.getLogger(__name__)
 
-# Cache of bot username to avoid getMe API round-trips
-BOT_USERNAME = "MenzumaBot"
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "Almadihbot")
 
+WELCOME_TEXT = (
+    "<tg-emoji emoji-id=\"5769143090103193926\">🌙</tg-emoji> አሰላሙ አለይኩም! ወደ Al-Madih ቦት እንኳን በደህና መጡ። <tg-emoji emoji-id=\"5769143090103193926\">🌙</tg-emoji>\n\n"
+    "<tg-emoji emoji-id=\"5337110598926766115\">⭐️</tg-emoji> የሚፈልጉትን መንዙማ ወይም ነሺዳ ርዕስ አሁኑኑ ጽፈው ይላኩ። <tg-emoji emoji-id=\"5384110834068783570\">💬</tg-emoji>\n\n"
+    "<tg-emoji emoji-id=\"5384111778961588478\">⚡️</tg-emoji> ፈልግ (Search)\n"
+    "<tg-emoji emoji-id=\"5384485342332093352\">⚡️</tg-emoji> ማውጫ (Catalog)\n"
+    "<tg-emoji emoji-id=\"4904882772637648609\">⏰</tg-emoji> ፕሌይሊስት (Playlist)\n"
+    "<tg-emoji emoji-id=\"5116368680279606270\">♥️</tg-emoji> ተወዳጆች (Favorites)"
+)
 
-# ── Admin Panel Configurations ───────────────────────────────────────────────
+def _is_admin(user_id) -> bool:
+    return str(user_id) == str(ADMIN_ID)
 
-_ADMIN_KB_TEXTS = ["📊 Stats", "📢 Broadcast", "📁 Upload Menzuma", "💾 Backup", "🛠 Maintenance Mode"]
+def _normalize_text(text: str) -> str:
+    return text.replace("️", "").replace("︎", "")
 
+_ADMIN_KB_TEXTS = {
+    "📊 Statistics",
+    "📅 Daily Stats",
+    "📢 Broadcast",
+    "📂 Total Files",
+    "🔧 Manage Channels",
+}
 
-async def _is_admin(db, user_id: int) -> bool:
-    """Check if the user matches the system ADMIN_ID config or has admin role in DB."""
-    if str(user_id) == str(ADMIN_ID):
-        return True
-    try:
-        u = await get_user_data(db, user_id)
-        if u and u.get("role") == "admin":
-            return True
-    except Exception:
-        pass
-    return False
+# ─────────────────────────────────────────────────────────────────────────────
+#  CUSTOM LOCAL HELPERS FOR HTML TEXT & REACTIONS
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-def _get_admin_keyboard() -> dict:
-    """Returns the ReplyKeyboardMarkup markup for administrators."""
+def _get_main_menu_kb_local() -> dict:
     return {
-        "keyboard": [
-            [{"text": "📊 Stats"}, {"text": "📢 Broadcast"}],
-            [{"text": "📁 Upload Menzuma"}],
-            [{"text": "💾 Backup"}, {"text": "🛠 Maintenance Mode"}]
-        ],
-        "resize_keyboard": True,
-        "one_time_keyboard": False
+        "inline_keyboard": [
+            [{"text": "🌐 Open Al-Madih", "web_app": {"url": "https://almadih.vercel.app/"}}],
+            [
+                {"text": "🔍 ፈልግ (Search)", "switch_inline_query_current_chat": ""},
+                {"text": "📂 ማውጫ (Catalog)", "callback_data": "pg_1"},
+            ],
+            [
+                {"text": "🎧 ፕሌይሊስት (Playlist)", "callback_data": "pl_start"},
+                {"text": "❤️ ተወዳጆች (Favorites)", "switch_inline_query_current_chat": "#favorites"},
+            ]
+        ]
     }
 
-
-async def send_backup_file(session: aiohttp.ClientSession, chat_id: int, backup_str: str) -> bool:
-    """Sends the serialized users backup string as a JSON file attachment via Telegram."""
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    data = aiohttp.FormData()
-    data.add_field("chat_id", str(chat_id))
-    data.add_field("caption", "💾 Al-Madih Database Users Backup (JSON)")
-    data.add_field("document", backup_str.encode("utf-8"), filename="users_backup.json", content_type="application/json")
+async def _send_html_message(session, chat_id, text: str, reply_markup=None) -> dict | None:
+    if not BOT_TOKEN: return None
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    if reply_markup: payload["reply_markup"] = reply_markup
     try:
-        async with session.post(url, data=data) as r:
-            resp = await r.json()
-            return resp.get("ok", False)
+        async with session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=payload) as resp:
+            return await resp.json()
     except Exception:
-        logger.exception("Failed to send backup document via API.")
-        return False
-
-
-# ── Message Parsing Helpers ───────────────────────────────────────────────────
-
-def parse_bml_broadcast(text: str) -> list[dict]:
-    """
-    Parses "Broadcast Markup Language" (BML) for advanced messages.
-    Syntax:
-      - [TITLE]: Large premium block headers
-      - [IMG](url): Prepends layout with a banner image
-      - [BTN](text | url): Adds quick-access action buttons (max 2 per row)
-    """
-    blocks = []
-    current_text = []
-    image_url = None
-    buttons = []
-
-    lines = text.split("\n")
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("[TITLE]"):
-            title_text = stripped[7:].strip()
-            current_text.append(f"<b>🌟 {title_text.upper()} 🌟</b>\n")
-        elif stripped.startswith("[IMG]"):
-            # Format: [IMG](url)
-            match = re.match(r"^\[IMG\]\((.*?)\)", stripped)
-            if match:
-                image_url = match.group(1).strip()
-        elif stripped.startswith("[BTN]"):
-            # Format: [BTN](Label | URL)
-            match = re.match(r"^\[BTN\]\((.*?)\|(.*?)\)", stripped)
-            if match:
-                btn_lbl = match.group(1).strip()
-                btn_url = match.group(2).strip()
-                buttons.append({"text": btn_lbl, "url": btn_url})
-        else:
-            current_text.append(line)
-
-    body = "\n".join(current_text).strip()
-    return [{
-        "body":      body,
-        "image_url": image_url,
-        "buttons":   buttons
-    }]
-
-
-def get_bml_markup(buttons: list) -> dict | None:
-    """Maps list of parsed button objects into Telegram InlineKeyboardMarkup format."""
-    if not buttons:
         return None
-    keyboard = []
-    row = []
-    for btn in buttons:
-        row.append({"text": btn["text"], "url": btn["url"]})
-        if len(row) == 2:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-    return {"inline_keyboard": keyboard}
 
-
-# ── Core Update Handlers ──────────────────────────────────────────────────────
-
-async def handle_message(session: aiohttp.ClientSession, db, message: dict, channels: list) -> None:
-    chat_id = message.get("chat", {}).get("id")
-    user_id = message.get("from", {}).get("id")
-    if not chat_id or not user_id:
-        return
-
-    # Basic tracking
-    username   = message.get("from", {}).get("username")
-    first_name = message.get("from", {}).get("first_name")
-    user_doc   = await track_and_get_user(db, user_id, username, first_name)
-
-    # ── Global Access Middleware (Ban check) ──
-    if user_doc and user_doc.get("is_banned"):
-        return
-
-    # Admin Panel Gate
-    is_admin_user = await _is_admin(db, user_id)
-
-    # ── Global Access Middleware (Maintenance check) ──
-    from db import is_maintenance_active
-    if await is_maintenance_active(db) and not is_admin_user:
-        await send_message(session, chat_id, "⚠️ ቦቱ በአጭር ጊዜ ጥገና ላይ ነው። እባክዎ ትንሽ ቆይተው ይሞክሩ.")
-        return
-
-    text = message.get("text", "").strip()
-
-    # ── Force Join Verification ──────────────────────────────────────────────
-    not_joined = []
-    if not is_admin_user and channels:
-        for ch in channels:
-            cached_status = check_membership(user_id, ch["channel_id"])
-            if cached_status is None:
-                # Real API check
-                is_member = False
-                try:
-                    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
-                    async with session.get(url, params={"chat_id": ch["channel_id"], "user_id": user_id}) as r:
-                        resp = await r.json()
-                        if resp.get("ok"):
-                            status = resp["result"].get("status", "")
-                            is_member = status in ("member", "administrator", "creator")
-                except Exception:
-                    logger.exception("Force join API check failed for %s", ch["channel_id"])
-                    is_member = True # fail-safe bypass on network errors
-
-                invalidate_membership_cache(user_id, ch["channel_id"])
-                # update cache
-                if is_member:
-                    # Cache true for 12 hours
-                    check_membership(user_id, ch["channel_id"]) # read triggers cache initialization, we can set manually
-                    # Let's mock a fast key store
-                    from utils import _MEMBERSHIP_CACHE
-                    _MEMBERSHIP_CACHE[(user_id, ch["channel_id"])] = (True, time.time() + 43200)
-                else:
-                    not_joined.append(ch)
-            elif not cached_status:
-                not_joined.append(ch)
-
-    if not_joined:
-        # Save payload if they used a deep link
-        if text.startswith("/start ") and len(text) > 7:
-            param = text[7:].strip()
-            await save_pending_start(db, user_id, param)
-
-        kb = []
-        for ch in not_joined:
-            username_clean = ch["channel_id"].replace("@", "")
-            kb.append([{"text": f"📢 {ch['title']}", "url": f"https://t.me/{username_clean}"}])
-        
-        kb.append([{"text": "✅ ተቀላቅያለሁ (Check Joined)", "callback_data": "verify_channels"}])
-        
-        await send_message(
-            session,
-            chat_id,
-            "⚠️ <b>ይቅርታ!</b> ቦቱን ለመጠቀም መጀመሪያ የኛን ቻናሎች መቀላቀል አለብዎት።\n\n"
-            "<i>Please join our channels below and tap Verify to proceed.</i>",
-            reply_markup={"inline_keyboard": kb}
-        )
-        return
-
-    # ── State-Machine Router (Interactive Admin Actions) ──────────────────────
-    user_state = user_doc.get("state") if user_doc else None
-
-    if is_admin_user and user_state:
-        # 1. PENDING BROADCAST
-        if user_state == "state_pending_broadcast":
-            await set_user_state(db, user_id, None)
-            if text == "❌ Cancel":
-                await send_message(session, chat_id, "❌ Broadcast cancelled.", reply_markup=_get_admin_keyboard())
-                return
-
-            blocks = parse_bml_broadcast(text)
-            if not blocks:
-                await send_message(session, chat_id, "⚠️ Invalid message formatting. Broadcast aborted.", reply_markup=_get_admin_keyboard())
-                return
-
-            block = blocks[0]
-            markup = get_bml_markup(block["buttons"])
-
-            # Async trigger delivery
-            users_list = await db.users.find({}, {"_id": 1}).to_list(length=None)
-            success_count = 0
-            fail_count = 0
-
-            status_msg = await send_message(session, chat_id, "⏳ Delivery initiated. Progress: 0%")
-
-            for i, target_user in enumerate(users_list):
-                target_id = target_user["_id"]
-                try:
-                    if block["image_url"]:
-                        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-                        payload = {"chat_id": target_id, "photo": block["image_url"], "caption": block["body"], "parse_mode": "HTML"}
-                        if markup:
-                            payload["reply_markup"] = markup
-                        async with session.post(url, json=payload) as r:
-                            res = await r.json()
-                            if res.get("ok"):
-                                success_count += 1
-                            else:
-                                fail_count += 1
-                    else:
-                        res = await send_message(session, target_id, block["body"], reply_markup=markup)
-                        if res:
-                            success_count += 1
-                        else:
-                            fail_count += 1
-                except Exception:
-                    fail_count += 1
-
-                # Update live stats every 10%
-                if len(users_list) > 10 and (i + 1) % max(1, len(users_list) // 10) == 0:
-                    pct = int(((i + 1) / len(users_list)) * 100)
-                    await edit_message_text(session, chat_id, status_msg["message_id"], f"⏳ Delivery progress: {pct}%...")
-
-            await edit_message_text(
-                session,
-                chat_id,
-                status_msg["message_id"],
-                f"📢 <b>Broadcast Complete!</b>\n\n"
-                f"✅ Successful: <code>{success_count}</code>\n"
-                f"❌ Failed/Blocked: <code>{fail_count}</code>"
-            )
-            return
-
-        # 2. PENDING FORCE JOIN CHANNEL ID
-        if user_state == "state_pending_force_join_id":
-            if text == "❌ Cancel":
-                await set_user_state(db, user_id, None)
-                await send_message(session, chat_id, "❌ Action cancelled.", reply_markup=_get_admin_keyboard())
-                return
-
-            # Clean name
-            clean_id = text.strip()
-            if not clean_id.startswith("@") and not clean_id.startswith("-100"):
-                clean_id = f"@{clean_id}"
-
-            # Ask for Title
-            await set_user_state(db, user_id, f"fj_title_{clean_id}")
-            await send_message(
-                session,
-                chat_id,
-                f"Now enter the readable <b>Title</b> or Label for <code>{clean_id}</code>:",
-                reply_markup={"keyboard": [[{"text": "❌ Cancel"}]], "resize_keyboard": True}
-            )
-            return
-
-        # 3. PENDING FORCE JOIN CHANNEL TITLE
-        if user_state.startswith("fj_title_"):
-            target_id = user_state[9:]
-            if text == "❌ Cancel":
-                await set_user_state(db, user_id, None)
-                await send_message(session, chat_id, "❌ Action cancelled.", reply_markup=_get_admin_keyboard())
-                return
-
-            success = await add_force_channel(db, target_id, text.strip())
-            await set_user_state(db, user_id, None)
-            invalidate_channels_cache()
-            
-            if success:
-                await send_message(session, chat_id, f"✅ Force-join target added:\nID: {target_id}\nTitle: {text}", reply_markup=_get_admin_keyboard())
-            else:
-                await send_message(session, chat_id, "❌ Failed to add. Check system logs.", reply_markup=_get_admin_keyboard())
-            return
-
-        # 4. PENDING REMOVE FORCE JOIN
-        if user_state == "state_pending_force_remove":
-            if text == "❌ Cancel":
-                await set_user_state(db, user_id, None)
-                await send_message(session, chat_id, "❌ Action cancelled.", reply_markup=_get_admin_keyboard())
-                return
-
-            success = await remove_force_channel(db, text.strip())
-            await set_user_state(db, user_id, None)
-            invalidate_channels_cache()
-
-            if success:
-                await send_message(session, chat_id, f"✅ Target `{text}` removed successfully.", reply_markup=_get_admin_keyboard())
-            else:
-                await send_message(session, chat_id, "❌ Target not found in the force-join configuration.", reply_markup=_get_admin_keyboard())
-            return
-
-    # ── Handle Admin Keyboard Panel Actions ───────────────────────────────────
-    if is_admin_user:
-        # ── Advanced Hybrid Slash Admin Commands ──
-        if text.startswith("/ban "):
-            parts = text.split(maxsplit=1)
-            if len(parts) == 2:
-                target_str = parts[1].strip()
-                try:
-                    target_id = int(target_str)
-                    from db import toggle_ban_user
-                    await toggle_ban_user(db, target_id, True)
-                    await send_message(session, chat_id, f"✅ <b>User {target_id} has been successfully banned.</b>")
-                except ValueError:
-                    await send_message(session, chat_id, "⚠️ Invalid user ID format. Must be an integer.")
-            else:
-                await send_message(session, chat_id, "Usage: <code>/ban <user_id></code>")
-            return
-
-        elif text.startswith("/unban "):
-            parts = text.split(maxsplit=1)
-            if len(parts) == 2:
-                target_str = parts[1].strip()
-                try:
-                    target_id = int(target_str)
-                    from db import toggle_ban_user
-                    await toggle_ban_user(db, target_id, False)
-                    await send_message(session, chat_id, f"✅ <b>User {target_id} has been unbanned.</b>")
-                except ValueError:
-                    await send_message(session, chat_id, "⚠️ Invalid user ID format. Must be an integer.")
-            else:
-                await send_message(session, chat_id, "Usage: <code>/unban <user_id></code>")
-            return
-
-        elif text.startswith("/msg "):
-            parts = text.split(maxsplit=2)
-            if len(parts) == 3:
-                target_str = parts[1].strip()
-                msg_body = parts[2].strip()
-                try:
-                    target_id = int(target_str)
-                    res = await send_message(session, target_id, msg_body)
-                    if res:
-                        await send_message(session, chat_id, f"✅ Message delivered to <code>{target_id}</code>.")
-                    else:
-                        await send_message(session, chat_id, f"❌ Failed to deliver message to <code>{target_id}</code>.")
-                except ValueError:
-                    await send_message(session, chat_id, "⚠️ Invalid user ID format.")
-            else:
-                await send_message(session, chat_id, "Usage: <code>/msg <user_id> <text></code>")
-            return
-
-        elif text.startswith("/searchdb "):
-            parts = text.split(maxsplit=1)
-            if len(parts) == 2:
-                query_str = parts[1].strip()
-                cursor = db.files.find({"display_name": {"$regex": query_str, "$options": "i"}})
-                results = await cursor.to_list(length=50)
-                if results:
-                    resp_lines = [f"🔍 <b>Matches for '{query_str}':</b>"]
-                    for r in results:
-                        resp_lines.append(
-                            f"• Name: <code>{r.get('display_name')}</code>\n"
-                            f"  ID: <code>{r.get('_id')}</code> | Unique ID: <code>{r.get('file_unique_id')}</code>"
-                        )
-                    out_text = "\n\n".join(resp_lines)
-                    if len(out_text) > 4000:
-                        out_text = out_text[:4000] + "\n... (truncated)"
-                    await send_message(session, chat_id, out_text)
-                else:
-                    await send_message(session, chat_id, "❌ No files matched that query.")
-            else:
-                await send_message(session, chat_id, "Usage: <code>/searchdb <text></code>")
-            return
-
-        elif text.startswith("/edit "):
-            parts = text.split(maxsplit=2)
-            if len(parts) == 3:
-                doc_id = parts[1].strip()
-                new_name = parts[2].strip()
-                from db import update_file_name
-                success = await update_file_name(db, doc_id, new_name)
-                if success:
-                    await send_message(session, chat_id, f"✅ File <code>{doc_id}</code> successfully renamed to <b>{new_name}</b>.")
-                else:
-                    await send_message(session, chat_id, f"❌ File <code>{doc_id}</code> not found or not modified.")
-            else:
-                await send_message(session, chat_id, "Usage: <code>/edit <doc_id> <new_name></code>")
-            return
-
-        elif text.startswith("/delete "):
-            parts = text.split(maxsplit=1)
-            if len(parts) == 2:
-                doc_id = parts[1].strip()
-                from db import delete_media_file
-                success = await delete_media_file(db, doc_id)
-                if success:
-                    await send_message(session, chat_id, f"✅ File <code>{doc_id}</code> successfully deleted from the catalog.")
-                else:
-                    await send_message(session, chat_id, f"❌ File <code>{doc_id}</code> not found.")
-            else:
-                await send_message(session, chat_id, "Usage: <code>/delete <doc_id></code>")
-            return
-
-        elif text.startswith("/addadmin "):
-            parts = text.split(maxsplit=1)
-            if len(parts) == 2:
-                target_str = parts[1].strip()
-                try:
-                    target_id = int(target_str)
-                    from db import manage_admin_role
-                    await manage_admin_role(db, target_id, True)
-                    await send_message(session, chat_id, f"✅ User <code>{target_id}</code> promoted to administrator.")
-                except ValueError:
-                    await send_message(session, chat_id, "⚠️ Invalid user ID format.")
-            else:
-                await send_message(session, chat_id, "Usage: <code>/addadmin <user_id></code>")
-            return
-
-        elif text.startswith("/deladmin "):
-            parts = text.split(maxsplit=1)
-            if len(parts) == 2:
-                target_str = parts[1].strip()
-                try:
-                    target_id = int(target_str)
-                    from db import manage_admin_role
-                    await manage_admin_role(db, target_id, False)
-                    await send_message(session, chat_id, f"✅ User <code>{target_id}</code> role revoked to regular user.")
-                except ValueError:
-                    await send_message(session, chat_id, "⚠️ Invalid user ID format.")
-            else:
-                await send_message(session, chat_id, "Usage: <code>/deladmin <user_id></code>")
-            return
-
-        elif text.startswith("/user "):
-            parts = text.split(maxsplit=1)
-            if len(parts) == 2:
-                target_str = parts[1].strip()
-                try:
-                    target_id = int(target_str)
-                    target_user = await get_user_data(db, target_id)
-                    if target_user:
-                        username_lbl = f"@{target_user.get('username')}" if target_user.get("username") else "None"
-                        first_name_lbl = target_user.get("first_name") or "None"
-                        role_lbl = target_user.get("role", "user")
-                        ban_status = "Banned 🔴" if target_user.get("is_banned") else "Active 🟢"
-                        created_lbl = target_user.get("created_at") or target_user.get("joined_at") or "Unknown"
-                        
-                        user_info = (
-                            f"👤 <b>User Stats Profile:</b>\n\n"
-                            f"🆔 ID: <code>{target_id}</code>\n"
-                            f"📛 First Name: {first_name_lbl}\n"
-                            f"🗣 Username: {username_lbl}\n"
-                            f"🛡 Role: <code>{role_lbl}</code>\n"
-                            f"🚫 Status: <b>{ban_status}</b>\n"
-                            f"📅 Join Date: <code>{created_lbl}</code>"
-                        )
-                        await send_message(session, chat_id, user_info)
-                    else:
-                        await send_message(session, chat_id, "❌ User not found in database.")
-                except ValueError:
-                    await send_message(session, chat_id, "⚠️ Invalid user ID format.")
-            else:
-                await send_message(session, chat_id, "Usage: <code>/user <user_id></code>")
-            return
-
-        # ── Advanced Hybrid Keyboard Command Handlers ──
-        elif text == "💾 Backup":
-            from db import generate_users_backup
-            backup_json = await generate_users_backup(db)
-            sent = await send_backup_file(session, chat_id, backup_json)
-            if not sent:
-                await send_message(session, chat_id, "❌ Failed to generate or send backup document.")
-            return
-
-        elif text == "🛠 Maintenance Mode":
-            from db import toggle_maintenance
-            new_status = await toggle_maintenance(db)
-            status_str = "ON 🔴" if new_status else "OFF 🟢"
-            await send_message(session, chat_id, f"🛠 Maintenance mode has been successfully toggled: <b>{status_str}</b>")
-            return
-
-        if text == "📊 Stats":
-            users_c, files_c = await get_daily_stats(db)
-            
-            # Show force join status
-            f_ch = await get_force_channels(db)
-            ch_list_str = "\n".join([f"• <code>{c['channel_id']}</code> ({c['title']})" for c in f_ch]) if f_ch else "None"
-
-            stats_body = (
-                f"📈 <b>Baraka Analytics Panel</b>\n\n"
-                f"👥 Total Users: <code>{users_c}</code>\n"
-                f"🎵 Audio Catalog: <code>{files_c}</code>\n\n"
-                f"⚙️ <b>Active Force-Join Gates:</b>\n"
-                f"{ch_list_str}\n\n"
-                f"👉 Use `/add_channel` or `/del_channel` to configure gates dynamically."
-            )
-            await send_message(session, chat_id, stats_body, reply_markup=_get_admin_keyboard())
-            return
-
-        elif text == "📢 Broadcast":
-            await set_user_state(db, user_id, "state_pending_broadcast")
-            await send_message(
-                session,
-                chat_id,
-                "📝 <b>Compose your Broadcast:</b>\n\n"
-                "Supports standard HTML formatting + premium <b>BML extensions</b>:\n"
-                "• <code>[TITLE] Section Name</code>\n"
-                "• <code>[IMG](https://url/banner.jpg)</code>\n"
-                "• <code>[BTN](Label text | https://action_link.com)</code>\n\n"
-                "Send your message now or tap Cancel.",
-                reply_markup={"keyboard": [[{"text": "❌ Cancel"}]], "resize_keyboard": True}
-            )
-            return
-
-        elif text == "📁 Upload Menzuma":
-            await send_message(
-                session,
-                chat_id,
-                "📥 <b>Upload Engine Activated</b>\n\n"
-                "Simply forward or send your MP3 audio files or PDF book documents directly to me here.\n"
-                "I will auto-parse titles and cache them safely.",
-                reply_markup=_get_admin_keyboard()
-            )
-            return
-
-        # Admin Slash Command Routing
-        if text.startswith("/add_channel"):
-            await set_user_state(db, user_id, "state_pending_force_join_id")
-            await send_message(
-                session,
-                chat_id,
-                "Enter the Telegram Channel ID (e.g., <code>@mychannel</code> or <code>-100xxxxx</code>):",
-                reply_markup={"keyboard": [[{"text": "❌ Cancel"}]], "resize_keyboard": True}
-            )
-            return
-
-        elif text.startswith("/del_channel"):
-            await set_user_state(db, user_id, "state_pending_force_remove")
-            await send_message(
-                session,
-                chat_id,
-                "Enter the Channel ID you want to remove (e.g. <code>@mychannel</code>):",
-                reply_markup={"keyboard": [[{"text": "❌ Cancel"}]], "resize_keyboard": True}
-            )
-            return
-
-    # ── User Commands & Workflows ─────────────────────────────────────────────
-
-    # 1. Start Commands & Deep Links
-    if text.startswith("/start"):
-        # Detect Deep Links
-        parts = text.split(maxsplit=1)
-        if len(parts) == 2:
-            start_param = parts[1].strip()
-            
-            # CASE A: Shareable Playlists
-            if start_param.startswith("pl_"):
-                pl = await get_playlist(db, start_param)
-                if pl:
-                    # Increment atomic plays
-                    await increment_playlist_plays(db, start_param)
-                    
-                    # Package track media group or deliver track sequence
-                    tracks = pl.get("tracks", [])
-                    pl_name = f"Shared Playlist ({len(tracks)} tracks)"
-                    
-                    await send_message(
-                        session,
-                        chat_id,
-                        f"🎧 <b>Loading Shared Playlist:</b>\n"
-                        f"👤 Creator ID: <code>{pl.get('creator_id')}</code>\n"
-                        f"📊 Play count: <code>{pl.get('play_count', 0) + 1}</code>\n"
-                        f"🔥 Tracks total: <code>{len(tracks)}</code>\n\n"
-                        f"<i>Preparing stream delivery, please wait...</i>"
-                    )
-                    
-                    # Direct file group delivery
-                    media = []
-                    for idx, t in enumerate(tracks):
-                        media.append({
-                            "type":    "audio",
-                            "media":   t["file_id"],
-                            "caption": f"{idx+1}. {t['name']}\n\n🏷 Shared via @{BOT_USERNAME}"
-                        })
-                    
-                    # Break into batches of 10 (Telegram maximum limit)
-                    for i in range(0, len(media), 10):
-                        batch = media[i:i+10]
-                        await send_media_group(session, chat_id, batch)
-                    return
-                else:
-                    await send_message(session, chat_id, "⚠️ <b>Playlist Link Expired</b>\nThat playlist is no longer active.")
-                    return
-
-            # CASE B: Direct Track Sharing
-            else:
-                # Expect ObjectId or file_unique_id
-                try:
-                    # Check Object ID lookup first
-                    query = {"_id": ObjectId(start_param)}
-                except Exception:
-                    query = {"file_unique_id": start_param}
-                
-                track = await db.files.find_one(query)
-                if track:
-                    if track.get("file_type") == "audio":
-                        kb = {"inline_keyboard": [[{"text": "❤️ Add Favorite", "callback_data": f"fav_{track['_id']}"}]]}
-                        await send_audio(
-                            session,
-                            chat_id,
-                            track["file_id"],
-                            caption=f"🎵 <b>{track.get('display_name')}</b>\n\n🏷 Enjoy streaming on @{BOT_USERNAME}",
-                            reply_markup=kb
-                        )
-                    elif track.get("file_type") == "document":
-                        await send_message(session, chat_id, f"📖 Loading Document: <b>{track.get('display_name')}</b>...")
-                        # Deliver document file
-                        payload = {"chat_id": chat_id, "document": track["file_id"], "caption": f"📖 {track.get('display_name')}\n\n@{BOT_USERNAME}"}
-                        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-                        await session.post(url, json=payload)
-                    return
-                else:
-                    await send_message(session, chat_id, "⚠️ Track/Book link not found. It may have been removed.")
-                    return
-
-        # Standard Launch menu fallback
-        web_app_url = os.getenv("WEBAPP_URL", "https://menzum.vercel.app")
-        # Build attractive inline buttons for interactive web app
-        kb = {
-            "inline_keyboard": [
-                [{"text": "🚀 Open Al-Madih App", "web_app": {"url": web_app_url}}],
-                [{"text": "📖 Read Islamic Books", "callback_data": "menu_books"}]
-            ]
-        }
-        
-        # Fresh menu delivery — clear previous inline clutter
-        last_id = user_doc.get("last_menu_msg_id") if user_doc else None
-        if last_id:
-            await delete_message(session, chat_id, last_id)
-
-        welcome_msg = await send_message(
-            session,
-            chat_id,
-            f"🌙 <b>Welcome to Al-Madih (አል-መዲህ)</b> 🌙\n\n"
-            f"The premier high-performance audio streaming platform built natively for Telegram.\n\n"
-            f"• Stream over <b>1,150+ Menzumas</b> instantly\n"
-            f"• Build custom shareable playlists\n"
-            f"• Download & Read complete Islamic books\n\n"
-            f"👉 Tap the button below to launch the streaming app!",
-            reply_markup=kb
-        )
-        if welcome_msg:
-            await save_last_menu_msg_id(db, user_id, welcome_msg["message_id"])
-        return
-
-    # Help commands
-    if text == "/help":
-        help_text = (
-            "💡 <b>Need Help? Here is how to use the Bot:</b>\n\n"
-            "1️⃣ Tap <b>Open Al-Madih App</b> to load the full player.\n"
-            "2️⃣ Browse catalog, create dynamic playlists inside the app, and share them directly with your friends.\n"
-            "3️⃣ Type what you want to search directly into this chat, or use <i>Inline Mode</i> inside other chats by typing <code>@MenzumaBot ...</code>"
-        )
-        await send_message(session, chat_id, help_text)
-        return
-
-    # ── Database Cache Handler (Upload Engine) ────────────────────────────────
-    # Runs when admin sends files directly
-    if is_admin_user:
-        # 1. MP3 Audio Parser
-        if "audio" in message:
-            audio = message["audio"]
-            file_id        = audio["file_id"]
-            file_unique_id = audio["file_unique_id"]
-            file_name      = audio.get("file_name", "audio.mp3")
-            display_name   = audio.get("title") or audio.get("performer") or file_name
-            file_size      = audio.get("file_size", 0)
-            mime_type      = audio.get("mime_type", "audio/mpeg")
-
-            # Extract thumb if present
-            thumb_file_id = None
-            if "thumb" in audio:
-                thumb_file_id = audio["thumb"].get("file_id")
-
-            # Save
-            await db.files.update_one(
-                {"file_unique_id": file_unique_id},
-                {
-                    "$set": {
-                        "file_id":       file_id,
-                        "file_name":     file_name,
-                        "display_name":  display_name,
-                        "file_size":     file_size,
-                        "file_type":     "audio",
-                        "mime_type":     mime_type,
-                        "thumb_file_id": thumb_file_id,
-                        "updated_at":    datetime.now()
-                    },
-                    "$setOnInsert": {
-                        "created_at": datetime.now()
-                    }
-                },
-                upsert=True
-            )
-            await send_message(session, chat_id, f"✅ <b>Audio Cached Successfully!</b>\nName: <code>{display_name}</code>\nID: <code>{file_unique_id}</code>")
-            return
-
-        # 2. PDF Document Parser
-        elif "document" in message:
-            doc = message["document"]
-            mime_type = doc.get("mime_type", "")
-            if mime_type != "application/pdf" and not doc.get("file_name", "").endswith(".pdf"):
-                await send_message(session, chat_id, "⚠️ Only PDF documents are supported under the document library parser.")
-                return
-
-            file_id        = doc["file_id"]
-            file_unique_id = doc["file_unique_id"]
-            file_name      = doc.get("file_name", "book.pdf")
-            display_name   = file_name.replace(".pdf", "").replace("_", " ").replace("-", " ")
-            file_size      = doc.get("file_size", 0)
-
-            # Save to document catalog
-            await db.files.update_one(
-                {"file_unique_id": file_unique_id},
-                {
-                    "$set": {
-                        "file_id":      file_id,
-                        "file_name":    file_name,
-                        "display_name": display_name,
-                        "file_size":    file_size,
-                        "file_type":    "document",
-                        "mime_type":    "application/pdf",
-                        "updated_at":   datetime.now()
-                    },
-                    "$setOnInsert": {
-                        "created_at": datetime.now()
-                    }
-                },
-                upsert=True
-            )
-            await send_message(session, chat_id, f"✅ <b>Book Document Cached Successfully!</b>\nTitle: <code>{display_name}</code>\nID: <code>{file_unique_id}</code>")
-            return
-
-    # ── Plain-Text Search Router (Fallback) ───────────────────────────────────
-    if text:
-        # Perform indexed catalog regex matching
-        sq = build_search_query(text)
-        if sq:
-            docs = await db.files.find(sq).limit(5).to_list(length=5)
-            if docs:
-                for doc in docs:
-                    kb = {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
-                    await send_audio(
-                        session,
-                        chat_id,
-                        doc["file_id"],
-                        caption=f"🎵 <b>{doc.get('display_name')}</b>\n\n🏷 Stream on @{BOT_USERNAME}",
-                        reply_markup=kb
-                    )
-                return
-            else:
-                # No exact match — fetch fuzzy suggestions
-                suggestions = await get_fuzzy_suggestions(db, text)
-                if suggestions:
-                    await send_message(
-                        session,
-                        chat_id,
-                        "🔍 <b>No exact track match found.</b>\nDid you mean one of these?",
-                        reply_markup=get_fuzzy_kb(suggestions)
-                    )
-                else:
-                    await send_message(
-                        session,
-                        chat_id,
-                        "⚠️ <b>No matches found</b>\nWe couldn't find any track or book matching that query. Try typing another title.",
-                        reply_markup=get_not_found_kb()
-                    )
-
-
-async def handle_callback(session: aiohttp.ClientSession, db, callback: dict, channels: list) -> None:
-    query_id = callback.get("id")
-    chat_id  = callback.get("message", {}).get("chat", {}).get("id")
-    user_id  = callback.get("from", {}).get("id")
-    if not query_id or not user_id:
-        return
-
-    # ── Global Access Middleware (Ban check) ──
-    user_doc = await get_user_data(db, user_id)
-    if user_doc and user_doc.get("is_banned"):
-        return
-
-    # Admin Panel Gate
-    is_admin_user = await _is_admin(db, user_id)
-
-    # ── Global Access Middleware (Maintenance check) ──
-    from db import is_maintenance_active
-    if await is_maintenance_active(db) and not is_admin_user:
-        await answer_callback_query(session, query_id, "⚠️ ቦቱ በአጭር ጊዜ ጥገና ላይ ነው። እባክዎ ትንሽ ቆይተው ይሞክሩ.", show_alert=True)
-        return
-
-    data = callback.get("data", "")
-
-    # 1. Verification of force-join channels
-    if data == "verify_channels":
-        not_joined = []
-        if channels:
-            for ch in channels:
-                is_member = False
-                try:
-                    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
-                    async with session.get(url, params={"chat_id": ch["channel_id"], "user_id": user_id}) as r:
-                        resp = await r.json()
-                        if resp.get("ok"):
-                            status = resp["result"].get("status", "")
-                            is_member = status in ("member", "administrator", "creator")
-                except Exception:
-                    is_member = True # Bypass error
-                
-                if is_member:
-                    from utils import _MEMBERSHIP_CACHE
-                    _MEMBERSHIP_CACHE[(user_id, ch["channel_id"])] = (True, time.time() + 43200)
-                else:
-                    not_joined.append(ch)
-
-        if not_joined:
-            await answer_callback_query(session, query_id, "⚠️ Still not subscribed to all channels! Please join and verify again.", show_alert=True)
-        else:
-            await answer_callback_query(session, query_id, "✅ Verification Successful!")
-            
-            # Retrieve pending deep link parameter
-            user_doc = await get_user_data(db, user_id)
-            pending = user_doc.get("pending_start") if user_doc else None
-            
-            # Clear pending state
-            await db.users.update_one({"_id": user_id}, {"$unset": {"pending_start": ""}})
-            
-            # Send standard start message or fire deep link router
-            start_payload = f"/start {pending}" if pending else "/start"
-            # Route simulated message manually
-            await handle_message(session, db, {
-                "chat": {"id": chat_id},
-                "from": {"id": user_id, "username": callback.get("from", {}).get("username"), "first_name": callback.get("from", {}).get("first_name")},
-                "text": start_payload
-            }, channels)
-            
-            # Delete joining instructions message to avoid confusion
-            msg_id = callback.get("message", {}).get("message_id")
-            if msg_id:
-                await delete_message(session, chat_id, msg_id)
-        return
-
-    # 2. Toggle Favorites Action
-    if data.startswith("fav_"):
-        track_id_str = data[4:]
-        res = await toggle_favorite(db, user_id, track_id_str)
-        if res is True:
-            await answer_callback_query(session, query_id, "❤️ Added to Favorites!")
-        elif res is False:
-            await answer_callback_query(session, query_id, "💔 Removed from Favorites!")
-        else:
-            await answer_callback_query(session, query_id, "❌ Error saving favorite. Track may be missing.")
-        return
-
-    # 3. Interactive Books Directory
-    if data == "menu_books":
-        # Find all documents (PDFs)
-        books = await db.files.find({"file_type": "document"}).to_list(length=50)
-        if not books:
-            await answer_callback_query(session, query_id, "📚 The Book library is currently empty!")
-            return
-
-        kb_rows = []
-        for b in books:
-            # Inline button for direct load
-            short_id = str(b["_id"])
-            kb_rows.append([{"text": f"📖 {b.get('display_name')}", "callback_data": f"read_{short_id}"}])
-        
-        await edit_message_text(
-            session,
-            chat_id,
-            callback["message"]["message_id"],
-            "📚 <b>Al-Madih Islamic Library</b>\n\n"
-            "Select any book below to view and read immediately inside Telegram:",
-            reply_markup={"inline_keyboard": kb_rows}
-        )
-        return
-
-    if data.startswith("read_"):
-        book_id = data[5:]
-        try:
-            book_doc = await db.files.find_one({"_id": ObjectId(book_id)})
-            if book_doc:
-                await answer_callback_query(session, query_id, "📖 Loading Book Document...")
-                payload = {"chat_id": chat_id, "document": book_doc["file_id"], "caption": f"📖 <b>{book_doc.get('display_name')}</b>\n\n🏷 Read with @{BOT_USERNAME}"}
-                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-                await session.post(url, json=payload)
-            else:
-                await answer_callback_query(session, query_id, "❌ Book not found!")
-        except Exception:
-            await answer_callback_query(session, query_id, "❌ Invalid request identifier!")
-        return
-
-
-async def handle_inline_query(session: aiohttp.ClientSession, db, inline_query: dict) -> None:
-    query_id = inline_query.get("id")
-    user_id  = inline_query.get("from", {}).get("id")
-    query    = inline_query.get("query", "").strip()
-    if not query_id or not user_id:
-        return
-
-    # ── Global Access Middleware (Ban check) ──
-    user_doc = await get_user_data(db, user_id)
-    if user_doc and user_doc.get("is_banned"):
-        return
-
-    # Admin Panel Gate
-    is_admin_user = await _is_admin(db, user_id)
-
-    # ── Global Access Middleware (Maintenance check) ──
-    from db import is_maintenance_active
-    if await is_maintenance_active(db) and not is_admin_user:
-        await answer_inline_query(session, query_id, [])
-        return
-
-    # Direct indexed search query
-    results = []
-    sq = build_search_query(query) if query else {"file_type": "audio"}
-
+async def _edit_html_message(session, chat_id, message_id: int, text: str, reply_markup=None) -> dict | None:
+    if not BOT_TOKEN: return None
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
+    if reply_markup: payload["reply_markup"] = reply_markup
     try:
+        async with session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText", json=payload) as resp:
+            return await resp.json()
+    except Exception:
+        return None
+
+async def _react_to_message(session, chat_id: int, message_id: int, emoji: str):
+    if not BOT_TOKEN: return
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "reaction": [{"type": "emoji", "emoji": emoji}]
+    }
+    try:
+        async with session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setMessageReaction", json=payload) as resp:
+            await resp.read()
+    except Exception as e:
+        print(f"Failed to set reaction: {e}")
+
+
+async def _channel_mgmt_menu_text(db) -> str:
+    channels = await get_force_channels(db)
+    text = "📢 *Channel Management*\n\n"
+    if channels:
+        text += "\n".join(f"• `@{ch['username']}`" for ch in channels) + "\n"
+    else:
+        text += "No channels configured. Bot is in open access mode.\n"
+    return text + "\nWhat would you like to do?"
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  AL-MADIH ELITE BROADCAST ENGINE HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+_BML_TOKEN_RE = re.compile(
+    r"\[(?P<label>[^\]]+)\]\((?P<type>url|app|cb|switch|switch_cur):(?P<value>[^)]*)\)"
+)
+_BML_MACRO_RE = re.compile(
+    r"\{(?P<macro>latest_tracks|trending|latest_pdfs|random_track):?(?P<arg>\d*)\}"
+)
+
+async def _resolve_macro(db, macro: str, arg: str) -> list[dict]:
+    n = max(1, min(int(arg), 8)) if arg.isdigit() else 3
+    try:
+        if macro == "latest_tracks":
+            docs = await (
+                db.files
+                .find({"file_id": {"$exists": True}}, {"_id": 1, "display_name": 1})
+                .sort("_id", -1)
+                .limit(n)
+                .to_list(length=n)
+            )
+            return [{"text": f"🎵 {doc.get('display_name', 'Track')[:40]}", "callback_data": f"play_{doc['_id']}"} for doc in docs]
+
+        if macro == "trending":
+            pipeline = [
+                {"$match": {"listen_history": {"$exists": True, "$not": {"$size": 0}}}},
+                {"$unwind": "$listen_history"},
+                {"$match": {"listen_history.played_at": {"$gte": datetime(datetime.now(timezone.utc).year, datetime.now(timezone.utc).month, 1, tzinfo=timezone.utc)}}},
+                {"$group": {"_id": "$listen_history.track_id", "plays": {"$sum": 1}, "name": {"$first": "$listen_history.name"}}},
+                {"$sort": {"plays": -1}},
+                {"$limit": n},
+            ]
+            cursor = db.users.aggregate(pipeline)
+            docs   = await cursor.to_list(length=n)
+            buttons = []
+            for doc in docs:
+                try:
+                    file_doc = await db.files.find_one({"display_name": {"$regex": re.escape(doc.get("name", "")), "$options": "i"}}, {"_id": 1})
+                    oid = str(file_doc["_id"]) if file_doc else doc["_id"]
+                    buttons.append({"text": f"🔥 {doc.get('name', 'Track')[:38]} ({doc['plays']}▶)", "callback_data": f"play_{oid}"})
+                except Exception:
+                    continue
+            return buttons
+
+        if macro == "latest_pdfs":
+            docs = await (
+                db.pdfs
+                .find({}, {"_id": 1, "title": 1})
+                .sort("approved_at", -1)
+                .limit(n)
+                .to_list(length=n)
+            )
+            return [{"text": f"📄 {doc.get('title', 'PDF')[:40]}", "callback_data": f"pdf_dl_{doc['_id']}"} for doc in docs]
+
+        if macro == "random_track":
+            count = await db.files.count_documents({"file_id": {"$exists": True}})
+            if count == 0: return []
+            skip  = random.randint(0, max(0, count - 1))
+            doc   = await db.files.find_one({"file_id": {"$exists": True}}, {"_id": 1, "display_name": 1}, skip=skip)
+            if not doc: return []
+            return [{"text": f"🎲 {doc.get('display_name', 'Discover')[:42]}", "callback_data": f"play_{doc['_id']}"}]
+
+    except Exception as exc:
+        logger.warning("_resolve_macro(%s) failed: %s", exc)
+    return []
+
+async def _parse_bml(db, bml_text: str) -> tuple[list[list[dict]] | None, list[str]]:
+    keyboard: list[list[dict]] = []
+    errors:   list[str]        = []
+    for line_no, raw_line in enumerate(bml_text.strip().splitlines(), start=1):
+        line = raw_line.strip()
+        if not line: continue
+        macro_match = _BML_MACRO_RE.fullmatch(line)
+        if macro_match:
+            macro, arg = macro_match.group("macro"), macro_match.group("arg")
+            buttons = await _resolve_macro(db, macro, arg)
+            if not buttons:
+                errors.append(f"Line {line_no}: macro `{{{macro}}}` returned no results.")
+                continue
+            for btn in buttons: keyboard.append([btn])
+            continue
+
+        row: list[dict] = []
+        for seg in [s.strip() for s in line.split("|")]:
+            m = _BML_TOKEN_RE.fullmatch(seg)
+            if not m:
+                errors.append(f"Line {line_no}: could not parse `{seg[:60]}`. Expected format: [Label](type:value)")
+                continue
+            label, btype, value = m.group("label").strip(), m.group("type"), m.group("value").strip()
+
+            if btype == "url":
+                if not value.startswith(("http://", "https://", "tg://")): errors.append(f"Line {line_no}: URL must start with http/https/tg://")
+                else: row.append({"text": label, "url": value})
+            elif btype == "app":
+                if not value.startswith(("http://", "https://")): errors.append(f"Line {line_no}: WebApp URL must start with http/https")
+                else: row.append({"text": label, "web_app": {"url": value}})
+            elif btype == "cb":
+                if len(value.encode()) > 64: errors.append(f"Line {line_no}: callback_data exceeds 64 bytes.")
+                else: row.append({"text": label, "callback_data": value})
+            elif btype == "switch": row.append({"text": label, "switch_inline_query": value})
+            elif btype == "switch_cur": row.append({"text": label, "switch_inline_query_current_chat": value})
+
+        if row: keyboard.append(row)
+    return (keyboard if keyboard else None), errors
+
+def _bml_syntax_guide() -> str:
+    return (
+        "📋 *Broadcast Button Syntax (BML)*\n\n"
+        "Each line = one keyboard row. Use `|` to put buttons side by side.\n\n"
+        "*Button types:*\n"
+        "`[Label](url:https://...)` — link\n"
+        "`[Label](app:https://...)` — Mini App\n"
+        "`[Label](cb:callback_data)` — callback\n"
+        "`[Label](switch:query)` — inline search\n"
+        "`[Label](switch_cur:query)` — inline search in this chat\n\n"
+        "*Smart macros (one per line):*\n"
+        "`{latest_tracks:3}` — 3 newest tracks\n"
+        "`{trending:5}` — 5 most played this month\n"
+        "`{latest_pdfs:3}` — 3 newest approved PDFs\n"
+        "`{random_track}` — one surprise track\n\n"
+        "*Example:*\n"
+        "`[📖 Open App](app:https://almadih.vercel.app) | [📢 Channel](url:https://t.me/Al_madih)`\n"
+        "`{trending:3}`\n"
+        "`[🔀 Share](switch:)`\n\n"
+        "Send your BML now, or send /skip for no buttons."
+    )
+
+async def _execute_broadcast(session, db, admin_chat_id: int, msg_id: int, markup: dict | None) -> str:
+    total, failed, consecutive = 0, 0, 0
+    CIRCUIT_BREAKER, CHUNK_SLEEP, CHUNK_SIZE = 10, 0.025, 25
+
+    all_user_ids = []
+    async for u in db.users.find({}, {"_id": 1}): all_user_ids.append(u["_id"])
+    total_target = len(all_user_ids)
+
+    for i, uid in enumerate(all_user_ids):
+        if consecutive >= CIRCUIT_BREAKER:
+            return f"⚠️ Broadcast aborted at {total}/{total_target} — {CIRCUIT_BREAKER} consecutive errors triggered circuit breaker.\n✅ Delivered: {total}  ❌ Failed: {failed}"
+        try:
+            result = await copy_message(session, uid, admin_chat_id, msg_id, reply_markup=markup)
+            if result and result.get("ok") is False:
+                err_code = result.get("error_code", 0)
+                if err_code == 429:
+                    retry_after = result.get("parameters", {}).get("retry_after", 5)
+                    await asyncio.sleep(retry_after)
+                    result2 = await copy_message(session, uid, admin_chat_id, msg_id, reply_markup=markup)
+                    if result2 and result2.get("ok"):
+                        total += 1; consecutive = 0
+                    else:
+                        failed += 1; consecutive += 1
+                    continue
+                if err_code in (400, 403):
+                    failed += 1; consecutive = 0
+                    continue
+                failed += 1; consecutive += 1
+            else:
+                total += 1; consecutive = 0
+        except Exception as exc:
+            logger.warning("Broadcast send to %s failed: %s", exc)
+            failed += 1; consecutive += 1
+
+        if (i + 1) % CHUNK_SIZE == 0: await asyncio.sleep(CHUNK_SLEEP * CHUNK_SIZE)
+        else: await asyncio.sleep(CHUNK_SLEEP)
+
+    return f"✅ Broadcast complete.\n📤 Delivered: *{total}* / {total_target}\n❌ Failed / blocked: {failed}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _send_menu(session, db, chat_id, user_id: int, user_data: dict | None) -> None:
+    result  = await _send_html_message(session, chat_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
+    if result and result.get("ok"):
+        await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
+
+async def _deliver_playlist(session, db, chat_id, playlist: dict) -> None:
+    tracks = playlist.get("tracks", [])
+    if not tracks:
+        await send_message(session, chat_id, "⚠️ ፕሌይሊስቱ ባዶ ነው! ቢያንስ አንድ መንዙማ ያክሉ።")
+        return
+
+    playlist_id = playlist["_id"]
+    creator_id  = playlist.get("creator_id", "")
+
+    if len(tracks) == 1:
+        t  = tracks[0]
+        kb = {"inline_keyboard": [[{"text": "❤️ Fav", "switch_inline_query_current_chat": t["name"][:30]}]]}
+        res = await send_audio(
+            session, chat_id, t["file_id"],
+            f"🎵 {t['name']}\n\n📋 Playlist by user {creator_id}\n@{BOT_USERNAME}",
+            reply_markup=kb,
+        )
+        if res and res.get("ok"):
+            await _react_to_message(session, chat_id, res["result"]["message_id"], "🥰")
+    else:
+        media = []
+        for i, t in enumerate(tracks):
+            item = {"type": "audio", "media": t["file_id"]}
+            if i == 0:
+                item["caption"]    = (
+                    f"🎧 *Playlist* — {len(tracks)} tracks\n"
+                    f"📋 Shared via @{BOT_USERNAME}"
+                )
+                item["parse_mode"] = "Markdown"
+            media.append(item)
+        res = await send_media_group(session, chat_id, media)
+        if res and res.get("ok") and isinstance(res.get("result"), list) and len(res["result"]) > 0:
+            await _react_to_message(session, chat_id, res["result"][0]["message_id"], "🥰")
+
+    await increment_playlist_plays(db, playlist_id)
+
+async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
+    user       = cb["from"]
+    user_id    = user["id"]
+    cb_id      = cb["id"]
+    data_str   = cb.get("data", "")
+    chat_id    = cb["message"]["chat"]["id"]
+    message_id = cb["message"]["message_id"]
+    first_name = user.get("first_name", "User")
+
+    user_data  = await track_and_get_user(db, user_id, first_name)
+
+    # ── Hook & Lock: Enforce join ONLY when trying to play audio or download PDF ──
+    if data_str.startswith("play_") or data_str.startswith("pdf_dl_"):
+        if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
+            await answer_callback_query(session, cb_id, "⚠️ እባክዎ መጀመሪያ ቻናሉን ይቀላቀሉ!", show_alert=True)
+            await send_message(
+                session, chat_id,
+                "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!",
+                reply_markup=get_subscription_kb(channels)
+            )
+            return
+
+    if data_str != "check_subscription" and not _is_admin(user_id):
+        # We bypass global gatekeeper here, we only gatekeep specific actions like playback
+        pass
+
+    if data_str == "check_subscription":
+        invalidate_membership_cache(user_id)
+        if await check_membership(session, user_id, channels):
+            await answer_callback_query(session, cb_id, "✅ እንኳን ደህና መጡ!")
+            pending = user_data.get("pending_start")
+            if pending and pending.startswith("pl_"):
+                await save_pending_start(db, user_id, None)
+                playlist = await get_playlist(db, pending)
+                if playlist:
+                    await edit_message_text(
+                        session, chat_id, message_id,
+                        f"🎧 *Playing playlist* `{pending}` — {len(playlist.get('tracks', []))} tracks\n\n@{BOT_USERNAME}",
+                    )
+                    await _deliver_playlist(session, db, chat_id, playlist)
+                    result = await _send_html_message(session, chat_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
+                    if result and result.get("ok"):
+                        await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
+                    return
+            await _edit_html_message(session, chat_id, message_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
+        else:
+            await answer_callback_query(session, cb_id, "❌ አሁንም አልተቀላቀሉም! ቻናሉን Join ይበሉ", show_alert=True)
+        return
+
+    if data_str == "pl_start":
+        await set_user_state(db, user_id, "playlist_builder", {"building_playlist": [], "pl_ctrl_msg_id": message_id})
+        await edit_message_text(
+            session, chat_id, message_id,
+            "🎧 *የፕሌይሊስት ማዘጋጃ (Playlist Builder)* — 0/10\n\nየመንዙማውን ስም ይፈልጉ እና ➕ የሚለውን በመጫን ወደ ስብስብዎ ያክሉ።\n\n_እስከ 10 መንዙማ መምረጥ ይችላሉ። ሲጨርሱ ✅ Save የሚለውን ይጫኑ።_",
+            reply_markup=get_playlist_builder_kb(0),
+        )
+        await answer_callback_query(session, cb_id)
+        return
+
+    if data_str.startswith("pl_add_"):
+        doc_id = data_str.split("pl_add_")[1]
+        count  = await add_track_to_building_playlist(db, user_id, doc_id)
+        if count == -2:
+            await answer_callback_query(session, cb_id, "⚠️ Already in playlist!", show_alert=False)
+            return
+        if count == -1:
+            await answer_callback_query(session, cb_id, "🎵 ከ 10 በላይ መንዙማ መጨመር አይቻልም!", show_alert=True)
+            return
+
+        await answer_callback_query(session, cb_id, f"➕ Added! ({count}/10)")
+        user_data = await get_user_data(db, user_id)
+        ctrl_msg_id = (user_data or {}).get("pl_ctrl_msg_id")
+        if ctrl_msg_id:
+            await edit_message_text(
+                session, chat_id, ctrl_msg_id,
+                f"🎧 *የፕሌይሊስት ማዘጋጃ (Playlist Builder)* — {count}/10\n\nየመንዙማውን ስም ይፈልጉ እና ➕ የሚለውን በመጫን ወደ ስብስብዎ ያክሉ።\n\n_እስከ 10 መንዙማ መምረጥ ይችላሉ። ሲጨርሱ ✅ Save የሚለውን ይጫኑ።_",
+                reply_markup=get_playlist_builder_kb(count),
+            )
+        return
+
+    if data_str == "pl_done":
+        user_data   = await get_user_data(db, user_id)
+        doc_ids     = (user_data or {}).get("building_playlist", [])
+        if not doc_ids:
+            await answer_callback_query(session, cb_id, "⚠️ ቢያንስ አንድ መንዙማ ያክሉ!", show_alert=True)
+            return
+
+        await answer_callback_query(session, cb_id, "⏳ Saving playlist...")
+        playlist_id = await create_playlist(db, user_id, doc_ids)
+        await set_user_state(db, user_id, "idle", {"building_playlist": [], "pl_ctrl_msg_id": None})
+
+        if not playlist_id:
+            await _edit_html_message(session, chat_id, message_id, "❌ Failed to save playlist.", reply_markup=_get_main_menu_kb_local())
+            return
+
+        deep_link = f"https://t.me/{BOT_USERNAME}?start={playlist_id}"
+        share_text = f"✅ *Playlist Saved!*\n\n🔗 *Share this link:*\n`{deep_link}`\n\n_ይህን ሊንክ የሚጫን ማንኛውም ሰው ያዘጋጁትን Playlist ወዲያውኑ ማዳመጥ ይችላል!_"
+        await edit_message_text(
+            session, chat_id, message_id, share_text,
+            reply_markup={"inline_keyboard": [[{"text": "🏠 Main Menu", "callback_data": "pg_close"}]]},
+        )
+        return
+
+    if data_str == "pl_cancel":
+        await set_user_state(db, user_id, "idle", {"building_playlist": [], "pl_ctrl_msg_id": None})
+        await _edit_html_message(session, chat_id, message_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
+        await answer_callback_query(session, cb_id, "❌ Playlist cancelled.")
+        return
+
+    if data_str.startswith("play_"):
+        doc_id = data_str.split("play_")[1]
+        try:
+            file_doc = None
+            if len(doc_id) == 24:
+                try:
+                    file_doc = await db.files.find_one(
+                        {"_id": ObjectId(doc_id)},
+                        {"file_id": 1, "display_name": 1},
+                    )
+                except InvalidId:
+                    file_doc = None
+
+            if file_doc and file_doc.get("file_id"):
+                kb = {
+                    "inline_keyboard": [
+                        [{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{doc_id}"}],
+                        [{"text": "❤️ Fav", "callback_data": f"fav_{doc_id}"}],
+                    ]
+                }
+                res = await send_audio(
+                    session, chat_id, file_doc.get("file_id"),
+                    f"🎵 {file_doc.get('display_name', 'Unknown')}\n\n@{BOT_USERNAME}",
+                    reply_markup=kb,
+                )
+                if res and res.get("ok"):
+                    await _react_to_message(session, chat_id, res["result"]["message_id"], "🥰")
+                await answer_callback_query(session, cb_id)
+            else:
+                await answer_callback_query(session, cb_id, "⚠️ File not found", show_alert=True)
+        except Exception:
+            logger.exception("play_ callback failed for doc_id=%s", doc_id)
+            await answer_callback_query(session, cb_id, "❌ Error")
+        return
+
+    if data_str.startswith("pdf_dl_"):
+        pdf_id = data_str.replace("pdf_dl_", "")
+        try:
+            pdf_doc = await db.pdfs.find_one({"_id": ObjectId(pdf_id)})
+            if pdf_doc and "file_id" in pdf_doc:
+                bot_token = os.environ.get("BOT_TOKEN")
+                url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+                payload = {
+                    "chat_id": chat_id,
+                    "document": pdf_doc["file_id"],
+                    "caption": f"📄 {pdf_doc.get('title', '')}\n\n✨ @{BOT_USERNAME}"
+                }
+                res_http = await session.post(url, json=payload)
+                res_data = await res_http.json()
+                if res_data and res_data.get("ok"):
+                    await _react_to_message(session, chat_id, res_data["result"]["message_id"], "🥰")
+                await db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$inc": {"download_count": 1}})
+            else:
+                await answer_callback_query(session, cb_id, "❌ ይቅርታ፣ ፋይሉ አልተገኘም!", show_alert=True)
+                return
+        except Exception as e:
+            logger.error(f"PDF DL Error: {e}")
+        
+        await answer_callback_query(session, cb_id)
+        return
+
+    if data_str.startswith("pg_"):
+        if data_str == "pg_close":
+            await _edit_html_message(session, chat_id, message_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
+        else:
+            new_page = int(data_str.split("_")[1])
+            text, kb = await get_catalog_page(db, new_page)
+            await edit_message_text(session, chat_id, message_id, text, reply_markup=kb)
+        await answer_callback_query(session, cb_id)
+        return
+
+    if data_str.startswith("fav_"):
+        doc_id = data_str.split("fav_")[1]
+        try:
+            file_doc = None
+            if len(doc_id) == 24:
+                try:
+                    file_doc = await db.files.find_one(
+                        {"_id": ObjectId(doc_id)},
+                        {"_id": 1, "file_id": 1},
+                    )
+                except InvalidId:
+                    file_doc = None
+
+            if file_doc:
+                added = await toggle_favorite(db, user_id, file_doc["file_id"])
+                await answer_callback_query(session, cb_id, "❤️ Saved" if added else "💔 Removed")
+            else:
+                await answer_callback_query(session, cb_id, "⚠️ Missing")
+        except Exception:
+            logger.exception("fav_ callback failed for doc_id=%s", doc_id)
+            await answer_callback_query(session, cb_id, "❌ Error")
+        return
+
+    if data_str.startswith("report_"):
+        doc_id = data_str.split("report_")[1]
+        try:
+            file_doc = await db.files.find_one({"_id": ObjectId(doc_id)}, {"display_name": 1})
+            if file_doc:
+                await send_message(session, ADMIN_ID, f"🚨 Report: `{file_doc.get('display_name')}`\nID: `{doc_id}`")
+                await answer_callback_query(session, cb_id, "✅ Reported!", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    if data_str.startswith("broadcast_") and _is_admin(user_id):
+        if data_str == "broadcast_confirm":
+            admin_data = await get_user_data(db, user_id)
+            msg_id_bc  = (admin_data or {}).get("broadcast_msg_id")
+            markup_bc  = (admin_data or {}).get("broadcast_markup")
+            if msg_id_bc:
+                await edit_message_text(session, chat_id, message_id, "🚀 *Broadcasting…* please wait.")
+                summary = await _execute_broadcast(session, db, chat_id, msg_id_bc, markup_bc)
+                await send_message(session, chat_id, summary)
+                await set_user_state(db, user_id, "idle")
+
+        elif data_str == "broadcast_cancel":
+            await edit_message_text(session, chat_id, message_id, "❌ Broadcast cancelled.")
+            await set_user_state(db, user_id, "idle")
+
+        elif data_str == "broadcast_edit_markup":
+            await set_user_state(db, user_id, "broadcast_markup_wait")
+            await send_message(session, chat_id, _bml_syntax_guide())
+
+        await answer_callback_query(session, cb_id)
+        return
+
+    if data_str.startswith("admin_ch_") and _is_admin(user_id):
+        if data_str == "admin_ch_menu":
+            text = await _channel_mgmt_menu_text(db)
+            await edit_message_text(session, chat_id, message_id, text, reply_markup=get_channel_mgmt_kb())
+            await answer_callback_query(session, cb_id)
+            return
+
+        if data_str == "admin_ch_add":
+            await set_user_state(db, user_id, "admin_add_channel_wait")
+            await edit_message_text(
+                session, chat_id, message_id,
+                "📢 *Add Force-Join Channel*\n\nSend the channel username _(without @)_.\nExample: `Al_madih`",
+                reply_markup={"inline_keyboard": [[{"text": "🔙 Back", "callback_data": "admin_ch_menu"}]]},
+            )
+            await answer_callback_query(session, cb_id)
+            return
+
+        if data_str == "admin_ch_list":
+            ch_list = await get_force_channels(db)
+            if not ch_list:
+                await answer_callback_query(session, cb_id, "No channels configured yet!", show_alert=True)
+                return
+            remove_buttons = [[{"text": f"❌ @{ch['username']}", "callback_data": f"admin_ch_del_{ch['username']}"}] for ch in ch_list]
+            remove_buttons.append([{"text": "🔙 Back", "callback_data": "admin_ch_menu"}])
+            await edit_message_text(
+                session, chat_id, message_id,
+                "🗑 *Remove a Channel*\nTap a channel to delete it from the force-join list.",
+                reply_markup={"inline_keyboard": remove_buttons},
+            )
+            await answer_callback_query(session, cb_id)
+            return
+
+        if data_str.startswith("admin_ch_del_"):
+            username = data_str.split("admin_ch_del_")[1]
+            deleted  = await remove_force_channel(db, username)
+            invalidate_channels_cache()
+            invalidate_all_membership_cache()
+            await answer_callback_query(session, cb_id, f"✅ @{username} removed." if deleted else f"⚠️ @{username} not found.")
+            ch_list = await get_force_channels(db)
+            if ch_list:
+                remove_buttons = [[{"text": f"❌ @{ch['username']}", "callback_data": f"admin_ch_del_{ch['username']}"}] for ch in ch_list]
+                remove_buttons.append([{"text": "🔙 Back", "callback_data": "admin_ch_menu"}])
+                await edit_message_text(
+                    session, chat_id, message_id,
+                    "🗑 *Remove a Channel*\nTap a channel to delete it.",
+                    reply_markup={"inline_keyboard": remove_buttons},
+                )
+            else:
+                await edit_message_text(session, chat_id, message_id, await _channel_mgmt_menu_text(db), reply_markup=get_channel_mgmt_kb())
+            return
+
+        if data_str == "admin_ch_close":
+            await edit_message_text(session, chat_id, message_id, "✅ Channel management closed.")
+            await answer_callback_query(session, cb_id)
+            return
+
+async def handle_message(session, db, message: dict, channels: list[dict]) -> None:
+    chat_id    = message.get("chat", {}).get("id")
+    user_info  = message.get("from", {})
+    user_id    = user_info.get("id")
+    text       = _normalize_text(message.get("text", ""))
+    msg_id     = message.get("message_id")
+    first_name = user_info.get("first_name", "User")
+
+    user_data = await track_and_get_user(db, user_id, first_name)
+    state     = user_data.get("state")
+
+    if not _is_admin(user_id):
+        if not await check_membership(session, user_id, channels):
+            parts       = text.split(" ", 1) if text.startswith("/start") else []
+            start_param = parts[1].strip() if len(parts) > 1 else None
+            if start_param:
+                await save_pending_start(db, user_id, start_param)
+            await send_message(
+                session, chat_id,
+                "**⚠️ አሰላሙ አለይኩም! ቦቱን ለመጠቀም እባክዎ መጀመሪያ ቻናላችንን ይቀላቀሉ።**",
+                reply_markup=get_subscription_kb(channels),
+            )
+            return
+
+    if text and (text == "/start" or text.startswith("/start ")):
+        await delete_message(session, chat_id, msg_id)
+        old_menu_id = user_data.get("last_menu_msg_id")
+        if old_menu_id:
+            await delete_message(session, chat_id, old_menu_id)
+
+        parts       = text.split(" ", 1)
+        start_param = parts[1].strip() if len(parts) > 1 else None
+        if start_param and start_param.startswith("pl_"):
+            playlist = await get_playlist(db, start_param)
+            if playlist:
+                await send_message(session, chat_id, f"🎧 *Playing playlist* `{start_param}` — {len(playlist.get('tracks', []))} tracks\n\n@{BOT_USERNAME}")
+                await _deliver_playlist(session, db, chat_id, playlist)
+                result = await _send_html_message(session, chat_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
+                if result and result.get("ok"):
+                    await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
+                return
+
+        result = await _send_html_message(session, chat_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
+        if result and result.get("ok"):
+            await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
+        return
+
+    if text in ("/list", "📂 Catalog (List)"):
+        await delete_message(session, chat_id, msg_id)
+        old_menu_id = (user_data or {}).get("last_menu_msg_id")
+        if old_menu_id:
+            await delete_message(session, chat_id, old_menu_id)
+        msg_text, kb = await get_catalog_page(db, 1)
+        result = await send_message(session, chat_id, msg_text, reply_markup=kb)
+        if result and result.get("ok"):
+            await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
+        return
+
+    if text == "🔧 Manage Channels" and _is_admin(user_id):
+        mgmt_text = await _channel_mgmt_menu_text(db)
+        result = await send_message(session, chat_id, mgmt_text, reply_markup=get_channel_mgmt_kb())
+        if not result or result.get("ok") is not True:
+            await send_message(session, chat_id, "API Error showing menu: " + str(result)[:200])
+        return
+
+    if state == "playlist_builder" and text and not text.startswith("/") and not (_is_admin(user_id) and text in _ADMIN_KB_TEXTS):
+        await _react_to_message(session, chat_id, msg_id, "👀")
+        sq  = build_search_query(text)
+        doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
+        if doc:
+            kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
+            res = await send_audio(session, chat_id, doc["file_id"], f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
+            if res and res.get("ok"):
+                await _react_to_message(session, chat_id, res["result"]["message_id"], "🥰")
+        else:
+            suggestions = await get_fuzzy_suggestions(db, text, limit=5)
+            if suggestions:
+                await send_message(session, chat_id, "😔 የፈለጉት መንዙማ በቀጥታ አልተገኘም።\n\n_ወደ ፕሌይሊስትዎ ለመጨመር ➕ ይጫኑ፦_", reply_markup=get_playlist_fuzzy_kb(suggestions))
+            else:
+                await send_message(session, chat_id, "😔 የፈለጉት መንዙማ አልተገኘም።\nእባክዎ የተለየ ቃል ጽፈው ይሞክሩ።", reply_markup=get_not_found_kb())
+        return
+
+    if _is_admin(user_id):
+        if "document" in message:
+            doc = message.get("document")
+            fname = doc.get("file_name", "")
+            
+            if fname.lower().endswith((".pdf", ".txt", ".doc", ".docx", ".epub")):
+                cap = message.get("caption", "").split("\n")[0].strip()
+                import os
+                clean_fname = os.path.splitext(fname)[0].strip()
+                title = cap if cap else clean_fname
+                
+                try:
+                    await db.pdfs.update_one(
+                        {"title": {"$regex": re.escape(title), "$options": "i"}},
+                        {"$set": {"file_id": doc["file_id"], "title": title, "download_count": 0}},
+                        upsert=True,
+                    )
+                    await send_message(session, chat_id, f"✅ Document Saved to DB:\n📄 `{title}`")
+                except Exception as db_err:
+                    logger.error("db.pdfs.update_one failed: %s", db_err)
+                    await send_message(session, chat_id, f"❌ DB error saving Document `{title}`. Please retry.")
+                return
+
+        if state == "admin_add_channel_wait":
+            if text and not text.startswith("/"):
+                username = text.lstrip("@").strip()
+                added    = await add_force_channel(db, username)
+                invalidate_channels_cache()
+                invalidate_all_membership_cache()
+                result_text = f"✅ `@{username}` added!" if added else f"⚠️ `@{username}` already exists."
+                await send_message(
+                    session, chat_id, result_text,
+                    reply_markup={"inline_keyboard": [[{"text": "📢 Manage Channels", "callback_data": "admin_ch_menu"}]]},
+                )
+                await set_user_state(db, user_id, "idle")
+            else:
+                await send_message(session, chat_id, "⚠️ Please send a plain username, e.g. `Al_madih`.")
+            return
+
+        if state == "broadcast_wait" and text not in _ADMIN_KB_TEXTS and msg_id:
+            await set_user_state(
+                db, user_id, "broadcast_markup_wait",
+                {"broadcast_msg_id": msg_id},
+            )
+            await send_message(session, chat_id, _bml_syntax_guide())
+            return
+
+        if state == "broadcast_markup_wait" and text not in _ADMIN_KB_TEXTS:
+            admin_data = await get_user_data(db, user_id)
+            bc_msg_id  = (admin_data or {}).get("broadcast_msg_id")
+
+            if not bc_msg_id:
+                await send_message(session, chat_id, "⚠️ Session lost. Please start over with 📢 Broadcast.")
+                await set_user_state(db, user_id, "idle")
+                return
+
+            skip_markup = text.strip().lower() in ("/skip", "skip")
+            resolved_keyboard = None
+            parse_errors: list[str] = []
+
+            if not skip_markup:
+                resolved_keyboard, parse_errors = await _parse_bml(db, text)
+
+            reply_markup = {"inline_keyboard": resolved_keyboard} if resolved_keyboard else None
+
+            await set_user_state(
+                db, user_id, "broadcast_preview",
+                {"broadcast_markup": reply_markup},
+            )
+
+            if parse_errors:
+                warn_text = "⚠️ *Parse warnings (buttons with errors were skipped):*\n" + "\n".join(f"• {e}" for e in parse_errors)
+                await send_message(session, chat_id, warn_text)
+
+            await send_message(session, chat_id, "👁 *Live preview — this is exactly what users will receive:*")
+            await copy_message(session, chat_id, chat_id, bc_msg_id, reply_markup=reply_markup)
+
+            button_note = f"\n✅ *{sum(len(r) for r in resolved_keyboard)} button(s) attached across {len(resolved_keyboard)} row(s).*" if resolved_keyboard else "\n_(No buttons attached)_"
+
+            await send_message(
+                session, chat_id,
+                f"Ready to broadcast to all users?{button_note}",
+                reply_markup={
+                    "inline_keyboard": [
+                        [{"text": "✅ Send to everyone", "callback_data": "broadcast_confirm"}, {"text": "✏️ Edit buttons", "callback_data": "broadcast_edit_markup"}],
+                        [{"text": "❌ Cancel", "callback_data": "broadcast_cancel"}],
+                    ]
+                },
+            )
+            return
+
+        if text == "/admin":
+            await send_message(
+                session, chat_id, "⚙️ *Admin Panel*",
+                reply_markup={
+                    "keyboard": [[{"text": "📊 Statistics"}, {"text": "📅 Daily Stats"}], [{"text": "📢 Broadcast"}, {"text": "📂 Total Files"}], [{"text": "🔧 Manage Channels"}]],
+                    "resize_keyboard": True,
+                },
+            )
+            return
+
+        if text == "📊 Statistics":
+            u = await db.users.count_documents({})
+            f = await db.files.count_documents({})
+            await send_message(session, chat_id, f"👥 Users: `{u}`\n📂 Files: `{f}`")
+            return
+
+        if text == "📅 Daily Stats":
+            await send_message(session, chat_id, await get_daily_stats(db))
+            return
+
+        if text == "📢 Broadcast":
+            await set_user_state(db, user_id, "broadcast_wait")
+            await send_message(
+                session, chat_id,
+                "📢 *Step 1 of 2 — Broadcast Content*\n\n"
+                "Send the message you want to broadcast.\n"
+                "Supported: text, photo, video, document, audio — anything Telegram supports.\n\n"
+                "_After sending your content, I'll ask you to attach buttons (optional)._",
+            )
+            return
+
+        if text == "📂 Total Files":
+            f_count = await db.files.count_documents({})
+            await send_message(session, chat_id, f"📂 Total Files in DB: `{f_count}`")
+            return
+
+        if "audio" in message or "voice" in message:
+            f    = message.get("audio") or message.get("voice")
+            cap  = message.get("caption", "").split("\n")[0].strip()
+            name = cap if cap else f.get("file_name", "Unknown")
+            if len(name) > 3:
+                thumb_file_id = (message.get("audio", {}).get("thumbnail", {}).get("file_id") or message.get("audio", {}).get("thumb", {}).get("file_id")) 
+                update_fields = {"file_id": f["file_id"], "display_name": name}
+                if thumb_file_id: update_fields["thumb_file_id"] = thumb_file_id
+                try:
+                    await db.files.update_one({"display_name": {"$regex": re.escape(name), "$options": "i"}}, {"$set": update_fields}, upsert=True)
+                    thumb_status = " 🖼" if thumb_file_id else ""
+                    await send_message(session, chat_id, f"✅ Saved: `{name}`{thumb_status}")
+                except Exception as db_err:
+                    logger.error("db.files.update_one failed: %s", db_err)
+                    await send_message(session, chat_id, f"❌ DB error saving `{name}`. Please retry.")
+            return
+
+    if text and not text.startswith("/"):
+        await _react_to_message(session, chat_id, msg_id, "👀")
+        sq  = build_search_query(text)
+        doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
+
+        if doc:
+            matched_file_name = doc.get('display_name', 'Unknown')
+            if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
+                hostage_msg = (
+                    f"🎵 *{matched_file_name}* ተገኝቷል!\n\n"
+                    "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!"
+                )
+                await _send_html_message(session, chat_id, hostage_msg, reply_markup=get_subscription_kb(channels))
+            else:
+                kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
+                res = await send_audio(session, chat_id, doc["file_id"], f"{matched_file_name}\n\n@{BOT_USERNAME}", reply_markup=kb)
+                if res and res.get("ok"):
+                    await _react_to_message(session, chat_id, res["result"]["message_id"], "🥰")
+        else:
+            suggestions = await get_fuzzy_suggestions(db, text, limit=5)
+            if suggestions:
+                await send_message(session, chat_id, "😔 የፈለጉት መንዙማ በቀጥታ አልተገኘም።\n\n_ምናልባት ከታች ያሉት ሊሆኑ ይችላሉ? አንዱን ይምረጡ፦_", reply_markup=get_fuzzy_suggestions_kb(suggestions))
+            else:
+                await send_message(session, chat_id, "😔 የፈለጉት መንዙማ አልተገኘም።\nእባክዎ የተለየ ቃል ጽፈው ይሞክሩ ወይም 'ሙሉ ዝርዝር' የሚለውን ይጫኑ።", reply_markup=get_not_found_kb())
+
+
+async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> None:
+    query_id   = iq["id"]
+    query      = iq.get("query", "").strip().lower()
+    user_info  = iq.get("from", {})
+    user_id    = user_info.get("id")
+    first_name = user_info.get("first_name", "User")
+
+    await track_and_get_user(db, user_id, first_name)
+    results: list = []
+
+    if query.startswith("#favorites"):
+        user    = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
+        fav_ids = (user or {}).get("favorites", [])
+        if fav_ids:
+            docs = await db.files.find({"file_id": {"$in": fav_ids}}, {"file_id": 1, "display_name": 1}).limit(50).to_list(length=50)
+            for doc in docs:
+                results.append({"type": "audio", "id": str(doc["_id"]), "audio_file_id": doc["file_id"], "caption": f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", "reply_markup": {"inline_keyboard": [[{"text": "💔 Remove", "callback_data": f"fav_{str(doc['_id'])}"}]]}})
+        else:
+            results.append({"type": "article", "id": "no_favorites", "title": "No Favorites Yet", "input_message_content": {"message_text": "No favorites saved yet."}})
+    elif not query:
+        cached = get_inline_empty_cache()
+        if cached is not None:
+            await answer_inline_query(session, query_id, cached, cache_time=300)
+            return
+        docs = await db.files.find({"file_id": {"$exists": True}}, {"file_id": 1, "display_name": 1}).sort("_id", -1).limit(20).to_list(length=20)
+        for doc in docs:
+            results.append({"type": "audio", "id": str(doc["_id"]), "audio_file_id": doc["file_id"], "caption": f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}})
+        set_inline_empty_cache(results)
+    else:
+        sq   = build_search_query(query)
         docs = await db.files.find(sq, {"file_id": 1, "display_name": 1}).limit(20).to_list(length=20)
         for doc in docs:
-            results.append({
-                "type":          "audio",
-                "id":            str(doc["_id"]),
-                "audio_file_id": doc["file_id"],
-                "caption":       f"🎵 {doc.get('display_name')}\n\n🏷 Stream on @{BOT_USERNAME}"
-            })
-    except Exception:
-        logger.exception("Inline query catalog lookup failed.")
+            results.append({"type": "audio", "id": str(doc["_id"]), "audio_file_id": doc["file_id"], "caption": f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", "reply_markup": {"inline_keyboard": [[{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}})
 
     await answer_inline_query(session, query_id, results, cache_time=300)
-
 
 async def process_telegram_update(data: dict) -> None:
     if not MONGO_URL or not BOT_TOKEN:
@@ -1035,7 +959,11 @@ async def process_telegram_update(data: dict) -> None:
             elif "message" in data:
                 await handle_message(session, db, data["message"], channels)
             elif "inline_query" in data:
-                await handle_inline_query(session, db, data["inline_query"])
+                await handle_inline_query(session, db, data["inline_query"], channels)
+
         except Exception:
-            logger.exception("Failed to process incoming Telegram updates securely.")
+            logger.exception("Unhandled error in process_telegram_update")
+        finally:
+            db_client.close()
+
 
