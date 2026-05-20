@@ -53,7 +53,7 @@ from utils import (
     get_inline_empty_cache,
     set_inline_empty_cache,
     get_not_found_kb,
-    get_fuzzy_kb,
+    get_fuzzy_suggestions_kb,
 )
 
 logger = logging.getLogger(__name__)
