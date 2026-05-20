@@ -35,322 +35,329 @@ _PL_ALPHABET = string.ascii_letters + string.digits
 
 # ── User Tracking ─────────────────────────────────────────────────────────────
 
-async def track_user(db, user_id: int, first_name: str) -> None:
-    """
-    Upsert a user document.
-    $setOnInsert → joined_at written only on first insert.
-    $set         → first_name and last_active always refreshed.
-    Called at the top of ALL three handler paths so every interaction is counted.
-    """
-    try:
-        now = datetime.now()
-        await db.users.update_one(
-            {"_id": int(user_id)},
-            {
-                "$set":         {"first_name": first_name, "last_active": now},
-                "$setOnInsert": {"joined_at": now},
-            },
-            upsert=True,
-        )
-    except Exception:
-        logger.exception("track_user failed for user_id=%s", user_id)
-
-
-async def track_and_get_user(db, user_id: int, first_name: str) -> dict:
-    """
-    PERFORMANCE: Replaces the previous two-call pattern of:
-        await track_user(db, user_id, first_name)
-        user_data = await get_user_data(db, user_id)
-
-    Uses findOneAndUpdate with returnDocument=True so the upsert and the
-    read are a single atomic MongoDB round-trip instead of two.
-
-    Returns the full (post-update) user document — guaranteed non-None
-    because upsert=True creates the doc if it does not exist.
-    """
-    try:
-        now = datetime.now()
-        doc = await db.users.find_one_and_update(
-            {"_id": int(user_id)},
-            {
-                "$set":         {"first_name": first_name, "last_active": now},
-                "$setOnInsert": {"joined_at": now},
-            },
-            upsert=True,
-            return_document=True,   # motor: ReturnDocument.AFTER equivalent
-        )
-        return doc or {}
-    except Exception:
-        logger.exception("track_and_get_user failed for user_id=%s", user_id)
-        return {}
-
-
-async def save_pending_start(db, user_id: int, start_param: str | None) -> None:
-    """
-    Persist (or clear) the deep-link start parameter for a user who hit the
-    force-join gate before being allowed through.
-
-    When the user later taps "Verify", check_subscription reads this field,
-    delivers the pending playlist, and clears the field.
-
-    Pass start_param=None to clear the pending value after consumption.
-    """
-    try:
-        update = (
-            {"$set":   {"pending_start": start_param}}
-            if start_param is not None
-            else {"$unset": {"pending_start": ""}}
-        )
-        await db.users.update_one({"_id": int(user_id)}, update, upsert=True)
-    except Exception:
-        logger.exception("save_pending_start failed user_id=%s", user_id)
-
-
-async def save_last_menu_msg_id(db, user_id: int, msg_id: int) -> None:
-    """
-    Persist the message_id of the most recently sent bot menu for this user.
-    Used by the chat-cleanup logic: before sending a new /start or /list menu,
-    handlers.py deletes the old one using this stored ID.
-    Never raises — a failed write just means cleanup won't work for that one message.
-    """
+async def track_user(db, user_id: int, username: str | None, first_name: str | None) -> None:
+    """Inserts or updates the user document with basic Telegram profile info."""
     try:
         await db.users.update_one(
-            {"_id": int(user_id)},
-            {"$set": {"last_menu_msg_id": msg_id}},
-            upsert=True,
+            {"_id": user_id},
+            {
+                "$set": {
+                    "username":   username,
+                    "first_name": first_name,
+                    "last_seen":  datetime.now(),
+                },
+                "$setOnInsert": {
+                    "created_at": datetime.now(),
+                    "favorites":  [],
+                }
+            },
+            upsert=True
         )
     except Exception:
-        logger.exception("save_last_menu_msg_id failed user_id=%s", user_id)
+        logger.exception("track_user failed id=%s", user_id)
 
 
-# ── Favorites ─────────────────────────────────────────────────────────────────
-
-async def toggle_favorite(db, user_id: int, file_id: str) -> bool:
-    """Toggle a file_id in the user's favorites list. Returns True if added."""
+async def track_and_get_user(db, user_id: int, username: str | None, first_name: str | None) -> dict:
+    """
+    Combined atomic check-in & fetch. Returns the user document.
+    Ensures 'favorites' field exists and updates basic info in one round-trip.
+    """
     try:
-        user      = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
-        target_id = user["_id"] if user else int(user_id)
+        user = await db.users.find_one_and_update(
+            {"_id": user_id},
+            {
+                "$set": {
+                    "username":   username,
+                    "first_name": first_name,
+                    "last_seen":  datetime.now(),
+                },
+                "$setOnInsert": {
+                    "created_at": datetime.now(),
+                    "favorites":  [],
+                }
+            },
+            upsert=True,
+            return_document=True
+        )
+        return user or {}
+    except Exception:
+        logger.exception("track_and_get_user failed id=%s", user_id)
+        # Fallback to local doc if write fails to prevent bot crash
+        return {"_id": user_id, "favorites": []}
+
+
+async def save_last_menu_msg_id(db, user_id: int, message_id: int) -> None:
+    """Store the message ID of the active interactive keyboard menu."""
+    try:
+        await db.users.update_one(
+            {"_id": user_id},
+            {"$set": {"last_menu_msg_id": message_id}}
+        )
+    except Exception:
+        logger.exception("save_last_menu_msg_id failed user=%s", user_id)
+
+
+async def save_pending_start(db, user_id: int, start_param: str) -> None:
+    """Persist start_param (deep-links) so users can proceed post channel join."""
+    try:
+        await db.users.update_one(
+            {"_id": user_id},
+            {"$set": {"pending_start": start_param}}
+        )
+    except Exception:
+        logger.exception("save_pending_start failed user=%s", user_id)
+
+
+async def toggle_favorite(db, user_id: int, track_id_str: str) -> bool | None:
+    """
+    Toggles a track in user's favorites array.
+    Returns True if added, False if removed, None if error or ID invalid.
+    """
+    try:
+        track_oid = ObjectId(track_id_str)
+    except Exception:
+        logger.error("toggle_favorite invalid ObjectId format: %s", track_id_str)
+        return None
+
+    try:
+        # Check if the file document actually exists
+        exists = await db.files.find_one({"_id": track_oid}, {"_id": 1})
+        if not exists:
+            logger.warning("toggle_favorite track does not exist: %s", track_id_str)
+            return None
+
+        user = await db.users.find_one({"_id": user_id}, {"favorites": 1})
         favorites = user.get("favorites", []) if user else []
 
-        if file_id in favorites:
-            await db.users.update_one({"_id": target_id}, {"$pull":    {"favorites": file_id}})
+        if track_oid in favorites:
+            # Pull (remove)
+            await db.users.update_one(
+                {"_id": user_id},
+                {"$pull": {"favorites": track_oid}}
+            )
             return False
         else:
-            await db.users.update_one({"_id": target_id}, {"$addToSet": {"favorites": file_id}})
+            # Push (add)
+            await db.users.update_one(
+                {"_id": user_id},
+                {"$addToSet": {"favorites": track_oid}}
+            )
             return True
     except Exception:
-        logger.exception("toggle_favorite failed")
-        return False
-
-
-# ── Generic User Read / Write ─────────────────────────────────────────────────
-
-async def get_user_data(db, user_id: int) -> dict | None:
-    try:
-        return await db.users.find_one({"_id": int(user_id)})
-    except Exception:
+        logger.exception("toggle_favorite failed user=%s track=%s", user_id, track_id_str)
         return None
 
 
-async def set_user_state(db, user_id: int, state: str, meta: dict | None = None) -> None:
-    """Persist conversational state (and optional metadata) for a user."""
-    update = {"$set": {"state": state}}
-    if meta:
-        update["$set"].update(meta)
-    await db.users.update_one({"_id": int(user_id)}, update, upsert=True)
+async def get_user_data(db, user_id: int) -> dict | None:
+    """Generic fetch for user document."""
+    try:
+        return await db.users.find_one({"_id": user_id})
+    except Exception:
+        logger.exception("get_user_data failed user=%s", user_id)
+        return None
 
 
-# ── File Search ───────────────────────────────────────────────────────────────
+async def set_user_state(db, user_id: int, state_name: str | None) -> None:
+    """Set or clear a custom behavioral string state on the user doc."""
+    try:
+        if state_name is None:
+            await db.users.update_one({"_id": user_id}, {"$unset": {"state": ""}})
+        else:
+            await db.users.update_one({"_id": user_id}, {"$set": {"state": state_name}})
+    except Exception:
+        logger.exception("set_user_state failed user=%s state=%s", user_id, state_name)
+
+
+# ── Catalog & Search ─────────────────────────────────────────────────────────
 
 def build_search_query(query_text: str) -> dict:
     """
-    Strict AND-search.  Single char → prefix.  Multiple words → all must appear.
+    Tokenizes query, converts to clean regex terms.
+    Checks inside display_name. Supports multi-term spacing.
     """
-    if not query_text:
+    clean = re.sub(r'[^\w\s-]', '', query_text).strip()
+    if not clean:
         return {}
-    query_text = query_text.strip()
-    if len(query_text) == 1:
-        return {"display_name": {"$regex": f"^{re.escape(query_text)}", "$options": "i"}}
-    words      = query_text.split()
-    conditions = [{"display_name": {"$regex": re.escape(w), "$options": "i"}} for w in words]
-    return conditions[0] if len(conditions) == 1 else {"$and": conditions}
+    tokens = clean.split()
+    regex_parts = [f"(?=.*{re.escape(t)})" for t in tokens]
+    pattern = "^" + "".join(regex_parts) + ".*$"
+    return {
+        "file_type": "audio",
+        "display_name": {"$regex": pattern, "$options": "i"}
+    }
 
 
-async def get_fuzzy_suggestions(db, query_text: str, limit: int = 5) -> list[dict]:
+async def get_fuzzy_suggestions(db, query_text: str) -> list:
     """
-    Broad OR-search fallback when AND-search finds nothing.
-    Returns docs whose display_name contains ANY word from the query.
+    Fallback fuzzy matcher using regex on word boundaries
+    when direct exact query returns zero documents.
     """
-    if not query_text:
+    clean = re.sub(r'[^\w\s-]', '', query_text).strip()
+    if not clean:
         return []
-    words = [w for w in query_text.strip().split() if len(w) > 1]
-    if not words:
+    tokens = clean.split()
+    # Try match starting with any token
+    patterns = []
+    for t in tokens:
+        patterns.append({"display_name": {"$regex": rf"\b{re.escape(t)}", "$options": "i"}})
+    
+    if not patterns:
         return []
-    conditions = [{"display_name": {"$regex": re.escape(w), "$options": "i"}} for w in words]
-    query = {"$or": conditions} if len(conditions) > 1 else conditions[0]
+
     try:
-        cursor = db.files.find(query, {"file_id": 1, "display_name": 1}).limit(limit)
-        return await cursor.to_list(length=limit)
+        cursor = db.files.find(
+            {"file_type": "audio", "$or": patterns},
+            {"display_name": 1}
+        ).limit(5)
+        results = await cursor.to_list(length=5)
+        return [r["display_name"] for r in results]
     except Exception:
-        logger.exception("get_fuzzy_suggestions failed")
+        logger.exception("get_fuzzy_suggestions failed query=%s", query_text)
         return []
 
 
-# ── Catalog Pagination ────────────────────────────────────────────────────────
-
-async def get_catalog_page(db, page: int) -> tuple[str, dict]:
-    limit       = ITEMS_PER_PAGE
-    skip        = (page - 1) * limit
-    total       = await db.files.count_documents({"file_id": {"$exists": True}})
-    total_pages = max(1, (total + limit - 1) // limit)
-
-    cursor = (
-        db.files.find({"file_id": {"$exists": True}}, {"display_name": 1})
-        .sort("_id", -1)
-        .skip(skip)
-        .limit(limit)
-    )
-
-    msg_text = (
-        f"📂 **የመንዙማዎች ዝርዝር (ገጽ {page}/{total_pages})**\n\n"
-        "💡 _ስሙን ሲነኩት ኮፒ ይሆናል፣ ከዛ ለቦቱ ይላኩት።_\n\n"
-    )
-    idx = skip + 1
-    async for doc in cursor:
-        clean     = doc.get("display_name", "Unknown").replace("`", "")
-        msg_text += f"{idx}. `{clean}`\n"
-        idx      += 1
-
-    nav_row = []
-    if page > 1:
-        nav_row.append({"text": "⬅️ Back", "callback_data": f"pg_{page - 1}"})
-    nav_row.append({"text": "❌ ዝጋ", "callback_data": "pg_close"})
-    if page < total_pages:
-        nav_row.append({"text": "Next ➡️", "callback_data": f"pg_{page + 1}"})
-
-    return msg_text, {"inline_keyboard": [nav_row]}
-
-
-# ── Admin Statistics ──────────────────────────────────────────────────────────
-
-async def get_daily_stats(db) -> str:
+async def get_catalog_page(db, page: int) -> tuple[list, int]:
+    """
+    Paginated catalog lookup.
+    Returns: (list of track docs, total track count)
+    """
+    if page < 1:
+        page = 1
+    skip = (page - 1) * ITEMS_PER_PAGE
     try:
-        now          = datetime.now()
-        last_24h     = now - timedelta(hours=24)
-        new_users    = await db.users.count_documents({"joined_at":   {"$gte": last_24h}})
-        active_users = await db.users.count_documents({"last_active": {"$gte": last_24h}})
-        total_users  = await db.users.count_documents({})
-        total_files  = await db.files.count_documents({})
-        return (
-            "📅 **Daily Statistics**\n\n"
-            f"🆕 New: `{new_users}`\n"
-            f"⚡ Active: `{active_users}`\n"
-            f"👥 Total: `{total_users}`\n"
-            f"📂 Files: `{total_files}`"
-        )
+        total = await db.files.count_documents({"file_type": "audio"})
+        cursor = db.files.find(
+            {"file_type": "audio"},
+            {"_id": 1, "display_name": 1, "file_size": 1}
+        ).sort("display_name", 1).skip(skip).limit(ITEMS_PER_PAGE)
+        tracks = await cursor.to_list(length=ITEMS_PER_PAGE)
+        return tracks, total
     except Exception:
-        return "❌ Error fetching statistics."
+        logger.exception("get_catalog_page failed page=%s", page)
+        return [], 0
 
 
-# ── Force-Join Channel Management ────────────────────────────────────────────
+# ── Statistics & Broadcast ───────────────────────────────────────────────────
 
-async def get_force_channels(db) -> list[dict]:
+async def get_daily_stats(db) -> tuple[int, int]:
+    """Calculate counts of registered users and audio catalog files."""
     try:
-        cursor = db.settings.find(
-            {"type": "force_channel"},
-            {"_id": 0, "username": 1, "url": 1},
-        )
-        return await cursor.to_list(length=20)
+        user_count = await db.users.count_documents({})
+        file_count = await db.files.count_documents({"file_type": "audio"})
+        return user_count, file_count
+    except Exception:
+        logger.exception("get_daily_stats failed")
+        return 0, 0
+
+
+# ── Force Join Gates ─────────────────────────────────────────────────────────
+
+async def get_force_channels(db) -> list:
+    """Retrieve all channels marked for force-joining."""
+    try:
+        cursor = db.config.find({"_id": {"$regex": "^fj_"}})
+        channels = await cursor.to_list(length=10)
+        return [
+            {"channel_id": c["channel_id"], "title": c.get("title", c["channel_id"])}
+            for c in channels
+        ]
     except Exception:
         logger.exception("get_force_channels failed")
         return []
 
 
-async def add_force_channel(db, username: str) -> bool:
+async def add_force_channel(db, channel_id: str, title: str) -> bool:
+    """Add a channel to force join list. Key prefix prevents collision."""
     try:
-        username = username.lstrip("@").strip()
-        url      = f"https://t.me/{username}"
-        result   = await db.settings.update_one(
-            {"type": "force_channel", "username": username},
-            {"$set": {"type": "force_channel", "username": username, "url": url}},
-            upsert=True,
+        clean_id = channel_id.strip()
+        if not clean_id.startswith("@") and not clean_id.startswith("-100"):
+            # Normalize to username target
+            clean_id = f"@{clean_id}"
+        await db.config.update_one(
+            {"_id": f"fj_{clean_id}"},
+            {"$set": {"channel_id": clean_id, "title": title}},
+            upsert=True
         )
-        return result.upserted_id is not None
+        return True
     except Exception:
-        logger.exception("add_force_channel failed username=%s", username)
+        logger.exception("add_force_channel failed ch=%s", channel_id)
         return False
 
 
-async def remove_force_channel(db, username: str) -> bool:
+async def remove_force_channel(db, channel_id: str) -> bool:
+    """Remove a channel from force join list by direct ID or prefixed key."""
     try:
-        username = username.lstrip("@").strip()
-        result   = await db.settings.delete_one(
-            {"type": "force_channel", "username": username}
-        )
-        return result.deleted_count > 0
+        clean_id = channel_id.strip()
+        if not clean_id.startswith("@") and not clean_id.startswith("-100"):
+            clean_id = f"@{clean_id}"
+        res = await db.config.delete_one({"_id": f"fj_{clean_id}"})
+        if res.deleted_count == 0:
+            # Try direct fallback
+            res = await db.config.delete_one({"channel_id": clean_id})
+        return res.deleted_count > 0
     except Exception:
-        logger.exception("remove_force_channel failed username=%s", username)
+        logger.exception("remove_force_channel failed ch=%s", channel_id)
         return False
 
 
-# ── Playlist: Building State ──────────────────────────────────────────────────
-
-async def add_track_to_building_playlist(db, user_id: int, doc_id: str) -> int:
-    """
-    Append a track (by MongoDB doc_id string) to the user's in-progress playlist.
-
-    Returns:
-      new count (1–10)  → successfully added
-      -1                → cap reached (already 10 tracks)
-      -2                → track already in the list (duplicate)
-
-    Uses a read-then-write pattern which is safe here because:
-      - Max 10 items, so reads are tiny
-      - Only one session per user (bot is 1:1 chat)
-    """
-    try:
-        user    = await db.users.find_one({"_id": int(user_id)}, {"building_playlist": 1})
-        current = (user or {}).get("building_playlist", [])
-
-        if doc_id in current:
-            return -2  # duplicate
-        if len(current) >= 10:
-            return -1  # cap reached
-
-        await db.users.update_one(
-            {"_id": int(user_id)},
-            {"$push": {"building_playlist": doc_id}},
-        )
-        return len(current) + 1
-    except Exception:
-        logger.exception("add_track_to_building_playlist failed user_id=%s", user_id)
-        return -1
-
-
-# ── Playlist: Persistence ─────────────────────────────────────────────────────
+# ── Playlists & Sharing ───────────────────────────────────────────────────────
 
 def _generate_playlist_id() -> str:
-    """Return a unique-enough 6-char alphanumeric token prefixed with 'pl_'."""
-    return "pl_" + "".join(secrets.choice(_PL_ALPHABET) for _ in range(6))
+    """Generates a safe 8-char base-62 token prefixed with pl_"""
+    token = "".join(secrets.choice(_PL_ALPHABET) for _ in range(8))
+    return f"pl_{token}"
 
 
-async def create_playlist(db, creator_id: int, doc_ids: list[str]) -> str | None:
+async def add_track_to_building_playlist(db, user_id: int, track_id_str: str) -> int:
     """
-    Resolve a list of file-doc ObjectId strings → track dicts, persist to `playlists`.
-
-    Returns the new playlist_id (e.g. "pl_xY7k9z"), or None if no valid tracks found.
-
-    Collision handling: retries ID generation up to 5 times (statistically negligible
-    collision probability with 62^6 ≈ 56 billion possibilities).
+    Atomic check-then-push into user's active playlist-builder array.
+    Returns:
+      >= 0 : New playlist size
+       -1  : Limit of 10 tracks reached
+       -2  : Track already inside playlist
+       -3  : Database or formatting error
     """
-    # Resolve doc_ids → track objects
+    try:
+        track_oid = ObjectId(track_id_str)
+    except Exception:
+        logger.error("playlist_builder invalid ObjectId format: %s", track_id_str)
+        return -3
+
+    try:
+        user = await db.users.find_one({"_id": user_id}, {"building_playlist": 1})
+        current = user.get("building_playlist", []) if user else []
+
+        if len(current) >= 10:
+            return -1
+        if track_oid in current:
+            return -2
+
+        # Atomic append
+        res = await db.users.find_one_and_update(
+            {"_id": user_id},
+            {"$addToSet": {"building_playlist": track_oid}},
+            return_document=True
+        )
+        return len(res.get("building_playlist", []))
+    except Exception:
+        logger.exception("add_track_to_building_playlist failed user=%s track=%s", user_id, track_id_str)
+        return -3
+
+
+async def create_playlist(db, creator_id: int, doc_ids: list[ObjectId]) -> str | None:
+    """
+    Takes an array of ObjectIds, fetches their display_name + file_id,
+    and creates a shareable playlist doc with a random collision-free ID.
+    Returns the string ID (e.g., pl_AbCdEfGh) or None if empty/error.
+    """
+    if not doc_ids:
+        return None
+
     tracks = []
-    for doc_id in doc_ids:
-        if len(doc_id) != 24:
-            continue
+    for oid in doc_ids:
         try:
             file_doc = await db.files.find_one(
-                {"_id": ObjectId(doc_id)},
+                {"_id": oid, "file_type": "audio"},
                 {"file_id": 1, "display_name": 1},
             )
             if file_doc:
@@ -399,7 +406,108 @@ async def increment_playlist_plays(db, playlist_id: str) -> None:
     try:
         await db.playlists.update_one(
             {"_id": playlist_id},
-            {"$inc": {"play_count": 1}},
+            {"$inc": {"play_count": 1}}
         )
     except Exception:
         pass
+
+
+# ── Advanced Admin Schema & Helpers ───────────────────────────────────────────
+
+async def toggle_ban_user(db, user_id: int, status: bool) -> None:
+    """Ban or unban a user by updating their document is_banned field."""
+    try:
+        await db.users.update_one(
+            {"_id": user_id},
+            {"$set": {"is_banned": status}}
+        )
+    except Exception:
+        logger.exception("toggle_ban_user failed for user=%s", user_id)
+
+
+async def update_file_name(db, doc_id: str, new_name: str) -> bool:
+    """Updates the display_name of a catalog file queryable by ObjectId or file_unique_id."""
+    try:
+        try:
+            query = {"_id": ObjectId(doc_id)}
+        except Exception:
+            query = {"file_unique_id": doc_id}
+
+        res = await db.files.update_one(query, {"$set": {"display_name": new_name}})
+        return res.modified_count > 0
+    except Exception:
+        logger.exception("update_file_name failed doc=%s name=%s", doc_id, new_name)
+        return False
+
+
+async def delete_media_file(db, doc_id: str) -> bool:
+    """Deletes a file document from the catalog collection by ObjectId or file_unique_id."""
+    try:
+        try:
+            query = {"_id": ObjectId(doc_id)}
+        except Exception:
+            query = {"file_unique_id": doc_id}
+
+        res = await db.files.delete_one(query)
+        return res.deleted_count > 0
+    except Exception:
+        logger.exception("delete_media_file failed doc=%s", doc_id)
+        return False
+
+
+async def toggle_maintenance(db) -> bool:
+    """Toggles global maintenance mode state safely inside config collection."""
+    try:
+        config = await db.config.find_one({"_id": "global_config"})
+        current = config.get("maintenance_mode", False) if config else False
+        new_status = not current
+        await db.config.update_one(
+            {"_id": "global_config"},
+            {"$set": {"maintenance_mode": new_status}},
+            upsert=True
+        )
+        return new_status
+    except Exception:
+        logger.exception("toggle_maintenance failed")
+        return False
+
+
+async def is_maintenance_active(db) -> bool:
+    """Helper query returning active state of maintenance_mode."""
+    try:
+        config = await db.config.find_one({"_id": "global_config"})
+        if config:
+            return config.get("maintenance_mode", False)
+        return False
+    except Exception:
+        logger.exception("is_maintenance_active failed")
+        return False
+
+
+async def manage_admin_role(db, user_id: int, status: bool) -> None:
+    """Updates user document's role field to 'admin' or 'user'."""
+    try:
+        role = "admin" if status else "user"
+        await db.users.update_one(
+            {"_id": user_id},
+            {"$set": {"role": role}}
+        )
+    except Exception:
+        logger.exception("manage_admin_role failed for user=%s status=%s", user_id, status)
+
+
+async def generate_users_backup(db) -> str:
+    """Retrieves all users and packages them into a cleanly formatted JSON dump."""
+    import json
+    try:
+        users = await db.users.find().to_list(length=None)
+        for u in users:
+            if "created_at" in u and isinstance(u["created_at"], datetime):
+                u["created_at"] = u["created_at"].isoformat()
+            if "last_seen" in u and isinstance(u["last_seen"], datetime):
+                u["last_seen"] = u["last_seen"].isoformat()
+        return json.dumps(users, indent=2, default=str)
+    except Exception:
+        logger.exception("generate_users_backup failed")
+        return "[]"
+
