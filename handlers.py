@@ -34,6 +34,13 @@ from db import (
     create_playlist,
     get_playlist,
     increment_playlist_plays,
+    is_maintenance_mode,
+    toggle_ban_user,
+    update_file_name,
+    delete_media_file,
+    toggle_maintenance,
+    manage_admin_role,
+    generate_users_backup,
 )
 from utils import (
     check_membership,
@@ -73,8 +80,12 @@ WELCOME_TEXT = (
     "<tg-emoji emoji-id=\"5116368680279606270\">♥️</tg-emoji> ተወዳጆች (Favorites)"
 )
 
-def _is_admin(user_id) -> bool:
-    return str(user_id) == str(ADMIN_ID)
+def _is_admin(user_id, user_data=None) -> bool:
+    if str(user_id) == str(ADMIN_ID):
+        return True
+    if user_data and user_data.get("role") == "admin":
+        return True
+    return False
 
 def _normalize_text(text: str) -> str:
     return text.replace("️", "").replace("︎", "")
@@ -85,6 +96,8 @@ _ADMIN_KB_TEXTS = {
     "📢 Broadcast",
     "📂 Total Files",
     "🔧 Manage Channels",
+    "💾 Backup",
+    "🛠 Maintenance Mode",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -138,6 +151,18 @@ async def _react_to_message(session, chat_id: int, message_id: int, emoji: str):
             await resp.read()
     except Exception as e:
         print(f"Failed to set reaction: {e}")
+
+async def _send_backup_file(session, chat_id, backup_json: str):
+    if not BOT_TOKEN: return
+    form = aiohttp.FormData()
+    form.add_field('chat_id', str(chat_id))
+    form.add_field('document', backup_json.encode('utf-8'), filename='users_backup.json', content_type='application/json')
+    form.add_field('caption', f"💾 Al-Madih Backup\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    try:
+        async with session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument", data=form) as resp:
+            await resp.read()
+    except Exception as e:
+        logger.error("Failed to send backup document: %s", e)
 
 
 async def _channel_mgmt_menu_text(db) -> str:
@@ -370,9 +395,18 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
 
     user_data  = await track_and_get_user(db, user_id, first_name)
 
+    # ── Global Access Controls: Ban & Maintenance Checks ─────────────────────
+    if user_data and user_data.get("is_banned", False):
+        await answer_callback_query(session, cb_id)
+        return
+
+    if await is_maintenance_mode(db) and not _is_admin(user_id, user_data):
+        await answer_callback_query(session, cb_id, "⚠️ ቦቱ በአጭር ጊዜ ጥገና ላይ ነው። እባክዎ ትንሽ ቆይተው ይሞክሩ.", show_alert=True)
+        return
+
     # ── Hook & Lock: Enforce join ONLY when trying to play audio or download PDF ──
     if data_str.startswith("play_") or data_str.startswith("pdf_dl_"):
-        if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
+        if not _is_admin(user_id, user_data) and not await check_membership(session, user_id, channels):
             await answer_callback_query(session, cb_id, "⚠️ እባክዎ መጀመሪያ ቻናሉን ይቀላቀሉ!", show_alert=True)
             await send_message(
                 session, chat_id,
@@ -380,10 +414,6 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
                 reply_markup=get_subscription_kb(channels)
             )
             return
-
-    if data_str != "check_subscription" and not _is_admin(user_id):
-        # We bypass global gatekeeper here, we only gatekeep specific actions like playback
-        pass
 
     if data_str == "check_subscription":
         invalidate_membership_cache(user_id)
@@ -573,7 +603,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             pass
         return
 
-    if data_str.startswith("broadcast_") and _is_admin(user_id):
+    if data_str.startswith("broadcast_") and _is_admin(user_id, user_data):
         if data_str == "broadcast_confirm":
             admin_data = await get_user_data(db, user_id)
             msg_id_bc  = (admin_data or {}).get("broadcast_msg_id")
@@ -595,7 +625,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         await answer_callback_query(session, cb_id)
         return
 
-    if data_str.startswith("admin_ch_") and _is_admin(user_id):
+    if data_str.startswith("admin_ch_") and _is_admin(user_id, user_data):
         if data_str == "admin_ch_menu":
             text = await _channel_mgmt_menu_text(db)
             await edit_message_text(session, chat_id, message_id, text, reply_markup=get_channel_mgmt_kb())
@@ -662,7 +692,15 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     user_data = await track_and_get_user(db, user_id, first_name)
     state     = user_data.get("state")
 
-    if not _is_admin(user_id):
+    # ── Global Access Controls: Ban & Maintenance Checks ─────────────────────
+    if user_data and user_data.get("is_banned", False):
+        return
+
+    if await is_maintenance_mode(db) and not _is_admin(user_id, user_data):
+        await send_message(session, chat_id, "⚠️ ቦቱ በአጭር ጊዜ ጥገና ላይ ነው። እባክዎ ትንሽ ቆይተው ይሞክሩ.")
+        return
+
+    if not _is_admin(user_id, user_data):
         if not await check_membership(session, user_id, channels):
             parts       = text.split(" ", 1) if text.startswith("/start") else []
             start_param = parts[1].strip() if len(parts) > 1 else None
@@ -675,9 +713,121 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             )
             return
 
+    # ── Advanced Admin Commands (Slash Commands Handler) ──────────────────────
+    if _is_admin(user_id, user_data) and text.startswith("/"):
+        parts = text.split(maxsplit=2)
+        cmd = parts[0].lower()
+        
+        if cmd == "/ban" and len(parts) >= 2:
+            target_id = int(parts[1]) if parts[1].isdigit() else None
+            if target_id:
+                success = await toggle_ban_user(db, target_id, True)
+                await send_message(session, chat_id, f"✅ User `{target_id}` banned successfully." if success else "❌ User not found or update failed.")
+            else:
+                await send_message(session, chat_id, "⚠️ Invalid User ID.")
+            return
+
+        if cmd == "/unban" and len(parts) >= 2:
+            target_id = int(parts[1]) if parts[1].isdigit() else None
+            if target_id:
+                success = await toggle_ban_user(db, target_id, False)
+                await send_message(session, chat_id, f"✅ User `{target_id}` unbanned successfully." if success else "❌ User not found or update failed.")
+            else:
+                await send_message(session, chat_id, "⚠️ Invalid User ID.")
+            return
+
+        if cmd == "/msg" and len(parts) >= 3:
+            target_id = int(parts[1]) if parts[1].isdigit() else None
+            msg_body = parts[2]
+            if target_id:
+                res = await send_message(session, target_id, f"💬 *Admin Message:*\n\n{msg_body}")
+                if res and res.get("ok"):
+                    await send_message(session, chat_id, "✅ Message sent successfully.")
+                else:
+                    await send_message(session, chat_id, "❌ Failed to send message (user might have blocked the bot).")
+            else:
+                await send_message(session, chat_id, "⚠️ Invalid User ID.")
+            return
+
+        if cmd == "/searchdb" and len(parts) >= 2:
+            search_term = parts[1] if len(parts) == 2 else text.split(maxsplit=1)[1]
+            sq = build_search_query(search_term)
+            results_cursor = db.files.find(sq, {"display_name": 1}).limit(20)
+            matches = await results_cursor.to_list(length=20)
+            if matches:
+                reply_text = "🔍 *Database Matches:*\n\n"
+                for doc in matches:
+                    reply_text += f"• `{doc['_id']}`: {doc.get('display_name')}\n"
+                await send_message(session, chat_id, reply_text)
+            else:
+                await send_message(session, chat_id, "❌ No matching files found in the database.")
+            return
+
+        if cmd == "/edit" and len(parts) >= 3:
+            doc_id = parts[1]
+            new_name = parts[2]
+            if len(doc_id) == 24:
+                success = await update_file_name(db, doc_id, new_name)
+                await send_message(session, chat_id, f"✅ File name updated to: `{new_name}`" if success else "❌ Update failed. Check document ID.")
+            else:
+                await send_message(session, chat_id, "⚠️ Invalid Document ID length (must be 24-char hex string).")
+            return
+
+        if cmd == "/delete" and len(parts) >= 2:
+            doc_id = parts[1]
+            if len(doc_id) == 24:
+                success = await delete_media_file(db, doc_id)
+                await send_message(session, chat_id, "✅ File deleted successfully from DB." if success else "❌ Deletion failed. Check document ID.")
+            else:
+                await send_message(session, chat_id, "⚠️ Invalid Document ID length.")
+            return
+
+        if cmd == "/addadmin" and len(parts) >= 2:
+            target_id = int(parts[1]) if parts[1].isdigit() else None
+            if target_id:
+                success = await manage_admin_role(db, target_id, True)
+                await send_message(session, chat_id, f"✅ User `{target_id}` promoted to Admin role." if success else "❌ Action failed or user not found.")
+            else:
+                await send_message(session, chat_id, "⚠️ Invalid User ID.")
+            return
+
+        if cmd == "/deladmin" and len(parts) >= 2:
+            target_id = int(parts[1]) if parts[1].isdigit() else None
+            if target_id:
+                success = await manage_admin_role(db, target_id, False)
+                await send_message(session, chat_id, f"✅ User `{target_id}` admin role removed." if success else "❌ Action failed or user not found.")
+            else:
+                await send_message(session, chat_id, "⚠️ Invalid User ID.")
+            return
+
+        if cmd == "/user" and len(parts) >= 2:
+            target_id = int(parts[1]) if parts[1].isdigit() else None
+            if target_id:
+                target_data = await get_user_data(db, target_id)
+                if target_data:
+                    joined = target_data.get("joined_at")
+                    joined_str = joined.strftime("%Y-%m-%d %H:%M") if isinstance(joined, datetime) else "Unknown"
+                    active = target_data.get("last_active")
+                    active_str = active.strftime("%Y-%m-%d %H:%M") if isinstance(active, datetime) else "Unknown"
+                    
+                    info = (
+                        f"👤 *User Profile: `{target_id}`*\n\n"
+                        f"• Name: {target_data.get('first_name', 'Unknown')}\n"
+                        f"• Role: `{target_data.get('role', 'user')}`\n"
+                        f"• Banned: `{target_data.get('is_banned', False)}`\n"
+                        f"• Joined: `{joined_str}`\n"
+                        f"• Last Active: `{active_str}`"
+                    )
+                    await send_message(session, chat_id, info)
+                else:
+                    await send_message(session, chat_id, "❌ User profile not found in database.")
+            else:
+                await send_message(session, chat_id, "⚠️ Invalid User ID.")
+            return
+
     if text and (text == "/start" or text.startswith("/start ")):
         await delete_message(session, chat_id, msg_id)
-        old_menu_id = user_data.get("last_menu_msg_id")
+        old_menu_id = user_data.get("last_menu_msg_id") if user_data else None
         if old_menu_id:
             await delete_message(session, chat_id, old_menu_id)
 
@@ -709,14 +859,14 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
         return
 
-    if text == "🔧 Manage Channels" and _is_admin(user_id):
+    if text == "🔧 Manage Channels" and _is_admin(user_id, user_data):
         mgmt_text = await _channel_mgmt_menu_text(db)
         result = await send_message(session, chat_id, mgmt_text, reply_markup=get_channel_mgmt_kb())
         if not result or result.get("ok") is not True:
             await send_message(session, chat_id, "API Error showing menu: " + str(result)[:200])
         return
 
-    if state == "playlist_builder" and text and not text.startswith("/") and not (_is_admin(user_id) and text in _ADMIN_KB_TEXTS):
+    if state == "playlist_builder" and text and not text.startswith("/") and not (_is_admin(user_id, user_data) and text in _ADMIN_KB_TEXTS):
         await _react_to_message(session, chat_id, msg_id, "👀")
         sq  = build_search_query(text)
         doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
@@ -733,7 +883,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 await send_message(session, chat_id, "😔 የፈለጉት መንዙማ አልተገኘም።\nእባክዎ የተለየ ቃል ጽፈው ይሞክሩ።", reply_markup=get_not_found_kb())
         return
 
-    if _is_admin(user_id):
+    if _is_admin(user_id, user_data):
         if "document" in message:
             doc = message.get("document")
             fname = doc.get("file_name", "")
@@ -828,7 +978,12 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await send_message(
                 session, chat_id, "⚙️ *Admin Panel*",
                 reply_markup={
-                    "keyboard": [[{"text": "📊 Statistics"}, {"text": "📅 Daily Stats"}], [{"text": "📢 Broadcast"}, {"text": "📂 Total Files"}], [{"text": "🔧 Manage Channels"}]],
+                    "keyboard": [
+                        [{"text": "📊 Statistics"}, {"text": "📅 Daily Stats"}],
+                        [{"text": "📢 Broadcast"}, {"text": "📂 Total Files"}],
+                        [{"text": "🔧 Manage Channels"}, {"text": "💾 Backup"}],
+                        [{"text": "🛠 Maintenance Mode"}]
+                    ],
                     "resize_keyboard": True,
                 },
             )
@@ -860,6 +1015,17 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await send_message(session, chat_id, f"📂 Total Files in DB: `{f_count}`")
             return
 
+        if text == "💾 Backup":
+            backup_data = await generate_users_backup(db)
+            await _send_backup_file(session, chat_id, backup_data)
+            return
+
+        if text == "🛠 Maintenance Mode":
+            new_status = await toggle_maintenance(db)
+            status_str = "ON 🟡 (Admins Only)" if new_status else "OFF 🟢 (Open to Public)"
+            await send_message(session, chat_id, f"🛠 Maintenance Mode: *{status_str}*")
+            return
+
         if "audio" in message or "voice" in message:
             f    = message.get("audio") or message.get("voice")
             cap  = message.get("caption", "").split("\n")[0].strip()
@@ -884,7 +1050,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
 
         if doc:
             matched_file_name = doc.get('display_name', 'Unknown')
-            if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
+            if not _is_admin(user_id, user_data) and not await check_membership(session, user_id, channels):
                 hostage_msg = (
                     f"🎵 *{matched_file_name}* ተገኝቷል!\n\n"
                     "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!"
@@ -910,7 +1076,25 @@ async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> No
     user_id    = user_info.get("id")
     first_name = user_info.get("first_name", "User")
 
-    await track_and_get_user(db, user_id, first_name)
+    user_data = await track_and_get_user(db, user_id, first_name)
+
+    # ── Global Access Controls: Ban & Maintenance Checks ─────────────────────
+    if user_data and user_data.get("is_banned", False):
+        return
+
+    if await is_maintenance_mode(db) and not _is_admin(user_id, user_data):
+        await answer_inline_query(session, query_id, [
+            {
+                "type": "article",
+                "id": "maintenance",
+                "title": "Maintenance Mode / የጥገና ሥራ",
+                "input_message_content": {
+                    "message_text": "⚠️ ቦቱ በአጭር ጊዜ ጥገና ላይ ነው። እባክዎ ትንሽ ቆይተው ይሞክሩ."
+                }
+            }
+        ], cache_time=10)
+        return
+
     results: list = []
 
     if query.startswith("#favorites"):
@@ -965,5 +1149,4 @@ async def process_telegram_update(data: dict) -> None:
             logger.exception("Unhandled error in process_telegram_update")
         finally:
             db_client.close()
-
 
