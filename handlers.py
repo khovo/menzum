@@ -579,10 +579,10 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             msg_id_bc  = (admin_data or {}).get("broadcast_msg_id")
             markup_bc  = (admin_data or {}).get("broadcast_markup")
             if msg_id_bc:
+                await set_user_state(db, user_id, "idle")
                 await edit_message_text(session, chat_id, message_id, "🚀 *Broadcasting…* please wait.")
                 summary = await _execute_broadcast(session, db, chat_id, msg_id_bc, markup_bc)
                 await send_message(session, chat_id, summary)
-                await set_user_state(db, user_id, "idle")
 
         elif data_str == "broadcast_cancel":
             await edit_message_text(session, chat_id, message_id, "❌ Broadcast cancelled.")
