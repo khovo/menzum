@@ -1,4 +1,3 @@
-```python
 import os
 import json
 import asyncio
@@ -115,4 +114,3 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(result).encode('utf-8'))
 
-```
