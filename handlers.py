@@ -578,29 +578,11 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             admin_data = await get_user_data(db, user_id)
             msg_id_bc  = (admin_data or {}).get("broadcast_msg_id")
             markup_bc  = (admin_data or {}).get("broadcast_markup")
-            
             if msg_id_bc:
                 await set_user_state(db, user_id, "idle")
-                await edit_message_text(session, chat_id, message_id, "🚀 *Broadcasting queued...* processing in background.")
-                
-                # Fetch all user IDs from the users collection
-                all_users = await db.users.find({}, {"_id": 1}).to_list(length=None)
-                recipient_ids = [u["_id"] for u in all_users]
-                
-                # Insert a new document into the broadcast_queue collection
-                await db.broadcast_queue.insert_one({
-                    "admin_chat_id": chat_id,
-                    "msg_id": msg_id_bc,
-                    "reply_markup": markup_bc,
-                    "status": "pending",
-                    "recipient_ids": recipient_ids,
-                    "last_processed_index": 0,
-                    "sent_count": 0,
-                    "failed_count": 0,
-                    "created_at": datetime.now(timezone.utc)
-                })
-                
-                await send_message(session, chat_id, "✅ Broadcast queued successfully. It will be sent in the background.")
+                await edit_message_text(session, chat_id, message_id, "🚀 *Broadcasting…* please wait.")
+                summary = await _execute_broadcast(session, db, chat_id, msg_id_bc, markup_bc)
+                await send_message(session, chat_id, summary)
 
         elif data_str == "broadcast_cancel":
             await edit_message_text(session, chat_id, message_id, "❌ Broadcast cancelled.")
