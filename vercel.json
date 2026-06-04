@@ -1,19 +1,11 @@
 {
   "version": 2,
   "builds": [
-    { "src": "api/index.py", "use": "@vercel/python" },
-    { "src": "api/cron_broadcast.py", "use": "@vercel/python" },
-    { "src": "api/webapp/*.js", "use": "@vercel/node" }
+    { "src": "api/index.py",    "use": "@vercel/python" },
+    { "src": "api/webapp/*.js", "use": "@vercel/node"   }
   ],
   "routes": [
     { "src": "/api/webapp/(.*)", "dest": "/api/webapp/$1.js" },
-    { "src": "/api/cron-broadcast", "dest": "/api/cron_broadcast.py" },
-    { "src": "/(.*)", "dest": "/api/index.py" }
-  ],
-  "crons": [
-    {
-      "path": "/api/cron-broadcast",
-      "schedule": "* * * * *"
-    }
+    { "src": "/(.*)",            "dest": "/api/index.py"     }
   ]
 }
