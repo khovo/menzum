@@ -63,8 +63,12 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
     user_id    = user["id"]
     cb_id      = cb["id"]
     data_str   = cb.get("data", "")
-    chat_id    = cb["message"]["chat"]["id"]
-    message_id = cb["message"]["message_id"]
+    # Messages chosen from inline mode arrive as callbacks WITHOUT a `message`
+    # object (only `inline_message_id` + `from`). Fall back to the tapping
+    # user's own chat so the ▶ Play / ❤️ Fav buttons on inline results still work.
+    msg        = cb.get("message")
+    chat_id    = msg["chat"]["id"] if msg else user_id
+    message_id = msg["message_id"] if msg else None
     first_name = user.get("first_name", "User")
 
     user_data  = await track_and_get_user(db, user_id, first_name)
