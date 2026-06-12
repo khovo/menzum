@@ -18,6 +18,7 @@ WHY ARTICLE RESULTS (not InlineQueryResultCachedAudio):
   audio via the bot's existing play_ handler. This is reliable regardless of the
   file's metadata.
 """
+import os
 import logging
 
 from db import track_and_get_user, build_search_query
@@ -29,6 +30,12 @@ from utils import (
 from .helpers import BOT_USERNAME
 
 logger = logging.getLogger(__name__)
+
+# Base URL of the bot project (which also serves the Node thumbnail proxy at
+# /api/webapp/thumb). The proxy 302-redirects to the track's Telegram CDN cover
+# image, or 404s when the track has no thumbnail. Override via API_BASE if the
+# deployment domain changes.
+_THUMB_BASE = os.environ.get("API_BASE", "https://menzum.vercel.app").rstrip("/")
 
 
 def _track_result(doc: dict, secondary_text: str = "❤️ Fav") -> dict | None:
@@ -42,7 +49,7 @@ def _track_result(doc: dict, secondary_text: str = "❤️ Fav") -> dict | None:
         return None
     doc_id = str(doc_id)
     name   = doc.get("display_name") or "Unknown"
-    return {
+    result = {
         "type":  "article",
         "id":    doc_id,
         "title": name,
@@ -57,6 +64,10 @@ def _track_result(doc: dict, secondary_text: str = "❤️ Fav") -> dict | None:
             ]]
         },
     }
+    # Show the track's cover image (via the Node thumbnail proxy) when one exists.
+    if doc.get("thumb_file_id"):
+        result["thumbnail_url"] = f"{_THUMB_BASE}/api/webapp/thumb?id={doc_id}"
+    return result
 
 
 async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> None:
@@ -73,7 +84,7 @@ async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> No
         user    = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
         fav_ids = (user or {}).get("favorites", [])
         if fav_ids:
-            docs = await db.files.find({"file_id": {"$in": fav_ids}}, {"file_id": 1, "display_name": 1}).limit(50).to_list(length=50)
+            docs = await db.files.find({"file_id": {"$in": fav_ids}}, {"file_id": 1, "display_name": 1, "thumb_file_id": 1}).limit(50).to_list(length=50)
             results = [r for r in (_track_result(doc, "💔 Remove") for doc in docs) if r]
         if not results:
             results = [{"type": "article", "id": "no_favorites", "title": "No Favorites Yet", "input_message_content": {"message_text": "No favorites saved yet."}}]
@@ -83,14 +94,14 @@ async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> No
         if cached:
             await answer_inline_query(session, query_id, cached, cache_time=300)
             return
-        docs = await db.files.find({"file_id": {"$exists": True}}, {"file_id": 1, "display_name": 1}).sort("_id", -1).limit(20).to_list(length=20)
+        docs = await db.files.find({"file_id": {"$exists": True}}, {"file_id": 1, "display_name": 1, "thumb_file_id": 1}).sort("_id", -1).limit(20).to_list(length=20)
         results = [r for r in (_track_result(doc) for doc in docs) if r]
         if results:  # never cache an empty list — would not serve, and avoids poisoning
             set_inline_empty_cache(results)
 
     else:
         sq   = build_search_query(query)
-        docs = await db.files.find(sq, {"file_id": 1, "display_name": 1}).limit(20).to_list(length=20)
+        docs = await db.files.find(sq, {"file_id": 1, "display_name": 1, "thumb_file_id": 1}).limit(20).to_list(length=20)
         results = [r for r in (_track_result(doc) for doc in docs) if r]
 
     resp = await answer_inline_query(session, query_id, results, cache_time=300)
