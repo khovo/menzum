@@ -17,7 +17,7 @@ import os
 import logging
 
 from config import BOT_TOKEN, ADMIN_ID
-from db import save_last_menu_msg_id, increment_playlist_plays, get_force_channels
+from db import save_last_menu_msg_id, increment_playlist_plays, get_force_channels, is_co_admin
 from utils import send_message, send_audio, send_media_group
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,16 @@ _ADMIN_KB_TEXTS = {
 
 
 def _is_admin(user_id) -> bool:
+    """Root admin only (synchronous, ADMIN_ID env)."""
     return str(user_id) == str(ADMIN_ID)
+
+
+async def is_admin(db, user_id) -> bool:
+    """True for the root admin (ADMIN_ID) OR any co-admin in the admins
+    collection. Use this for all admin gating so co-admins get full access."""
+    if _is_admin(user_id):
+        return True
+    return await is_co_admin(db, user_id)
 
 
 def _normalize_text(text: str) -> str:

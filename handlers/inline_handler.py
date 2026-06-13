@@ -20,13 +20,13 @@ WHY ARTICLE RESULTS (not InlineQueryResultCachedAudio):
 """
 import logging
 
-from db import track_and_get_user, build_search_query
+from db import track_and_get_user, build_search_query, is_banned, get_maintenance
 from utils import (
     answer_inline_query,
     get_inline_empty_cache,
     set_inline_empty_cache,
 )
-from .helpers import BOT_USERNAME
+from .helpers import BOT_USERNAME, is_admin
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,13 @@ async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> No
     first_name = user_info.get("first_name", "User")
 
     await track_and_get_user(db, user_id, first_name)
+
+    # Non-admins get no inline results while banned or during maintenance.
+    if not await is_admin(db, user_id):
+        if await is_banned(db, user_id) or await get_maintenance(db):
+            await answer_inline_query(session, query_id, [], cache_time=5)
+            return
+
     results: list = []
 
     if query.startswith("#favorites"):
