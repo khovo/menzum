@@ -14,11 +14,17 @@ CHANGES FROM v2:
   - Added get_playlist_builder_kb(): control panel shown while building a playlist.
   - Added get_playlist_fuzzy_kb(): like get_fuzzy_suggestions_kb but buttons use
     `pl_add_` prefix so tapping a suggestion directly adds it to the playlist.
+
+CHANGES FROM v3:
+  - Added send_document_bytes(): uploads an in-memory file via multipart/form-data
+    (no disk write — Vercel has no persistent disk). Used by /exportalldb.
 """
 import asyncio
 import time
 import logging
 from typing import Any
+
+import aiohttp
 
 from config import (
     BOT_TOKEN,
@@ -195,6 +201,34 @@ async def send_document(
             return await resp.json()
     except Exception:
         logger.exception("send_document failed chat_id=%s", chat_id)
+        return None
+
+
+async def send_document_bytes(
+    session, chat_id, filename: str, content: bytes, caption: str | None = None
+) -> dict | None:
+    """
+    Upload an in-memory file (no disk write — Vercel has no persistent disk) via
+    multipart/form-data. Used by /exportalldb to send a generated .txt of bytes.
+    """
+    if not BOT_TOKEN:
+        return None
+    form = aiohttp.FormData()
+    form.add_field("chat_id", str(chat_id))
+    if caption:
+        form.add_field("caption", caption)
+        form.add_field("parse_mode", "Markdown")
+    form.add_field(
+        "document", content,
+        filename=filename, content_type="text/plain; charset=utf-8",
+    )
+    try:
+        async with session.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument", data=form
+        ) as resp:
+            return await resp.json()
+    except Exception:
+        logger.exception("send_document_bytes failed chat_id=%s", chat_id)
         return None
 
 

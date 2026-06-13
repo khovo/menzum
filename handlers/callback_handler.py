@@ -28,6 +28,8 @@ from db import (
     add_track_to_building_playlist,
     create_playlist,
     get_playlist,
+    is_banned,
+    get_maintenance,
 )
 from utils import (
     check_membership,
@@ -43,7 +45,7 @@ from utils import (
     get_playlist_builder_kb,
 )
 from .helpers import (
-    _is_admin,
+    is_admin,
     _react_to_message,
     _send_html_message,
     _edit_html_message,
@@ -54,6 +56,7 @@ from .helpers import (
     BOT_USERNAME,
 )
 from .broadcast_engine import _execute_broadcast, _bml_syntax_guide
+from .admin_commands import handle_admin_delete_callback
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +76,28 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
 
     user_data  = await track_and_get_user(db, user_id, first_name)
 
+    admin = await is_admin(db, user_id)
+
+    # ── Non-admin gates: banned → ignore; maintenance → blocked ─────────────────
+    if not admin:
+        if await is_banned(db, user_id):
+            await answer_callback_query(session, cb_id)
+            return
+        if await get_maintenance(db):
+            await answer_callback_query(session, cb_id, "🔧 ቦቱ አሁን በጥገና ላይ ነው።", show_alert=True)
+            return
+
+    # ── Admin delete confirmations (audio / pdf) ────────────────────────────────
+    if data_str.startswith("del_audio_") or data_str.startswith("del_pdf_"):
+        if admin:
+            await handle_admin_delete_callback(session, db, data_str, chat_id, message_id, cb_id)
+        else:
+            await answer_callback_query(session, cb_id)
+        return
+
     # ── Hook & Lock: Enforce join ONLY when trying to play audio or download PDF ──
     if data_str.startswith("play_") or data_str.startswith("pdf_dl_"):
-        if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
+        if not admin and not await check_membership(session, user_id, channels):
             await answer_callback_query(session, cb_id, "⚠️ እባክዎ መጀመሪያ ቻናሉን ይቀላቀሉ!", show_alert=True)
             await send_message(
                 session, chat_id,
@@ -84,7 +106,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             )
             return
 
-    if data_str != "check_subscription" and not _is_admin(user_id):
+    if data_str != "check_subscription" and not admin:
         # We bypass global gatekeeper here, we only gatekeep specific actions like playback
         pass
 
@@ -276,7 +298,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             pass
         return
 
-    if data_str.startswith("broadcast_") and _is_admin(user_id):
+    if data_str.startswith("broadcast_") and admin:
         if data_str == "broadcast_confirm":
             admin_data = await get_user_data(db, user_id)
             msg_id_bc  = (admin_data or {}).get("broadcast_msg_id")
@@ -298,7 +320,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
         await answer_callback_query(session, cb_id)
         return
 
-    if data_str.startswith("admin_ch_") and _is_admin(user_id):
+    if data_str.startswith("admin_ch_") and admin:
         if data_str == "admin_ch_menu":
             text = await _channel_mgmt_menu_text(db)
             await edit_message_text(session, chat_id, message_id, text, reply_markup=get_channel_mgmt_kb())
