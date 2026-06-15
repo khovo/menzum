@@ -77,7 +77,7 @@ module.exports = withAuth(async function handler(req, res) {
       name:        t.display_name || "Unknown",
       is_favorite: favoriteSet.has(t.file_id ?? ""),
       has_thumb:   !!t.thumb_file_id,
-      audio_url:   `${base}/api/webapp/audio?id=${t._id}&action=stream`,
+      audio_url:   `${base}/api/webapp/play?id=${t._id}&action=stream`,
       thumb_url:   t.thumb_file_id ? `${base}/api/webapp/thumb?id=${t._id}` : null,
     }));
 

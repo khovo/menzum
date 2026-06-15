@@ -7,8 +7,9 @@ mobile app (Al-Madih app) can connect to this backend instead of building a new 
 
 > ✅ **Mobile support is now built in.** As of this revision the backend has:
 > - **JWT auth that works outside Telegram** via a "Login with Telegram" handshake
->   (`auth-start` → user taps a deep link in Telegram → `auth-poll` returns a 90-day JWT).
-> - A **real audio streaming endpoint** (`/api/webapp/audio`) with Range/seek support.
+>   (`auth` `{action:"start"}` → user taps a deep link in Telegram → `auth` `{action:"poll"}`
+>   returns a 90-day JWT).
+> - A **real audio streaming endpoint** (`GET /api/webapp/play?...&action=stream`) with Range/seek support.
 > - `audio_url` + `thumb_url` on every track so the app knows how to play and illustrate it.
 > - The existing Telegram Mini App (`initData`) auth **still works unchanged** — both auth
 >   methods are accepted in parallel on every endpoint, so the bot is unaffected.
@@ -16,6 +17,13 @@ mobile app (Al-Madih app) can connect to this backend instead of building a new 
 > ⚙️ **One setup step before it works:** set a `JWT_SECRET` environment variable in the bot's
 > Vercel project (any long random string). Without it the JWT endpoints return `503` (the
 > Telegram bot keeps working regardless). See [Section 9](#9-backend-readiness--setup).
+>
+> 📦 **Why some paths are "action"-based:** the backend is on Vercel's Hobby plan, which caps a
+> deployment at **12 Serverless Functions**, and it's already at the limit. So the mobile-login
+> actions live on `POST /api/webapp/auth` (via an `action` field) and audio streaming lives on
+> `GET /api/webapp/play` — instead of separate files. Functionally identical; just fewer
+> functions. (If the project is upgraded to Vercel Pro later, these can be split into their own
+> clean endpoints.)
 
 ---
 
@@ -57,7 +65,7 @@ Every user endpoint accepts **either** of these headers (dual auth — pick one)
 Both resolve to the same Telegram `user_id`, so the endpoints behave identically.
 
 **JWT format:** HS256, signed with `JWT_SECRET`. Payload: `{ "uid": <telegram_user_id>, "iat": …, "exp": … }`.
-Lifetime **90 days**. Refresh anytime via [`/api/webapp/auth-refresh`](#auth-refresh). Store the
+Lifetime **90 days**. Refresh anytime via the `refresh` action on [`/api/webapp/auth`](#auth-refresh). Store the
 token securely on device (e.g. flutter_secure_storage).
 
 There is **no** password/email login. Identity always comes from Telegram (either the Mini App
@@ -70,22 +78,22 @@ signature or the login deep link below). The admin analytics endpoint uses a sep
 
 ```
 ┌─ App ─────────────┐         ┌─ Backend ───────────┐        ┌─ Telegram ─────────┐
-│ 1. POST auth-start│ ───────▶│ create nonce        │        │                    │
+│ 1. auth start     │ ───────▶│ create nonce        │        │                    │
 │    ◀── nonce +    │         │ (login_sessions)    │        │                    │
 │        deep_link  │         └─────────────────────┘        │                    │
 │ 2. open deep_link │ ───────────────────────────────────────▶ user taps "Start" │
 │                   │         ┌─ Bot links nonce ───┐ ◀──────── /start login_<n>  │
-│ 3. poll auth-poll │ ───────▶│ status: linked      │        │                    │
+│ 3. auth poll      │ ───────▶│ status: linked      │        │                    │
 │    ◀── token+user │         │ → issue 90-day JWT  │        │                    │
 │ 4. use Bearer JWT │         └─────────────────────┘        └────────────────────┘
 └───────────────────┘
 ```
 
-1. `POST /api/webapp/auth-start` → get `{ nonce, deep_link }`.
+1. `POST /api/webapp/auth` with `{ "action": "start" }` → get `{ nonce, deep_link }`.
 2. Open `deep_link` (`https://t.me/Almadihbot?start=login_<nonce>`) — it launches Telegram and
    the user taps **Start**. The bot replies "✅ Login successful! return to the app."
-3. `POST /api/webapp/auth-poll` with the `nonce` every ~2–3s. While waiting you get
-   `{ status: "pending" }`; once the user has tapped Start you get `{ token, user }`.
+3. `POST /api/webapp/auth` with `{ "action": "poll", "nonce": "…" }` every ~2–3s. While waiting
+   you get `{ status: "pending" }`; once the user has tapped Start you get `{ token, user }`.
 4. Send `Authorization: Bearer <token>` on all subsequent requests. Nonce expires in 10 min.
 
 ---
@@ -96,14 +104,14 @@ Base: `https://menzum.vercel.app`
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| POST | `/api/webapp/auth-start` | none | Begin login → returns nonce + Telegram deep link |
-| POST | `/api/webapp/auth-poll` | none | Exchange nonce → JWT once the user has logged in |
-| POST | `/api/webapp/auth-refresh` | JWT or initData | Get a fresh 90-day JWT |
-| POST | `/api/webapp/auth` | initData (body) | Mini App startup validation (unchanged) |
+| POST | `/api/webapp/auth` `{action:"start"}` | none | Begin login → returns nonce + Telegram deep link |
+| POST | `/api/webapp/auth` `{action:"poll"}` | none | Exchange nonce → JWT once the user has logged in |
+| POST | `/api/webapp/auth` `{action:"refresh"}` | JWT or initData | Get a fresh 90-day JWT |
+| POST | `/api/webapp/auth` `{initData}` | none (validates initData) | Mini App startup validation (unchanged) |
 | GET | `/api/webapp/featured` | JWT or initData | Paged catalog (latest tracks) — incl. `audio_url` |
 | GET | `/api/webapp/search` | JWT or initData | Search tracks + PDFs — incl. `audio_url` |
 | GET | `/api/webapp/library` | JWT or initData | Favorites + listening stats — incl. `audio_url` |
-| GET | `/api/webapp/audio` | JWT or initData | **Stream a track's audio bytes** (Range/seek) |
+| GET | `/api/webapp/play?id=…&action=stream` | JWT or initData | **Stream a track's audio bytes** (Range/seek) |
 | POST | `/api/webapp/play` | JWT or initData | Toggle favorite, or push track to Telegram chat |
 | GET | `/api/webapp/pdfs` | JWT or initData | Paged PDF list |
 | POST | `/api/webapp/pdfs` | JWT or initData | Favorite / deliver a PDF |
@@ -119,9 +127,10 @@ are 24-char Mongo ObjectId hex strings.
 
 ## 5. Auth endpoints
 
-### POST `/api/webapp/auth-start` — begin login (no auth)
-**Request:** `POST https://menzum.vercel.app/api/webapp/auth-start` (no body needed)
+All four are the **same** function — `POST https://menzum.vercel.app/api/webapp/auth` — selected
+by the `action` field in the JSON body.
 
+### `{ "action": "start" }` — begin login (no auth)
 **Response 200**
 ```json
 {
@@ -132,11 +141,7 @@ are 24-char Mongo ObjectId hex strings.
 }
 ```
 
-### POST `/api/webapp/auth-poll` — exchange nonce for a token (no auth)
-**Request**
-```json
-{ "nonce": "ab12cd34ef56a7b8" }
-```
+### `{ "action": "poll", "nonce": "ab12cd34ef56a7b8" }` — exchange nonce for a token (no auth)
 **Response 200 — still waiting:** `{ "ok": true, "status": "pending" }`
 
 **Response 200 — logged in:**
@@ -151,13 +156,13 @@ are 24-char Mongo ObjectId hex strings.
 **Errors:** `404` unknown/used nonce · `410` expired (start over) · `503` `JWT_SECRET` not set.
 
 <a name="auth-refresh"></a>
-### POST `/api/webapp/auth-refresh` — refresh the token
-**Request:** `POST …/auth-refresh` with `Authorization: Bearer <current jwt>` (or `tma <initData>`).
+### `{ "action": "refresh" }` — refresh the token
+Send with `Authorization: Bearer <current jwt>` (or `tma <initData>`).
 **Response 200:** `{ "ok": true, "token": "<new 90-day JWT>" }`
 
-### POST `/api/webapp/auth` — Mini App startup (unchanged; for the web Mini App)
+### `{ "initData": "…" }` (no `action`) — Mini App startup (unchanged; for the web Mini App)
 Takes `initData` in the **body** and returns the user profile. The mobile app does **not** need
-this — use `auth-poll`'s `user` object. (Kept for the existing Mini App.)
+this — use the `user` object returned by the `poll` action.
 ```json
 // request
 { "initData": "query_id=...&user=%7B...%7D&auth_date=...&hash=..." }
@@ -182,7 +187,7 @@ All three accept `Authorization: Bearer <jwt>` (or `tma <initData>`) and now ret
       "name": "Husni Sultan - Ya Nabi",
       "is_favorite": false,
       "has_thumb": true,
-      "audio_url": "https://menzum.vercel.app/api/webapp/audio?id=64a1b2c3d4e5f6a7b8c9d0e1&action=stream",
+      "audio_url": "https://menzum.vercel.app/api/webapp/play?id=64a1b2c3d4e5f6a7b8c9d0e1&action=stream",
       "thumb_url": "https://menzum.vercel.app/api/webapp/thumb?id=64a1b2c3d4e5f6a7b8c9d0e1"
     }
   ],
@@ -204,7 +209,7 @@ as above plus a `type` field per item.
              "most_played": [ { "track_id": "64a1…", "name": "…", "play_count": 6 } ] },
   "favorites": [
     { "id": "64a1…", "name": "Husni Sultan - Ya Nabi", "is_favorite": true, "has_thumb": true,
-      "audio_url": "https://menzum.vercel.app/api/webapp/audio?id=64a1…&action=stream",
+      "audio_url": "https://menzum.vercel.app/api/webapp/play?id=64a1…&action=stream",
       "thumb_url": "https://menzum.vercel.app/api/webapp/thumb?id=64a1…" }
   ],
   "pdf_favorites": [ { "id": "64b2…", "name": "Diwan al-Burdah", "is_favorite": true, "type": "pdf" } ]
@@ -215,9 +220,10 @@ as above plus a `type` field per item.
 
 ## 7. Audio & PDF playback
 
-### GET `/api/webapp/audio?id=<track_id>&action=stream` — **stream audio** ⭐
-Auth: `Bearer <jwt>` (or `tma <initData>`). This is what `audio_url` points to. Returns the raw
-audio bytes; the bot token is never exposed.
+### GET `/api/webapp/play?id=<track_id>&action=stream` — **stream audio** ⭐
+Auth: `Bearer <jwt>` (or `tma <initData>`). This is exactly what the `audio_url` field contains.
+Returns the raw audio bytes; the bot token is never exposed. (Same function as `POST /play`,
+different method — `GET` streams, `POST` favorites/delivers.)
 
 - `Content-Type`: `audio/mpeg` (or `audio/ogg` / `audio/mp4` / `audio/wav` by file type).
 - `Accept-Ranges: bytes`; forwards your `Range` header → `206 Partial Content` for seeking.
@@ -288,7 +294,7 @@ streaming), CORS is open, and the bot-token leak is fixed.
 
 ### Required one-time setup
 1. **Set `JWT_SECRET`** in the bot's Vercel project (Settings → Environment Variables) to a long
-   random string, then redeploy. Until this is set, `auth-poll`/`auth-refresh` return `503` and
+   random string, then redeploy. Until this is set, the `poll`/`refresh` actions return `503` and
    `Bearer` tokens won't verify (the Telegram bot and Mini App keep working).
 2. Make sure `BOT_USERNAME` matches the real bot (defaults to `Almadihbot`) so the login
    `deep_link` is correct.
@@ -296,10 +302,10 @@ streaming), CORS is open, and the bot-token leak is fixed.
 ### What works now
 | Capability | Status |
 |-----------|--------|
-| Login outside Telegram (JWT) | ✅ `auth-start` → `auth-poll` → `Bearer` |
-| Token refresh (90-day) | ✅ `auth-refresh` |
+| Login outside Telegram (JWT) | ✅ `auth start` → `auth poll` → `Bearer` |
+| Token refresh (90-day) | ✅ `auth` `{action:"refresh"}` |
 | Browse / search / favorites | ✅ with `audio_url` + `thumb_url` |
-| Audio playback in-app | ✅ `GET /audio?...&action=stream` (Range/seek) |
+| Audio playback in-app | ✅ `GET /play?id=…&action=stream` (Range/seek) |
 | PDF viewing in-app | ✅ `GET /pdf-view?...&action=stream` |
 | Cover images | ✅ `thumb_url` (public, proxied) |
 | CORS | ✅ `*` + Authorization/Range allowed |
