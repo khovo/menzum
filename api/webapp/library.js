@@ -94,11 +94,14 @@ module.exports = withAuth(async function handler(req, res) {
       return ia - ib;
     });
 
+    const base = `https://${req.headers.host || "menzum.vercel.app"}`;
     const favorites = favDocs.map((doc) => ({
       id:          doc._id.toString(),
       name:        doc.display_name || "Unknown",
       is_favorite: true,
       has_thumb:   !!doc.thumb_file_id,
+      audio_url:   `${base}/api/webapp/audio?id=${doc._id}&action=stream`,
+      thumb_url:   doc.thumb_file_id ? `${base}/api/webapp/thumb?id=${doc._id}` : null,
     }));
 
     // ── Compute most-played from listen_history (O(50) max) ───────────────────

@@ -403,3 +403,31 @@ async def increment_playlist_plays(db, playlist_id: str) -> None:
         )
     except Exception:
         pass
+
+
+# ── Mobile App: Telegram-login handshake (login_sessions collection) ───────────
+
+async def link_login_nonce(db, nonce: str, user_id: int, first_name: str, username=None) -> bool:
+    """
+    Link a pending login nonce (created by api/webapp/auth-start) to the Telegram
+    user who tapped the /start login_<nonce> deep link. The mobile app then polls
+    api/webapp/auth-poll, which reads this and issues a JWT.
+
+    Only matches a doc whose status is still "pending" — so a nonce can't be
+    re-linked after it has been consumed or expired. Never raises.
+    """
+    try:
+        res = await db.login_sessions.update_one(
+            {"_id": nonce, "status": "pending"},
+            {"$set": {
+                "status":     "linked",
+                "user_id":    int(user_id),
+                "first_name": first_name,
+                "username":   username,
+                "linked_at":  datetime.now(),
+            }},
+        )
+        return res.matched_count > 0
+    except Exception:
+        logger.exception("link_login_nonce failed nonce=%s", nonce)
+        return False

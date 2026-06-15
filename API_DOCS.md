@@ -2,506 +2,316 @@
 
 Backend base URL (production): **`https://menzum.vercel.app`**
 
-This document describes **every HTTP endpoint** the Al-Madih backend currently exposes, so a
-mobile (Flutter) app can talk to the existing backend instead of building a new one.
+This document describes **every HTTP endpoint** the Al-Madih backend exposes, so the Flutter
+mobile app (Al-Madih app) can connect to this backend instead of building a new one.
 
-> ⚠️ **READ THIS FIRST — the honest summary.**
-> This backend was built **exclusively for a Telegram bot + Telegram Mini App**. As of today it has:
-> - **No OTP / phone / email / password login, and no JWT/session tokens.** The only user
->   authentication is **Telegram Mini App `initData`** (an HMAC signature that *only the Telegram
->   app can generate*). A standalone Flutter app running outside Telegram **cannot currently
->   authenticate** to the user endpoints.
-> - **No public audio URL / audio streaming endpoint.** Audio is never served as a file the app
->   can play. Tapping "play" makes the backend push the audio **into the user's Telegram chat**
->   via the bot. There is no way today to stream a track inside a non-Telegram app.
+> ✅ **Mobile support is now built in.** As of this revision the backend has:
+> - **JWT auth that works outside Telegram** via a "Login with Telegram" handshake
+>   (`auth-start` → user taps a deep link in Telegram → `auth-poll` returns a 90-day JWT).
+> - A **real audio streaming endpoint** (`/api/webapp/audio`) with Range/seek support.
+> - `audio_url` + `thumb_url` on every track so the app knows how to play and illustrate it.
+> - The existing Telegram Mini App (`initData`) auth **still works unchanged** — both auth
+>   methods are accepted in parallel on every endpoint, so the bot is unaffected.
 >
-> So the backend is **not ready** for a standalone mobile app as-is. The endpoints below are
-> fully documented, and [Section 9](#9-is-the-backend-ready-for-a-mobile-app) lists exactly what
-> must change. Please read Sections 2 and 9 before estimating work.
+> ⚙️ **One setup step before it works:** set a `JWT_SECRET` environment variable in the bot's
+> Vercel project (any long random string). Without it the JWT endpoints return `503` (the
+> Telegram bot keeps working regardless). See [Section 9](#9-backend-readiness--setup).
 
 ---
 
 ## Table of contents
-
 1. [Architecture in one minute](#1-architecture-in-one-minute)
-2. [Authentication (how it works today)](#2-authentication-how-it-works-today)
-3. [Quick reference — all endpoints](#3-quick-reference--all-endpoints)
-4. [User endpoints (Mini App API)](#4-user-endpoints-mini-app-api)
-5. [PDF endpoints](#5-pdf-endpoints)
-6. [Media/asset endpoints (images, PDF bytes)](#6-mediaasset-endpoints-images-pdf-bytes)
-7. [Admin endpoint](#7-admin-endpoint)
-8. [Data models](#8-data-models)
-9. [Is the backend ready for a mobile app?](#9-is-the-backend-ready-for-a-mobile-app)
-10. [Recommended changes to support the Flutter app](#10-recommended-changes-to-support-the-flutter-app)
+2. [Authentication](#2-authentication)
+3. [The mobile login flow (step by step)](#3-the-mobile-login-flow-step-by-step)
+4. [Quick reference — all endpoints](#4-quick-reference--all-endpoints)
+5. [Auth endpoints](#5-auth-endpoints)
+6. [Catalog / search / library](#6-catalog--search--library)
+7. [Audio & PDF playback](#7-audio--pdf-playback)
+8. [Images, admin, data models](#8-images-admin-data-models)
+9. [Backend readiness & setup](#9-backend-readiness--setup)
 
 ---
 
 ## 1. Architecture in one minute
 
-- **Two Vercel projects share one MongoDB database (`MenzumaDB`):**
-  - **Bot project** → `https://menzum.vercel.app` — this is the **API host**. It runs:
-    - a Python Telegram webhook at `/` (not for the app), and
-    - the Node.js JSON API under `/api/webapp/*` (this is what the app uses).
-  - **Frontend project** → `https://almadih.vercel.app` — the Telegram Mini App (a Next.js web UI). It calls the bot project's API. The Flutter app would replace/parallel this frontend.
-- **Audio & PDFs are stored on Telegram's servers**, not on Vercel. The database only stores a
-  Telegram **`file_id`** per track/PDF. The backend resolves `file_id` → a temporary Telegram
-  CDN URL on demand. **`file_id` is intentionally never returned to clients.**
-- All `/api/webapp/*` endpoints already send permissive **CORS** headers (`Access-Control-Allow-Origin: *`), because the Mini App is on a different origin. So cross-origin calls from an app are not blocked. (CORS is irrelevant for native mobile anyway.)
+- **One MongoDB DB (`MenzumaDB`) shared by:** the **bot project** (`https://menzum.vercel.app`,
+  the API host) and the **Mini App frontend** (`https://almadih.vercel.app`). The Flutter app
+  talks only to `https://menzum.vercel.app`.
+- **Audio & PDFs live on Telegram's servers.** The DB stores a Telegram `file_id` per item.
+  The backend resolves `file_id` → bytes on demand and **streams them through the backend**;
+  `file_id` and the bot token are never exposed to clients.
+- All `/api/webapp/*` endpoints send **CORS** `Access-Control-Allow-Origin: *` and allow the
+  `Authorization` and `Range` headers (irrelevant for native mobile, handy for web).
 
 ---
 
-## 2. Authentication (how it works today)
+## 2. Authentication
 
-There are **two** auth schemes. Neither is a classic email/OTP/JWT flow.
+Every user endpoint accepts **either** of these headers (dual auth — pick one):
 
-### 2a. Telegram Mini App `initData` (all user endpoints)
+| Scheme | Header | Who uses it |
+|--------|--------|-------------|
+| **Mobile JWT** | `Authorization: Bearer <jwt>` | The Flutter app (after Telegram login) |
+| **Telegram Mini App** | `Authorization: tma <initData>` | The in-Telegram Mini App (unchanged) |
 
-Every user-facing endpoint (except the public image proxy) requires this header:
+Both resolve to the same Telegram `user_id`, so the endpoints behave identically.
 
-```
-Authorization: tma <initData>
-```
+**JWT format:** HS256, signed with `JWT_SECRET`. Payload: `{ "uid": <telegram_user_id>, "iat": …, "exp": … }`.
+Lifetime **90 days**. Refresh anytime via [`/api/webapp/auth-refresh`](#auth-refresh). Store the
+token securely on device (e.g. flutter_secure_storage).
 
-`<initData>` is the raw query-string that Telegram injects into a Mini App at runtime
-(`window.Telegram.WebApp.initData`). The server (`api/webapp/_auth.js`) validates it by:
-
-1. Parsing the query string and pulling out the `hash` field.
-2. Recomputing `HMAC_SHA256(data_check_string, key=HMAC_SHA256("WebAppData", BOT_TOKEN))`.
-3. Comparing the computed hash to the supplied `hash` (constant-time).
-4. Rejecting if `auth_date` is older than **24 hours**.
-
-On success the server trusts the embedded Telegram `user` object (id, first_name, …).
-
-**Implications for a Flutter app:**
-- This signature can only be produced by the official Telegram client when it opens a Mini App.
-  A normal Flutter app has no way to generate a valid `initData`, so **it cannot call these
-  endpoints directly**. (The only exceptions: running your UI inside a Telegram WebView, or
-  implementing Telegram Login and a new server-side validator — see Section 10.)
-- There is **no token to "get"**, no refresh token, no expiry beyond the 24h `auth_date`.
-- The exception `auth.js` accepts `initData` in the request **body** instead of the header
-  (because it runs before a session exists). All other endpoints use the header.
-
-### 2b. Admin Bearer token (admin dashboard only)
-
-The analytics endpoint uses a static shared secret:
-
-```
-Authorization: Bearer <ADMIN_TOKEN>
-```
-
-`ADMIN_TOKEN` is a server-side env var (a password the admin types into the dashboard). This is
-**not** a per-user login and should not be shipped in the mobile app.
-
-### What does NOT exist
-
-❌ Send OTP · ❌ Verify OTP · ❌ Email/password register or login · ❌ JWT / access tokens /
-refresh tokens · ❌ phone-number auth · ❌ any `/auth/login`, `/auth/otp`, `/register` route.
+There is **no** password/email login. Identity always comes from Telegram (either the Mini App
+signature or the login deep link below). The admin analytics endpoint uses a separate static
+`Bearer <ADMIN_TOKEN>` and is **not** for the app.
 
 ---
 
-## 3. Quick reference — all endpoints
+## 3. The mobile login flow (step by step)
 
-All under base `https://menzum.vercel.app`.
+```
+┌─ App ─────────────┐         ┌─ Backend ───────────┐        ┌─ Telegram ─────────┐
+│ 1. POST auth-start│ ───────▶│ create nonce        │        │                    │
+│    ◀── nonce +    │         │ (login_sessions)    │        │                    │
+│        deep_link  │         └─────────────────────┘        │                    │
+│ 2. open deep_link │ ───────────────────────────────────────▶ user taps "Start" │
+│                   │         ┌─ Bot links nonce ───┐ ◀──────── /start login_<n>  │
+│ 3. poll auth-poll │ ───────▶│ status: linked      │        │                    │
+│    ◀── token+user │         │ → issue 90-day JWT  │        │                    │
+│ 4. use Bearer JWT │         └─────────────────────┘        └────────────────────┘
+└───────────────────┘
+```
 
-| # | Method | Path | Auth | Purpose |
-|---|--------|------|------|---------|
-| 1 | POST | `/api/webapp/auth` | `initData` in **body** | Validate user, return profile |
-| 2 | GET | `/api/webapp/featured` | `tma` header | Paged catalog (latest tracks) |
-| 3 | GET | `/api/webapp/search` | `tma` header | Search tracks + PDFs |
-| 4 | GET | `/api/webapp/library` | `tma` header | User favorites + listening stats |
-| 5 | POST | `/api/webapp/play` | `tma` header | Deliver a track / toggle favorite |
-| 6 | GET | `/api/webapp/pdfs` | `tma` header | Paged PDF list |
-| 7 | POST | `/api/webapp/pdfs` | `tma` header | Favorite / deliver a PDF |
-| 8 | GET | `/api/webapp/pdf-view` | `tma` header | Get a PDF URL / stream PDF bytes |
-| 9 | GET | `/api/webapp/thumb` | **public** | 302-redirect to a track's cover image |
-| 10 | GET | `/api/webapp/admin-stats` | `Bearer ADMIN_TOKEN` | Analytics (admin only) |
-| 11 | POST | `/` and `/api/webhook` | Telegram only | Telegram bot webhook (not for the app) |
-
-Common conventions:
-- Success responses are JSON `{ "ok": true, ... }`. Errors are `{ "ok": false, "error": "..." }`.
-- Pagination is **cursor-based**: pass `?cursor=<next_cursor>` from the previous response. Page size 20 (max 50 via `?limit=`).
-- All IDs returned to the client are 24-char Mongo ObjectId hex strings.
+1. `POST /api/webapp/auth-start` → get `{ nonce, deep_link }`.
+2. Open `deep_link` (`https://t.me/Almadihbot?start=login_<nonce>`) — it launches Telegram and
+   the user taps **Start**. The bot replies "✅ Login successful! return to the app."
+3. `POST /api/webapp/auth-poll` with the `nonce` every ~2–3s. While waiting you get
+   `{ status: "pending" }`; once the user has tapped Start you get `{ token, user }`.
+4. Send `Authorization: Bearer <token>` on all subsequent requests. Nonce expires in 10 min.
 
 ---
 
-## 4. User endpoints (Mini App API)
+## 4. Quick reference — all endpoints
 
-### 1) POST `/api/webapp/auth` — validate session & get profile
+Base: `https://menzum.vercel.app`
 
-The app calls this once on startup. **This is the only endpoint that takes `initData` in the body.**
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| POST | `/api/webapp/auth-start` | none | Begin login → returns nonce + Telegram deep link |
+| POST | `/api/webapp/auth-poll` | none | Exchange nonce → JWT once the user has logged in |
+| POST | `/api/webapp/auth-refresh` | JWT or initData | Get a fresh 90-day JWT |
+| POST | `/api/webapp/auth` | initData (body) | Mini App startup validation (unchanged) |
+| GET | `/api/webapp/featured` | JWT or initData | Paged catalog (latest tracks) — incl. `audio_url` |
+| GET | `/api/webapp/search` | JWT or initData | Search tracks + PDFs — incl. `audio_url` |
+| GET | `/api/webapp/library` | JWT or initData | Favorites + listening stats — incl. `audio_url` |
+| GET | `/api/webapp/audio` | JWT or initData | **Stream a track's audio bytes** (Range/seek) |
+| POST | `/api/webapp/play` | JWT or initData | Toggle favorite, or push track to Telegram chat |
+| GET | `/api/webapp/pdfs` | JWT or initData | Paged PDF list |
+| POST | `/api/webapp/pdfs` | JWT or initData | Favorite / deliver a PDF |
+| GET | `/api/webapp/pdf-view` | JWT or initData | Stream PDF bytes / get stream URL |
+| GET | `/api/webapp/thumb` | none (public) | Track cover image (proxied bytes) |
+| GET | `/api/webapp/admin-stats` | `Bearer ADMIN_TOKEN` | Analytics (admin only — not for app) |
 
-**Request**
-```
-POST https://menzum.vercel.app/api/webapp/auth
-Content-Type: application/json
-```
-```json
-{ "initData": "query_id=...&user=%7B...%7D&auth_date=...&hash=..." }
-```
+Conventions: JSON `{ "ok": true, ... }` on success, `{ "ok": false, "error": "…" }` on failure.
+Pagination is cursor-based (`?cursor=<next_cursor>`, page size 20, max 50 via `?limit=`). All IDs
+are 24-char Mongo ObjectId hex strings.
+
+---
+
+## 5. Auth endpoints
+
+### POST `/api/webapp/auth-start` — begin login (no auth)
+**Request:** `POST https://menzum.vercel.app/api/webapp/auth-start` (no body needed)
 
 **Response 200**
 ```json
 {
   "ok": true,
-  "user": {
-    "id": 123456789,
-    "first_name": "Ahmed",
-    "last_name": "",
-    "username": "ahmed",
-    "favorites_count": 12,
-    "baraka_points": 0
-  }
+  "nonce": "ab12cd34ef56a7b8",
+  "deep_link": "https://t.me/Almadihbot?start=login_ab12cd34ef56a7b8",
+  "expires_in": 600
 }
 ```
 
-**Response 401** — invalid/expired `initData`
+### POST `/api/webapp/auth-poll` — exchange nonce for a token (no auth)
+**Request**
 ```json
-{ "ok": false, "error": "Hash mismatch — invalid initData." }
+{ "nonce": "ab12cd34ef56a7b8" }
+```
+**Response 200 — still waiting:** `{ "ok": true, "status": "pending" }`
+
+**Response 200 — logged in:**
+```json
+{
+  "ok": true,
+  "status": "linked",
+  "token": "<JWT, valid 90 days>",
+  "user": { "id": 123456789, "first_name": "Ahmed", "username": "ahmed", "photo_url": null }
+}
+```
+**Errors:** `404` unknown/used nonce · `410` expired (start over) · `503` `JWT_SECRET` not set.
+
+<a name="auth-refresh"></a>
+### POST `/api/webapp/auth-refresh` — refresh the token
+**Request:** `POST …/auth-refresh` with `Authorization: Bearer <current jwt>` (or `tma <initData>`).
+**Response 200:** `{ "ok": true, "token": "<new 90-day JWT>" }`
+
+### POST `/api/webapp/auth` — Mini App startup (unchanged; for the web Mini App)
+Takes `initData` in the **body** and returns the user profile. The mobile app does **not** need
+this — use `auth-poll`'s `user` object. (Kept for the existing Mini App.)
+```json
+// request
+{ "initData": "query_id=...&user=%7B...%7D&auth_date=...&hash=..." }
+// response
+{ "ok": true, "user": { "id": 123, "first_name": "Ahmed", "favorites_count": 12, "baraka_points": 0 } }
 ```
 
 ---
 
-### 2) GET `/api/webapp/featured` — catalog (latest tracks, paged)
+## 6. Catalog / search / library
 
-Returns tracks newest-first. Use for the Home / "all menzuma" list with infinite scroll.
+All three accept `Authorization: Bearer <jwt>` (or `tma <initData>`) and now return
+**`audio_url`** (how to play) and **`thumb_url`** (cover image, or `null`) on every track.
 
-**Request**
-```
-GET https://menzum.vercel.app/api/webapp/featured?cursor=<optional>&limit=20
-Authorization: tma <initData>
-```
-Query params: `cursor` (optional, the `next_cursor` from the previous page), `limit` (optional, default 20, max 50).
-
-**Response 200**
+### GET `/api/webapp/featured?cursor=<optional>&limit=20`
 ```json
 {
   "ok": true,
   "tracks": [
-    { "id": "64a1b2c3d4e5f6a7b8c9d0e1", "name": "Husni Sultan - Ya Nabi", "is_favorite": false, "has_thumb": true },
-    { "id": "64a1b2c3d4e5f6a7b8c9d0e2", "name": "Menzuma 2",            "is_favorite": true,  "has_thumb": false }
+    {
+      "id": "64a1b2c3d4e5f6a7b8c9d0e1",
+      "name": "Husni Sultan - Ya Nabi",
+      "is_favorite": false,
+      "has_thumb": true,
+      "audio_url": "https://menzum.vercel.app/api/webapp/audio?id=64a1b2c3d4e5f6a7b8c9d0e1&action=stream",
+      "thumb_url": "https://menzum.vercel.app/api/webapp/thumb?id=64a1b2c3d4e5f6a7b8c9d0e1"
+    }
   ],
   "has_more": true,
-  "next_cursor": "64a1b2c3d4e5f6a7b8c9d0e2"
+  "next_cursor": "64a1b2c3d4e5f6a7b8c9d0e1"
 }
 ```
-- `is_favorite` — whether this track is in the calling user's favorites.
-- `has_thumb` — whether a cover image exists (use endpoint #9 to display it).
-- ⚠️ Note: there is **no `audio_url`** here. There is no field that lets the app play the track. See Section 9.
 
----
+### GET `/api/webapp/search?q=husni&type=all&cursor=&limit=20`
+`type` = `all` (default) | `audio` | `pdf`. Audio items include `audio_url`/`thumb_url` and
+`type:"audio"`; PDF items have `type:"pdf"` (open them via `/pdf-view`). Same `tracks` array shape
+as above plus a `type` field per item.
 
-### 3) GET `/api/webapp/search` — search tracks + PDFs
-
-Case-insensitive AND-regex search on track `display_name` / PDF `title`.
-
-**Request**
-```
-GET https://menzum.vercel.app/api/webapp/search?q=husni&type=all&cursor=<optional>&limit=20
-Authorization: tma <initData>
-```
-Query params:
-- `q` — search term (empty `q` returns the latest tracks).
-- `type` — `all` (default), `audio`, or `pdf`. In `all`, audio results come first, with up to 5 PDFs appended.
-- `cursor`, `limit` — pagination (applies to audio results).
-
-**Response 200**
+### GET `/api/webapp/library`
 ```json
 {
   "ok": true,
-  "query": "husni",
-  "tracks": [
-    { "id": "64a1...e1", "name": "Husni Sultan - Ya Nabi", "is_favorite": false, "has_thumb": true, "type": "audio" },
-    { "id": "64b2...f9", "name": "Husni biography (PDF)",   "is_favorite": false,                    "type": "pdf"  }
-  ],
-  "has_more": false,
-  "next_cursor": null
-}
-```
-(The array is named `tracks` for frontend compatibility but may contain both `type: "audio"` and `type: "pdf"` items.)
-
----
-
-### 4) GET `/api/webapp/library` — favorites + listening stats
-
-Everything needed for a "My Library" screen.
-
-**Request**
-```
-GET https://menzum.vercel.app/api/webapp/library
-Authorization: tma <initData>
-```
-
-**Response 200**
-```json
-{
-  "ok": true,
-  "stats": {
-    "total_plays": 47,
-    "total_favorites": 12,
-    "most_played": [
-      { "track_id": "64a1...e1", "name": "Husni Sultan - Ya Nabi", "play_count": 6 }
-    ]
-  },
+  "stats": { "total_plays": 47, "total_favorites": 12,
+             "most_played": [ { "track_id": "64a1…", "name": "…", "play_count": 6 } ] },
   "favorites": [
-    { "id": "64a1...e1", "name": "Husni Sultan - Ya Nabi", "is_favorite": true, "has_thumb": true }
+    { "id": "64a1…", "name": "Husni Sultan - Ya Nabi", "is_favorite": true, "has_thumb": true,
+      "audio_url": "https://menzum.vercel.app/api/webapp/audio?id=64a1…&action=stream",
+      "thumb_url": "https://menzum.vercel.app/api/webapp/thumb?id=64a1…" }
   ],
-  "pdf_favorites": [
-    { "id": "64b2...f9", "name": "Diwan al-Burdah", "is_favorite": true, "type": "pdf" }
-  ]
+  "pdf_favorites": [ { "id": "64b2…", "name": "Diwan al-Burdah", "is_favorite": true, "type": "pdf" } ]
 }
 ```
 
 ---
 
-### 5) POST `/api/webapp/play` — deliver a track OR toggle favorite
+## 7. Audio & PDF playback
 
-This is the **core action** endpoint. ⚠️ Read carefully — `action: "play"` does **not** return
-audio; it pushes the audio file into the user's **Telegram chat** with the bot.
+### GET `/api/webapp/audio?id=<track_id>&action=stream` — **stream audio** ⭐
+Auth: `Bearer <jwt>` (or `tma <initData>`). This is what `audio_url` points to. Returns the raw
+audio bytes; the bot token is never exposed.
 
-**Request**
+- `Content-Type`: `audio/mpeg` (or `audio/ogg` / `audio/mp4` / `audio/wav` by file type).
+- `Accept-Ranges: bytes`; forwards your `Range` header → `206 Partial Content` for seeking.
+- `GET` streams; `HEAD` returns headers only (duration/size probing).
+- Errors: `400` bad id · `404` track/file not found · `401` bad/missing auth.
+
+**Flutter (just_audio) example — the player must send the auth header:**
+```dart
+final player = AudioPlayer();
+await player.setAudioSource(AudioSource.uri(
+  Uri.parse(track.audioUrl),
+  headers: { 'Authorization': 'Bearer $jwt' },
+));
+await player.play();
 ```
-POST https://menzum.vercel.app/api/webapp/play
-Authorization: tma <initData>
-Content-Type: application/json
-```
+> The audio endpoint is auth-protected, so a bare `<audio src>` without headers won't work —
+> use a player that supports request headers (just_audio does).
+
+### POST `/api/webapp/play` — favorite, or push to Telegram chat (unchanged)
+Used by the bot/Mini App. For the mobile app, use it only for `action:"favorite"`; prefer the
+`audio` endpoint above for playback (`action:"play"` sends the file into the user's Telegram chat,
+not into the app).
 ```json
-{ "track_id": "64a1b2c3d4e5f6a7b8c9d0e1", "action": "play" }
-```
-`action` is `"play"` (default) or `"favorite"`.
-
-**Response 200 — `action: "play"`** (the track was sent to the user's Telegram chat)
-```json
-{ "ok": true, "action": "play", "track_name": "Husni Sultan - Ya Nabi" }
-```
-
-**Response 200 — `action: "favorite"`** (favorite toggled)
-```json
+// request
+{ "track_id": "64a1…", "action": "favorite" }
+// response
 { "ok": true, "action": "favorite", "is_favorite": true }
 ```
 
-**Errors**
-```json
-{ "ok": false, "error": "Invalid track_id." }                                  // 400
-{ "ok": false, "error": "Track not found." }                                   // 404
-{ "ok": false, "error": "Please start the bot first: send /start to @Almadihbot" } // 502 (user never opened the bot)
-```
-Side effects of a successful `play`: increments `users.total_plays` and appends to a capped
-(50-entry) `users.listen_history`. **For a real mobile app, `play` is not useful** — there is
-no in-app audio. `favorite` works fine for any logged-in user.
+### GET `/api/webapp/pdfs` / POST `/api/webapp/pdfs`
+- `GET …/pdfs?cursor=&limit=20` → `{ ok, pdfs:[{id,title,file_name,is_favorite}], has_more, next_cursor }`.
+- `POST …/pdfs` body `{ "action": "favorite"|"deliver", "pdf_id": "64b2…" }` → toggle favorite, or
+  send the PDF into the user's Telegram chat.
+
+### GET `/api/webapp/pdf-view?id=<id>[&action=stream]`
+- `action=stream` → streams the PDF bytes (`application/pdf`, Range supported) — use this in-app.
+- without `action` → `{ ok:true, url:"https://menzum.vercel.app/api/webapp/pdf-view?id=…&action=stream" }`
+  (now points at our own proxied stream URL — the bot token is **no longer** exposed).
 
 ---
 
-## 5. PDF endpoints
+## 8. Images, admin, data models
 
-### 6) GET `/api/webapp/pdfs` — list PDFs (paged)
+### GET `/api/webapp/thumb?id=<track_id>` — cover image (public)
+Streams the cover **bytes** through the backend (no auth, no token leak). Use the `thumb_url`
+field directly as an image source (`Image.network(track.thumbUrl)`). Returns `404` when a track
+has no cover → show a placeholder.
 
-**Request**
-```
-GET https://menzum.vercel.app/api/webapp/pdfs?cursor=<optional>&limit=20
-Authorization: tma <initData>
-```
+### GET `/api/webapp/admin-stats` — analytics (admin only)
+`Authorization: Bearer <ADMIN_TOKEN>`. **Do not ship `ADMIN_TOKEN` in the app.** Returns
+`{ ok, stats: { totalUsers, totalFiles, totalPlays, activeUsers, userGrowth[], trendingTracks[] } }`.
 
-**Response 200**
-```json
-{
-  "ok": true,
-  "pdfs": [
-    { "id": "64b2...f9", "title": "Diwan al-Burdah", "file_name": "burdah.pdf", "is_favorite": false }
-  ],
-  "has_more": false,
-  "next_cursor": null
-}
-```
-
-### 7) POST `/api/webapp/pdfs` — favorite or deliver a PDF
-
-**Request**
-```
-POST https://menzum.vercel.app/api/webapp/pdfs
-Authorization: tma <initData>
-Content-Type: application/json
-```
-```json
-{ "action": "favorite", "pdf_id": "64b2c3d4e5f6a7b8c9d0e1f9" }
-```
-`action` is `"favorite"` (toggle) or `"deliver"` (send the PDF into the user's Telegram chat).
-
-**Response 200**
-```json
-{ "ok": true, "action": "favorite", "is_favorite": true }
-```
-```json
-{ "ok": true, "action": "deliver", "title": "Diwan al-Burdah" }
-```
-**Errors:** `400 Invalid pdf_id.` · `404 PDF not found.` · `502` (with a "send /start" hint when delivering and the user never opened the bot).
-
-### 8) GET `/api/webapp/pdf-view` — get a PDF URL or stream its bytes
-
-Unlike audio, PDFs **can** be viewed in-app via this endpoint.
-
-**Mode A — get a temporary URL (JSON):**
-```
-GET https://menzum.vercel.app/api/webapp/pdf-view?id=64b2...f9
-Authorization: tma <initData>
-```
-```json
-{ "ok": true, "url": "https://api.telegram.org/file/bot<TOKEN>/documents/file_123.pdf" }
-```
-**Mode B — stream the bytes (for an in-app viewer with range support):**
-```
-GET https://menzum.vercel.app/api/webapp/pdf-view?id=64b2...f9&action=stream
-Authorization: tma <initData>
-Range: bytes=0-           (optional, supported → 206 Partial Content)
-```
-Returns the raw PDF (`Content-Type: application/pdf`), supports `Range`/`Content-Range` for progressive loading. `404` if the PDF or its Telegram file can't be resolved.
-
-> 🔐 **Security note for the dev:** Mode A's returned `url` (and the redirect target of endpoint
-> #9) contains the bot token in the path (`/bot<TOKEN>/...`). That's how Telegram's file API
-> works, but it means the bot token is exposed to any client that receives these URLs. Prefer
-> the **streaming** mode (B) for PDFs, and see Section 10 for audio.
+### Data models
+- **Track:** `id`, `name`, `is_favorite`, `has_thumb`, `audio_url`, `thumb_url`. (`file_id` is server-side only.)
+- **PDF:** `id`, `title`, `file_name`, `is_favorite`.
+- **User:** `_id` = Telegram user id (int); `first_name`, `joined_at`, `last_active`, `favorites`,
+  `pdf_favorites`, `total_plays`, `listen_history` (capped 50), `baraka_points`.
+- **login_sessions** (internal): `_id` = nonce, `status` (`pending`/`linked`), `user_id`,
+  `first_name`, `username`, timestamps. Used only by the login handshake.
+- **Playlists:** exist in the DB/bot but still have **no HTTP API** (not exposed to the app yet).
 
 ---
 
-## 6. Media/asset endpoints (images, PDF bytes)
+## 9. Backend readiness & setup
 
-### 9) GET `/api/webapp/thumb` — track cover image (public, no auth)
+**Status: ready for the mobile app.** Both former blockers are resolved (JWT auth + audio
+streaming), CORS is open, and the bot-token leak is fixed.
 
-A zero-bandwidth image proxy: it 302-redirects to the track's cover on Telegram's CDN. Use it
-directly as an `<img>`/`Image.network` source.
+### Required one-time setup
+1. **Set `JWT_SECRET`** in the bot's Vercel project (Settings → Environment Variables) to a long
+   random string, then redeploy. Until this is set, `auth-poll`/`auth-refresh` return `503` and
+   `Bearer` tokens won't verify (the Telegram bot and Mini App keep working).
+2. Make sure `BOT_USERNAME` matches the real bot (defaults to `Almadihbot`) so the login
+   `deep_link` is correct.
 
-**Request**
-```
-GET https://menzum.vercel.app/api/webapp/thumb?id=<track_id>
-```
-- `id` — the **track's** 24-char id (same `id` returned by featured/search).
-- **No auth required** (it only serves cover art).
+### What works now
+| Capability | Status |
+|-----------|--------|
+| Login outside Telegram (JWT) | ✅ `auth-start` → `auth-poll` → `Bearer` |
+| Token refresh (90-day) | ✅ `auth-refresh` |
+| Browse / search / favorites | ✅ with `audio_url` + `thumb_url` |
+| Audio playback in-app | ✅ `GET /audio?...&action=stream` (Range/seek) |
+| PDF viewing in-app | ✅ `GET /pdf-view?...&action=stream` |
+| Cover images | ✅ `thumb_url` (public, proxied) |
+| CORS | ✅ `*` + Authorization/Range allowed |
+| Bot token leakage | ✅ fixed (thumb & pdf-view proxy bytes) |
+| Existing Telegram bot/Mini App | ✅ unchanged (initData still accepted) |
 
-**Response:** `302 Found` → `Location: https://api.telegram.org/file/bot<TOKEN>/photos/...jpg`
-(cache ~50 min). Returns `404` if the track has no cover (so the UI should fall back to a
-placeholder). Only request it when `has_thumb: true`.
-
----
-
-## 7. Admin endpoint
-
-### 10) GET `/api/webapp/admin-stats` — analytics (admin only)
-
-**Do not ship `ADMIN_TOKEN` in the mobile app.** Documented for completeness.
-
-**Request**
-```
-GET https://menzum.vercel.app/api/webapp/admin-stats
-Authorization: Bearer <ADMIN_TOKEN>
-```
-
-**Response 200**
-```json
-{
-  "ok": true,
-  "stats": {
-    "totalUsers": 1234,
-    "totalFiles": 1150,
-    "totalPlays": 56789,
-    "activeUsers": 87,
-    "userGrowth": [ { "date": "06-01", "users": 12 } ],
-    "trendingTracks": [ { "name": "Husni Sultan…", "plays": 240 } ]
-  }
-}
-```
-`401 Invalid token.` on a bad/missing token.
+### Still not exposed (optional future work)
+- **Playlists** over HTTP (bot-only today).
+- **Categories/genres** (no such field exists; tracks only have a name).
+- **Rate limiting** on user endpoints (advisable before a public launch).
 
 ---
 
-## 8. Data models
-
-**Track (`files` collection)** — returned fields only:
-| field | type | notes |
-|-------|------|-------|
-| `id` | string | 24-char ObjectId |
-| `name` | string | the `display_name` |
-| `is_favorite` | bool | per calling user |
-| `has_thumb` | bool | cover exists → use `/thumb?id=` |
-
-> `file_id` (the Telegram handle for the actual audio) is stored server-side and **never returned**.
-
-**PDF (`pdfs` collection):** `id`, `title`, `file_name`, `is_favorite`, `download_count` (server-side).
-
-**User (`users` collection):** `_id` is the **Telegram user id (int)**; `first_name`,
-`joined_at`, `last_active`, `favorites` (array of audio `file_id`), `pdf_favorites` (array of
-PDF id strings), `total_plays`, `listen_history` (capped 50), `baraka_points`.
-
-**Playlists (`playlists` collection):** exist in the DB and the bot, but **there is no HTTP API
-endpoint for playlists** — they are created/shared only inside the Telegram bot. The app cannot
-list or create playlists today (see Section 10).
-
----
-
-## 9. Is the backend ready for a mobile app?
-
-**Short answer: No — not for a standalone Flutter app. Two hard blockers, plus some gaps.**
-
-| Concern | Status | Detail |
-|--------|--------|--------|
-| **CORS** | ✅ Ready | All `/api/webapp/*` endpoints send `Access-Control-Allow-Origin: *`. (Also irrelevant for native mobile.) |
-| **Auth** | ❌ Blocker | Only Telegram `initData` (HMAC) — a standalone app cannot generate it. No OTP/email/password/JWT exists. |
-| **Audio playback** | ❌ Blocker | No endpoint returns a playable audio URL/stream. `play` only pushes audio into the user's Telegram chat. The app literally cannot play a track today. |
-| **Browse / search / favorites** | ⚠️ Works *if* authenticated | Endpoints 2–5 are solid; they just need a way for the app to authenticate. |
-| **PDFs** | ✅ Mostly | `pdf-view?action=stream` already serves bytes with range support. |
-| **Playlists** | ❌ Missing | No HTTP API; bot-only. |
-| **Bot token exposure** | ⚠️ Risk | `pdf-view` (Mode A) and `thumb` hand the client a URL containing the bot token. |
-
-So before the Flutter app can do anything beyond showing cover thumbnails (the only public
-endpoint), the backend needs an **auth method usable outside Telegram** and an **audio delivery
-method usable outside Telegram**.
-
----
-
-## 10. Recommended changes to support the Flutter app
-
-Listed in priority order. Items 1 and 2 are required; the rest are strongly recommended.
-
-### 1. Add a real authentication flow (REQUIRED)
-Pick one:
-- **(Recommended) Telegram Login** — use Telegram's Login Widget / `tg://` deep link or the
-  Telegram OAuth flow to obtain a signed payload, then add a server endpoint that validates it
-  with the same HMAC approach already in `_auth.js` and issues your **own JWT**. Keeps the
-  existing "users are Telegram users" model, no new identity system.
-- **Phone OTP via Telegram Gateway / an SMS provider** — add `POST /api/webapp/otp/send` and
-  `POST /api/webapp/otp/verify` that issue a JWT. This is the classic "send OTP / verify OTP /
-  get token" flow you asked about; it does **not** exist yet and would be net-new work
-  (OTP store, rate limiting, provider integration).
-- Then add JWT middleware (a sibling of `withAuth`) so all user endpoints accept
-  `Authorization: Bearer <jwt>` in addition to `tma <initData>`.
-
-### 2. Add an audio delivery endpoint for the app (REQUIRED)
-The pattern already exists for PDFs in `pdf-view.js` — clone it for audio:
-- `GET /api/webapp/audio?id=<track_id>&action=stream` → resolve `file_id` server-side, fetch
-  from Telegram's CDN, and **stream the bytes** back with `Content-Type: audio/mpeg` and
-  `Range` support (so the player can seek). This keeps `file_id` and the bot token hidden from
-  the client (unlike returning a raw Telegram URL).
-- Add an `audio_url` (pointing at this endpoint) to the `featured`/`search`/`library` track
-  objects so the app knows how to play each track.
-
-### 3. Expose playlists over HTTP (recommended)
-Add `GET /api/webapp/playlists`, `POST /api/webapp/playlists`, `GET /api/webapp/playlists/:id`
-backed by the existing `playlists` collection, so the app has feature parity with the bot.
-
-### 4. Add categories/genres (only if you want them)
-There is **no category/genre system today** — tracks have only a `display_name`. If the app
-needs categories, add a `category` field to `files` and a `GET /api/webapp/categories` endpoint.
-
-### 5. Stop leaking the bot token in URLs (recommended)
-Have `thumb` and `pdf-view` (Mode A) stream bytes (or sign a short-lived proxy URL) instead of
-redirecting/returning `https://api.telegram.org/file/bot<TOKEN>/...`.
-
-### 6. Operational notes
-- These run as Vercel serverless functions with short timeouts; streaming large audio should be
-  fine but test cold-start latency.
-- No rate limiting exists on the user endpoints — add some before a public app launch.
-- The same `MenzumaDB` is shared with the live bot, so new endpoints must keep the existing
-  document shapes intact.
-
----
-
-*Generated from the source in this repository (`api/webapp/*.js`, `api/index.py`). If the
-backend changes, regenerate this doc so the mobile team stays in sync.*
+*Generated from the source in this repository (`api/webapp/*.js`, `api/index.py`, `handlers/`).
+Regenerate when the backend changes so the mobile team stays in sync.*
