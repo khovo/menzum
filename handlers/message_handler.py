@@ -3,14 +3,16 @@ handlers/message_handler.py
 ---------------------------
 handle_message() — all text / audio / document message routing.
 
-Order of dispatch (unchanged from the original monolith):
-  1. Non-admin force-join membership gate
-  2. /start (+ deep-link playlist resume)
-  3. /list and "📂 Catalog (List)"
-  4. "🔧 Manage Channels" (admin)
-  5. playlist_builder state search
-  6. admin message block (delegated to admin_handlers.handle_admin_message)
-  7. generic audio search
+Order of dispatch:
+  1. Resolve admin status (root or co-admin)
+  2. Non-admin gates: banned → ignore; maintenance → notice; force-join
+  3. /start (+ deep-link playlist resume)
+  4. /list and "📂 Catalog (List)"
+  5. "🔧 Manage Channels" (admin)
+  6. playlist_builder state search
+  7. admin slash-commands  → admin_commands.handle_admin_command
+  8. admin panel / ingestion / states → admin_handlers.handle_admin_message
+  9. generic audio search
 """
 import logging
 
@@ -23,6 +25,8 @@ from db import (
     get_catalog_page,
     get_playlist,
     link_login_nonce,
+    is_banned,
+    get_maintenance,
 )
 from utils import (
     check_membership,
@@ -35,7 +39,7 @@ from utils import (
     get_subscription_kb,
 )
 from .helpers import (
-    _is_admin,
+    is_admin,
     _normalize_text,
     _react_to_message,
     _send_html_message,
@@ -46,8 +50,11 @@ from .helpers import (
     _ADMIN_KB_TEXTS,
 )
 from .admin_handlers import handle_admin_message, show_channel_management
+from .admin_commands import handle_admin_command
 
 logger = logging.getLogger(__name__)
+
+_MAINTENANCE_MSG = "🔧 ይቅርታ! Al-Madih አሁን በጥገና ላይ ነው። እባክዎ ቆይተው እንደገና ይሞክሩ።"
 
 
 async def handle_message(session, db, message: dict, channels: list[dict]) -> None:
@@ -62,8 +69,8 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     state     = user_data.get("state")
 
     # ── Mobile "Login with Telegram": /start login_<nonce> ──────────────────────
-    # Handled before the force-join gate so app login is never blocked. Links the
-    # nonce to this Telegram user; the app's auth-poll then issues a JWT.
+    # Handled before the gates so app login is never blocked. Links the nonce to
+    # this Telegram user; the app's auth poll then issues a JWT.
     if text and text.startswith("/start login_"):
         nonce = text.split("login_", 1)[1].strip()
         await delete_message(session, chat_id, msg_id)
@@ -74,7 +81,15 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await send_message(session, chat_id, "⚠️ This login link is invalid or has expired. Please start again from the app.")
         return
 
-    if not _is_admin(user_id):
+    admin = await is_admin(db, user_id)
+
+    # ── Non-admin gates: ban, maintenance, then force-join ──────────────────────
+    if not admin:
+        if await is_banned(db, user_id):
+            return  # banned users are silently ignored
+        if await get_maintenance(db):
+            await send_message(session, chat_id, _MAINTENANCE_MSG)
+            return
         if not await check_membership(session, user_id, channels):
             parts       = text.split(" ", 1) if text.startswith("/start") else []
             start_param = parts[1].strip() if len(parts) > 1 else None
@@ -121,11 +136,11 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
         return
 
-    if text == "🔧 Manage Channels" and _is_admin(user_id):
+    if text == "🔧 Manage Channels" and admin:
         await show_channel_management(session, db, chat_id)
         return
 
-    if state == "playlist_builder" and text and not text.startswith("/") and not (_is_admin(user_id) and text in _ADMIN_KB_TEXTS):
+    if state == "playlist_builder" and text and not text.startswith("/") and not (admin and text in _ADMIN_KB_TEXTS):
         await _react_to_message(session, chat_id, msg_id, "👀")
         sq  = build_search_query(text)
         doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
@@ -142,7 +157,9 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 await send_message(session, chat_id, "😔 የፈለጉት መንዙማ አልተገኘም።\nእባክዎ የተለየ ቃል ጽፈው ይሞክሩ።", reply_markup=get_not_found_kb())
         return
 
-    if _is_admin(user_id):
+    if admin:
+        if await handle_admin_command(session, db, message, chat_id, user_id, text, msg_id):
+            return
         if await handle_admin_message(session, db, message, chat_id, user_id, text, msg_id, state):
             return
 
@@ -153,7 +170,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
 
         if doc:
             matched_file_name = doc.get('display_name', 'Unknown')
-            if not _is_admin(user_id) and not await check_membership(session, user_id, channels):
+            if not admin and not await check_membership(session, user_id, channels):
                 hostage_msg = (
                     f"🎵 *{matched_file_name}* ተገኝቷል!\n\n"
                     "የፈለጉት መንዙማ ወይም PDF ፋይል ለማግኘት በመጀመሪያ ስለ ቦቱ አጠቃቀም መረጃ ሚለቀቅበት channel ይቀላቀሉ!"
