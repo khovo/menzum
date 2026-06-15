@@ -1,65 +1,103 @@
 /**
  * api/webapp/play.js
  * ------------------
- * POST /api/webapp/play
+ * Auth: Bearer <jwt> OR tma <initData>  (dual auth via withAuth)
  *
- * THE CRITICAL BRIDGE — connects the Mini App's UI to the bot's audio delivery.
+ * GET  /api/webapp/play?id=<track_id>&action=stream
+ *      → STREAMS the track's audio bytes (Content-Type + Range/seek, 200/206).
+ *        This is what `audio_url` in featured/search/library points to. The bot
+ *        token and file_id are never exposed (we proxy the bytes). HEAD supported.
  *
- * WHY THIS EXISTS:
- * Telegram Mini Apps cannot play audio directly (there is no WebApp audio API).
- * Instead, when the user taps ▶ on any track in the Mini App, the frontend
- * calls this endpoint with the track ID.  This server-side function:
- *   1. Looks up the file_id from MongoDB (never exposed to the client)
- *   2. Calls Telegram's sendAudio API directly using the Bot Token
- *   3. The audio appears in the user's bot chat with full inline keyboard
+ * POST /api/webapp/play   { track_id, action: "play" | "favorite" }
+ *      → "play":     sendAudio into the user's Telegram chat (used by the bot/Mini App)
+ *      → "favorite": toggle favorite in the DB
+ *      (UNCHANGED — the bot still relies on this.)
  *
- * This design is a FEATURE not a limitation:
- *   - The audio lands in chat with ❤️ Fav + ➕ Playlist buttons — full bot UX
- *   - file_id is never exposed to the frontend — prevents token harvesting
- *   - The Mini App is a discovery layer; the chat is the listening experience
- *
- * ACTIONS:
- *   "play"     → sendAudio to user's chat
- *   "favorite" → toggle favorite in DB (same logic as Python toggle_favorite())
- *
- * REQUEST:
- *   POST /api/webapp/play
- *   Authorization: tma <initData>
- *   Content-Type: application/json
- *   { "track_id": "64a1b2c3d4e5f6a7b8c9d0e1", "action": "play" | "favorite" }
- *
- * RESPONSE 200 (play):
- *   { "ok": true, "action": "play", "track_name": "Husni Sultan..." }
- *
- * RESPONSE 200 (favorite):
- *   { "ok": true, "action": "favorite", "is_favorite": true }
- *
- * RESPONSE 404:
- *   { "ok": false, "error": "Track not found." }
+ * (Audio streaming lives here, not in its own audio.js, to stay under Vercel
+ * Hobby's 12-Serverless-Function limit.)
  */
-
-const { withAuth }          = require("./_auth");
+const { withAuth } = require("./_auth");
 const { connectToDatabase } = require("./_db");
-const { ObjectId }          = require("mongodb");
+const { ObjectId } = require("mongodb");
+const { Readable } = require("stream");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
+const OID_RE = /^[a-f\d]{24}$/i;
 
-/**
- * Call Telegram Bot API — minimal fetch wrapper.
- * @param {string} method  - Telegram API method name
- * @param {object} payload - JSON body
- */
 async function telegramCall(method, payload) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/${method}`;
-  const res  = await fetch(url, {
-    method:  "POST",
+  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify(payload),
+    body: JSON.stringify(payload),
   });
   return res.json();
 }
 
+function audioContentType(path) {
+  const p = path.toLowerCase();
+  if (p.endsWith(".oga") || p.endsWith(".ogg")) return "audio/ogg";
+  if (p.endsWith(".m4a") || p.endsWith(".mp4") || p.endsWith(".aac")) return "audio/mp4";
+  if (p.endsWith(".wav")) return "audio/wav";
+  if (p.endsWith(".opus")) return "audio/opus";
+  return "audio/mpeg";
+}
+
+// ── GET: stream the audio bytes ───────────────────────────────────────────────
+async function streamAudio(req, res) {
+  const id = (req.query.id || req.query.track_id || "").trim();
+  if (!OID_RE.test(id)) return res.status(400).json({ ok: false, error: "Invalid id." });
+  if (!BOT_TOKEN) return res.status(503).json({ ok: false, error: "BOT_TOKEN missing." });
+
+  const { db } = await connectToDatabase();
+  const doc = await db.collection("files").findOne(
+    { _id: new ObjectId(id) },
+    { projection: { file_id: 1 } }
+  );
+  if (!doc?.file_id) return res.status(404).json({ ok: false, error: "Track not found." });
+
+  const gfRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${doc.file_id}`);
+  const gfData = await gfRes.json();
+  if (!gfData.ok || !gfData.result?.file_path) {
+    return res.status(404).json({ ok: false, error: "Could not resolve audio file." });
+  }
+
+  const filePath = gfData.result.file_path;
+  const tgUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
+  const fetchOptions = { method: req.method, headers: {} };
+  if (req.headers.range) fetchOptions.headers["Range"] = req.headers.range;
+
+  const tgFileRes = await fetch(tgUrl, fetchOptions);
+
+  res.setHeader("Content-Type", audioContentType(filePath));
+  res.setHeader("Accept-Ranges", "bytes");
+  res.setHeader("Cache-Control", "private, max-age=3000");
+  if (tgFileRes.headers.has("content-length")) res.setHeader("Content-Length", tgFileRes.headers.get("content-length"));
+  if (tgFileRes.headers.has("content-range")) res.setHeader("Content-Range", tgFileRes.headers.get("content-range"));
+
+  res.status(tgFileRes.status); // 200 or 206
+
+  if (req.method === "HEAD") return res.end();
+
+  if (tgFileRes.body) {
+    if (typeof tgFileRes.body.pipe === "function") tgFileRes.body.pipe(res);
+    else Readable.fromWeb(tgFileRes.body).pipe(res);
+  } else {
+    const buffer = await tgFileRes.arrayBuffer();
+    res.send(Buffer.from(buffer));
+  }
+}
+
 module.exports = withAuth(async function handler(req, res) {
+  // GET / HEAD → audio streaming
+  if (req.method === "GET" || req.method === "HEAD") {
+    try {
+      return await streamAudio(req, res);
+    } catch (err) {
+      console.error("play.js stream error:", err.message);
+      return res.status(500).json({ ok: false, error: "Server error." });
+    }
+  }
+
   if (req.method !== "POST") {
     return res.status(405).json({ ok: false, error: "Method not allowed." });
   }
@@ -67,11 +105,9 @@ module.exports = withAuth(async function handler(req, res) {
   const { track_id, action = "play" } = req.body || {};
   const userId = parseInt(req.telegramUser.id, 10);
 
-  // Validate track_id is a valid ObjectId string
   if (!track_id || track_id.length !== 24) {
     return res.status(400).json({ ok: false, error: "Invalid track_id." });
   }
-
   if (!["play", "favorite"].includes(action)) {
     return res.status(400).json({ ok: false, error: "Invalid action." });
   }
@@ -79,12 +115,10 @@ module.exports = withAuth(async function handler(req, res) {
   try {
     const { db } = await connectToDatabase();
 
-    // Fetch the track — we need file_id (for play) and display_name (for both)
     const track = await db.collection("files").findOne(
       { _id: new ObjectId(track_id) },
       { projection: { file_id: 1, display_name: 1 } }
     );
-
     if (!track) {
       return res.status(404).json({ ok: false, error: "Track not found." });
     }
@@ -94,91 +128,65 @@ module.exports = withAuth(async function handler(req, res) {
       if (!BOT_TOKEN) {
         return res.status(500).json({ ok: false, error: "BOT_TOKEN not configured." });
       }
-
-      // Send audio to the user's chat with the same inline keyboard as the bot
       const tgResult = await telegramCall("sendAudio", {
-        chat_id:    userId,
-        audio:      track.file_id,
-        caption:    `${track.display_name}\n\n@Almadihbot`,
+        chat_id: userId,
+        audio: track.file_id,
+        caption: `${track.display_name}\n\n@Almadihbot`,
         parse_mode: "Markdown",
         reply_markup: {
           inline_keyboard: [
             [{ text: "➕ Add to Playlist", callback_data: `pl_add_${track_id}` }],
-            [{ text: "❤️ Fav",             callback_data: `fav_${track_id}` }],
+            [{ text: "❤️ Fav", callback_data: `fav_${track_id}` }],
           ],
         },
       });
 
       if (!tgResult.ok) {
-        // Common case: user never started the bot — they must /start it first
         const tgError = tgResult.description || "Telegram API error";
         console.error("sendAudio failed:", tgError);
         return res.status(502).json({
-          ok:    false,
+          ok: false,
           error: tgError.includes("bot was blocked") || tgError.includes("chat not found")
             ? "Please start the bot first: send /start to @Almadihbot"
             : tgError,
         });
       }
 
-      // ── Track listen history (fire-and-forget, never blocks the response) ──
-      // Appends to a capped listen_history array (max 50 entries) and bumps
-      // total_plays counter.  Used by /api/webapp/library for stats.
-      // $slice: -50 keeps only the 50 most recent plays — no unbounded growth.
       db.collection("users").updateOne(
         { _id: userId },
         {
-          $inc:  { total_plays: 1 },
+          $inc: { total_plays: 1 },
           $push: {
             listen_history: {
-              $each:     [{ track_id, name: track.display_name, played_at: new Date() }],
-              $slice:    -50,
+              $each: [{ track_id, name: track.display_name, played_at: new Date() }],
+              $slice: -50,
               $position: 0,
             },
           },
         },
         { upsert: true }
-      ).catch((e) => console.error("listen tracking failed:", e)); // intentional no-await
+      ).catch((e) => console.error("listen tracking failed:", e));
 
-      return res.status(200).json({
-        ok:         true,
-        action:     "play",
-        track_name: track.display_name,
-      });
+      return res.status(200).json({ ok: true, action: "play", track_name: track.display_name });
     }
 
     // ── ACTION: favorite ─────────────────────────────────────────────────────
-    // Mirrors Python's toggle_favorite() in db.py exactly.
     if (action === "favorite") {
-      const dbUser     = await db.collection("users").findOne(
+      const dbUser = await db.collection("users").findOne(
         { _id: userId },
         { projection: { favorites: 1 } }
       );
-
-      const favorites   = dbUser?.favorites ?? [];
-      const fileId      = track.file_id;
-      const alreadyFav  = favorites.includes(fileId);
+      const favorites = dbUser?.favorites ?? [];
+      const fileId = track.file_id;
+      const alreadyFav = favorites.includes(fileId);
 
       if (alreadyFav) {
-        await db.collection("users").updateOne(
-          { _id: userId },
-          { $pull: { favorites: fileId } }
-        );
+        await db.collection("users").updateOne({ _id: userId }, { $pull: { favorites: fileId } });
       } else {
-        await db.collection("users").updateOne(
-          { _id: userId },
-          { $addToSet: { favorites: fileId } },
-          { upsert: true }
-        );
+        await db.collection("users").updateOne({ _id: userId }, { $addToSet: { favorites: fileId } }, { upsert: true });
       }
-
-      return res.status(200).json({
-        ok:          true,
-        action:      "favorite",
-        is_favorite: !alreadyFav,
-      });
+      return res.status(200).json({ ok: true, action: "favorite", is_favorite: !alreadyFav });
     }
-
   } catch (err) {
     console.error("play.js error:", err);
     return res.status(500).json({ ok: false, error: "Server error." });

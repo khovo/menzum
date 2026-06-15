@@ -78,11 +78,14 @@ module.exports = withAuth(async function handler(req, res) {
     const favSet       = new Set(dbUser?.favorites ?? []);
     const pdfFavSet    = new Set((dbUser?.pdf_favorites ?? []).map(String));
 
+    const base = `https://${req.headers.host || "menzum.vercel.app"}`;
     const audioResults = audioPage.map((t) => ({
       id:          t._id.toString(),
       name:        t.display_name || "Unknown",
       is_favorite: favSet.has(t.file_id ?? ""),
       has_thumb:   !!t.thumb_file_id,
+      audio_url:   `${base}/api/webapp/play?id=${t._id}&action=stream`,
+      thumb_url:   t.thumb_file_id ? `${base}/api/webapp/thumb?id=${t._id}` : null,
       type:        "audio",
     }));
 

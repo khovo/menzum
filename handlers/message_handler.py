@@ -24,6 +24,7 @@ from db import (
     get_fuzzy_suggestions,
     get_catalog_page,
     get_playlist,
+    link_login_nonce,
     is_banned,
     get_maintenance,
 )
@@ -66,6 +67,19 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
 
     user_data = await track_and_get_user(db, user_id, first_name)
     state     = user_data.get("state")
+
+    # ── Mobile "Login with Telegram": /start login_<nonce> ──────────────────────
+    # Handled before the gates so app login is never blocked. Links the nonce to
+    # this Telegram user; the app's auth poll then issues a JWT.
+    if text and text.startswith("/start login_"):
+        nonce = text.split("login_", 1)[1].strip()
+        await delete_message(session, chat_id, msg_id)
+        linked = await link_login_nonce(db, nonce, user_id, first_name, user_info.get("username"))
+        if linked:
+            await send_message(session, chat_id, "✅ *Login successful!* ወደ Al-Madih መተግበሪያ (app) ይመለሱ።")
+        else:
+            await send_message(session, chat_id, "⚠️ This login link is invalid or has expired. Please start again from the app.")
+        return
 
     admin = await is_admin(db, user_id)
 

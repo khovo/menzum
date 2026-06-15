@@ -42,9 +42,12 @@ module.exports = withAuth(async function handler(req, res) {
 
     const tgUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${gfData.result.file_path}`;
 
-    // Mode A: Return JSON (Used primarily for the Google Docs Iframe Fallback)
+    // Mode A: return our OWN proxied stream URL — never the raw Telegram URL,
+    // which embeds the bot token (`/file/bot<TOKEN>/...`). Clients fetch this
+    // URL with their auth header (Bearer JWT or tma initData).
     if (action !== "stream") {
-      return res.status(200).json({ ok: true, url: tgUrl });
+      const base = `https://${req.headers.host || "menzum.vercel.app"}`;
+      return res.status(200).json({ ok: true, url: `${base}/api/webapp/pdf-view?id=${id}&action=stream` });
     }
 
     // Mode B: Stream the PDF binary directly with Proper CORS & Range Headers for progressive loading
