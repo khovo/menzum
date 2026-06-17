@@ -1,28 +1,39 @@
-const { withAuth }          = require("./_auth");
+/**
+ * api/webapp/pdf-view.js
+ * ----------------------
+ * GET/HEAD /api/webapp/pdf-view?id=<pdf_id>[&action=stream|url]
+ * Auth: Bearer <jwt> OR tma <initData>  (dual auth via withAuth)
+ *
+ * Returns the raw PDF bytes (Content-Type: application/pdf) with Range/seek
+ * support. Streaming is now the DEFAULT — both `?action=stream` and no `action`
+ * stream the file, so a client that forgets the param still gets a real PDF.
+ * Only the explicit `?action=url` returns a JSON pointer instead of bytes.
+ *
+ * Why buffer instead of pipe: piping a web ReadableStream to the response is
+ * not reliably flushed on Vercel's serverless runtime (it could return 200 with
+ * an empty/garbled body). We read the bytes and res.send() them — deterministic.
+ * PDFs here are books (a few MB), so buffering is fine.
+ *
+ * The bot token is never exposed — we proxy the bytes, never redirect to the
+ * raw Telegram file URL.
+ */
+const { withAuth } = require("./_auth");
 const { connectToDatabase } = require("./_db");
-const { ObjectId }          = require("mongodb");
-const { Readable }          = require("stream");
+const { ObjectId } = require("mongodb");
 
-const BOT_TOKEN    = process.env.BOT_TOKEN;
-const OID_RE       = /^[a-f\d]{24}$/i;
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const OID_RE = /^[a-f\d]{24}$/i;
 
 module.exports = withAuth(async function handler(req, res) {
-  // 1. Handle CORS Preflight for PDF.js chunk requests
-  if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Range, Authorization, Content-Type");
-    res.setHeader("Access-Control-Max-Age", "86400");
-    return res.status(200).end();
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    return res.status(405).json({ ok: false, error: "Method not allowed." });
   }
-
-  if (req.method !== "GET" && req.method !== "HEAD") return res.status(405).end();
 
   const id = (req.query.id || "").trim();
   const action = (req.query.action || "").trim();
 
   if (!OID_RE.test(id)) return res.status(400).json({ ok: false, error: "Invalid id." });
-  if (!BOT_TOKEN)        return res.status(503).json({ ok: false, error: "BOT_TOKEN missing." });
+  if (!BOT_TOKEN) return res.status(503).json({ ok: false, error: "BOT_TOKEN missing." });
 
   try {
     const { db } = await connectToDatabase();
@@ -33,68 +44,60 @@ module.exports = withAuth(async function handler(req, res) {
     );
     if (!doc?.file_id) return res.status(404).json({ ok: false, error: "PDF not found." });
 
-    const gfRes  = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${doc.file_id}`);
+    const gfRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${doc.file_id}`);
     const gfData = await gfRes.json();
-
     if (!gfData.ok || !gfData.result?.file_path) {
       return res.status(404).json({ ok: false, error: "Could not resolve file URL." });
     }
 
     const tgUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${gfData.result.file_path}`;
 
-    // Mode A: return our OWN proxied stream URL — never the raw Telegram URL,
-    // which embeds the bot token (`/file/bot<TOKEN>/...`). Clients fetch this
-    // URL with their auth header (Bearer JWT or tma initData).
-    if (action !== "stream") {
+    // Opt-in JSON pointer (only when explicitly requested). Everything else streams.
+    if (action === "url") {
       const base = `https://${req.headers.host || "menzum.vercel.app"}`;
       return res.status(200).json({ ok: true, url: `${base}/api/webapp/pdf-view?id=${id}&action=stream` });
     }
 
-    // Mode B: Stream the PDF binary directly with Proper CORS & Range Headers for progressive loading
-    const fetchOptions = {
-      method: req.method,
-      headers: {}
-    };
-
-    // Forward the Range header requested by PDF.js to Telegram's servers
-    if (req.headers.range) {
-      fetchOptions.headers['Range'] = req.headers.range;
-    }
+    // ── Stream (buffered) ──────────────────────────────────────────────────────
+    const fetchOptions = { method: "GET", headers: {} };
+    if (req.headers.range) fetchOptions.headers["Range"] = req.headers.range;
 
     const tgFileRes = await fetch(tgUrl, fetchOptions);
 
-    // Required CORS and progressive loading headers
+    // Never forward a Telegram error body as application/pdf.
+    if (!tgFileRes.ok && tgFileRes.status !== 206) {
+      console.error("pdf-view.js upstream status:", tgFileRes.status, "id:", id);
+      return res.status(502).json({ ok: false, error: "Upstream file fetch failed." });
+    }
+
+    const buf = Buffer.from(await tgFileRes.arrayBuffer());
+
+    // CORS + range headers
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges, Content-Range, Content-Length, Content-Type");
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", "private, max-age=3000");
 
-    if (tgFileRes.headers.has("content-length")) res.setHeader("Content-Length", tgFileRes.headers.get("content-length"));
-    if (tgFileRes.headers.has("content-range")) res.setHeader("Content-Range", tgFileRes.headers.get("content-range"));
-
-    // Return the correct status code (200 OK or 206 Partial Content)
-    res.status(tgFileRes.status);
-
-    if (req.method === "HEAD") return res.end();
-
-    // Safely pipe the binary stream from Telegram to the client
-    if (tgFileRes.body) {
-      if (typeof tgFileRes.body.pipe === 'function') {
-        // Node-fetch fallback
-        tgFileRes.body.pipe(res);
-      } else {
-        // Native Next.js 18+ Web Streams implementation
-        Readable.fromWeb(tgFileRes.body).pipe(res);
-      }
+    const contentRange = tgFileRes.headers.get("content-range");
+    if (contentRange) {
+      res.setHeader("Content-Range", contentRange);
+      res.setHeader("Content-Length", String(buf.length));
+      res.status(206);
     } else {
-      const buffer = await tgFileRes.arrayBuffer();
-      res.send(Buffer.from(buffer));
+      res.setHeader("Content-Length", String(buf.length));
+      res.status(200);
+      // Diagnostic: a full response should start with the PDF magic bytes.
+      if (buf.length >= 4 && buf.toString("latin1", 0, 4) !== "%PDF") {
+        console.error("pdf-view.js: non-PDF bytes from upstream, id:", id, "head:", buf.toString("latin1", 0, 16));
+      }
     }
 
+    if (req.method === "HEAD") return res.end();
+    return res.end(buf);
   } catch (err) {
-    console.error("pdf-view.js error:", err.message);
+    console.error("pdf-view.js error:", err && err.message);
     return res.status(500).json({ ok: false, error: "Server error." });
   }
 });
-
