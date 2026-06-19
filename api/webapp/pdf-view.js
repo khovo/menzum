@@ -17,14 +17,14 @@
  * The bot token is never exposed — we proxy the bytes, never redirect to the
  * raw Telegram file URL.
  */
-const { withAuth } = require("./_auth");
+const { withOptionalAuth } = require("./_auth");
 const { connectToDatabase } = require("./_db");
 const { ObjectId } = require("mongodb");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OID_RE = /^[a-f\d]{24}$/i;
 
-module.exports = withAuth(async function handler(req, res) {
+module.exports = withOptionalAuth(async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "HEAD") {
     return res.status(405).json({ ok: false, error: "Method not allowed." });
   }

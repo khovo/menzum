@@ -1,4 +1,4 @@
-const { withAuth }          = require("./_auth");
+const { withOptionalAuth }          = require("./_auth");
 const { connectToDatabase } = require("./_db");
 const { ObjectId }          = require("mongodb");
 
@@ -14,8 +14,8 @@ async function telegramCall(method, payload) {
   return res.json();
 }
 
-module.exports = withAuth(async function handler(req, res) {
-  const userId = parseInt(req.telegramUser.id, 10);
+module.exports = withOptionalAuth(async function handler(req, res) {
+  const userId = req.telegramUser ? parseInt(req.telegramUser.id, 10) : null;
 
   try {
     const { db } = await connectToDatabase();
@@ -36,7 +36,9 @@ module.exports = withAuth(async function handler(req, res) {
           .sort({ _id: -1 })
           .limit(limit + 1)
           .toArray(),
-        db.collection("users").findOne({ _id: userId }, { projection: { pdf_favorites: 1 } }),
+        userId
+          ? db.collection("users").findOne({ _id: userId }, { projection: { pdf_favorites: 1 } })
+          : Promise.resolve(null),
       ]);
 
       const hasMore   = pdfs.length > limit;
@@ -60,6 +62,10 @@ module.exports = withAuth(async function handler(req, res) {
 
     // ── POST /api/webapp/pdfs  { action, pdf_id } ─────────────────────────────
     if (req.method === "POST") {
+      // Favorite / deliver still require a real user.
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Authentication required." });
+      }
       const { action, pdf_id } = req.body || {};
 
       if (!pdf_id || pdf_id.length !== 24) {

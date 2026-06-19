@@ -25,13 +25,13 @@
  *   }
  */
 
-const { withAuth }          = require("./_auth");
+const { withOptionalAuth }          = require("./_auth");
 const { connectToDatabase } = require("./_db");
 const { ObjectId }          = require("mongodb");
 
 const PAGE_SIZE = 20;
 
-module.exports = withAuth(async function handler(req, res) {
+module.exports = withOptionalAuth(async function handler(req, res) {
   if (req.method !== "GET") {
     return res.status(405).json({ ok: false, error: "Method not allowed." });
   }
@@ -41,7 +41,7 @@ module.exports = withAuth(async function handler(req, res) {
 
   try {
     const { db }  = await connectToDatabase();
-    const userId  = parseInt(req.telegramUser.id, 10);
+    const userId  = req.telegramUser ? parseInt(req.telegramUser.id, 10) : null;
 
     // Build filter: if cursor provided, only return tracks older than cursor
     const filter = { file_id: { $exists: true } };
@@ -61,10 +61,9 @@ module.exports = withAuth(async function handler(req, res) {
         .limit(limit + 1)
         .toArray(),
 
-      db.collection("users").findOne(
-        { _id: userId },
-        { projection: { favorites: 1 } }
-      ),
+      userId
+        ? db.collection("users").findOne({ _id: userId }, { projection: { favorites: 1 } })
+        : Promise.resolve(null),
     ]);
 
     const hasMore    = tracks.length > limit;

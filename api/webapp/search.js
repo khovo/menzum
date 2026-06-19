@@ -2,7 +2,7 @@
  * api/webapp/search.js  (V4 — unified audio + PDF search)
  * GET /api/webapp/search?q=<query>&cursor=<last_id>&type=all|audio|pdf
  */
-const { withAuth }          = require("./_auth");
+const { withOptionalAuth }          = require("./_auth");
 const { connectToDatabase } = require("./_db");
 const { ObjectId }          = require("mongodb");
 
@@ -33,14 +33,14 @@ function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-module.exports = withAuth(async function handler(req, res) {
+module.exports = withOptionalAuth(async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).json({ ok: false, error: "Method not allowed." });
 
   const query       = (req.query.q      || "").trim();
   const cursorParam = (req.query.cursor  || "").trim();
   const typeFilter  = req.query.type || "all";   // "all" | "audio" | "pdf"
   const limit       = Math.min(parseInt(req.query.limit || PAGE_SIZE, 10), 50);
-  const userId      = parseInt(req.telegramUser.id, 10);
+  const userId      = req.telegramUser ? parseInt(req.telegramUser.id, 10) : null;
 
   try {
     const { db } = await connectToDatabase();
@@ -70,7 +70,9 @@ module.exports = withAuth(async function handler(req, res) {
             .toArray()
         : Promise.resolve([]),
 
-      db.collection("users").findOne({ _id: userId }, { projection: { favorites: 1, pdf_favorites: 1 } }),
+      userId
+        ? db.collection("users").findOne({ _id: userId }, { projection: { favorites: 1, pdf_favorites: 1 } })
+        : Promise.resolve(null),
     ]);
 
     const audioHasMore = typeFilter !== "pdf" && audioRes.length > limit;

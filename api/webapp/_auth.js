@@ -139,9 +139,25 @@ function withAuth(handler) {
   };
 }
 
+/**
+ * Like withAuth, but auth is OPTIONAL: if a valid Bearer/initData is present,
+ * req.telegramUser is the real user; if not, it's null (anonymous) and the
+ * handler still runs. Used for public GET endpoints (featured/search/streams)
+ * where anonymous callers get is_favorite:false and no per-user side effects.
+ */
+function withOptionalAuth(handler) {
+  return async function (req, res) {
+    setCors(res);
+    if (req.method === "OPTIONS") return res.status(200).end();
+    req.telegramUser = resolveUser(req); // user object, or null when anonymous
+    return handler(req, res);
+  };
+}
+
 module.exports = {
   validateInitData,
   withAuth,
+  withOptionalAuth,
   setCors,
   resolveUser,
   jwtSign,
