@@ -47,7 +47,15 @@ module.exports = withAuth(async function handler(req, res) {
     const gfRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${doc.file_id}`);
     const gfData = await gfRes.json();
     if (!gfData.ok || !gfData.result?.file_path) {
-      return res.status(404).json({ ok: false, error: "Could not resolve file URL." });
+      // Telegram couldn't hand us the file. Log the exact reason so the cause is
+      // visible in prod logs, and return a specific, honest error (never bytes).
+      const desc = (gfData && gfData.description) || "unknown";
+      console.error(`pdf-view.js getFile failed id=${id} file_id=${String(doc.file_id).slice(0, 12)}… desc="${desc}"`);
+      if (/too big/i.test(desc)) {
+        // Bot API can only download files up to 20 MB — larger PDFs can't be served this way.
+        return res.status(413).json({ ok: false, error: "This PDF is too large to stream (Telegram Bot API limit is 20 MB).", reason: desc });
+      }
+      return res.status(404).json({ ok: false, error: "This PDF is no longer available from Telegram.", reason: desc });
     }
 
     const tgUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${gfData.result.file_path}`;
