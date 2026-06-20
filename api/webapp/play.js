@@ -16,7 +16,7 @@
  * (Audio streaming lives here, not in its own audio.js, to stay under Vercel
  * Hobby's 12-Serverless-Function limit.)
  */
-const { withAuth } = require("./_auth");
+const { withOptionalAuth } = require("./_auth");
 const { connectToDatabase } = require("./_db");
 const { ObjectId } = require("mongodb");
 const { Readable } = require("stream");
@@ -87,8 +87,8 @@ async function streamAudio(req, res) {
   }
 }
 
-module.exports = withAuth(async function handler(req, res) {
-  // GET / HEAD → audio streaming
+module.exports = withOptionalAuth(async function handler(req, res) {
+  // GET / HEAD → audio streaming (public — anonymous allowed)
   if (req.method === "GET" || req.method === "HEAD") {
     try {
       return await streamAudio(req, res);
@@ -100,6 +100,11 @@ module.exports = withAuth(async function handler(req, res) {
 
   if (req.method !== "POST") {
     return res.status(405).json({ ok: false, error: "Method not allowed." });
+  }
+
+  // POST (favorite / deliver-to-chat) still requires a real user.
+  if (!req.telegramUser) {
+    return res.status(401).json({ ok: false, error: "Authentication required." });
   }
 
   const { track_id, action = "play" } = req.body || {};
