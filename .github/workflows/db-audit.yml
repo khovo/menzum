@@ -1,0 +1,61 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Al-Madih DRY-RUN database audit (read-only).
+#
+# REQUIRED REPOSITORY SECRETS  (Settings → Secrets and variables → Actions → New
+# repository secret). Add these three:
+#   1. MONGO_URL       — MongoDB Atlas connection string (MenzumaDB).
+#   2. BOT_TOKEN       — Telegram bot token (used ONLY for read-only getFile).
+#   3. GEMINI_API_KEY  — Google AI Studio key for title suggestions (optional;
+#                        without it, title columns are left blank).
+#
+# This workflow NEVER writes to MongoDB and sends NO Telegram messages. It runs
+# scripts/db_audit.py and uploads the CSVs (full-export-audio.csv,
+# full-export-pdfs.csv, audit-report.csv) as build artifacts.
+# Trigger manually: Actions → "DB Audit (dry run)" → Run workflow.
+# Use the `limit` input (e.g. 50) to validate on a subset before the full run.
+# ─────────────────────────────────────────────────────────────────────────────
+name: DB Audit (dry run)
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Health/title/audit only the first N items per collection (0 = all). Export is always full."
+        required: false
+        default: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install --quiet pymongo dnspython
+
+      - name: Run DRY-RUN audit (read-only)
+        env:
+          MONGO_URL: ${{ secrets.MONGO_URL }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python scripts/db_audit.py --limit ${{ github.event.inputs.limit }}
+
+      - name: Upload audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-audit-results
+          path: |
+            full-export-audio.csv
+            full-export-pdfs.csv
+            audit-report.csv
+          if-no-files-found: warn
