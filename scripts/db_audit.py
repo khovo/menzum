@@ -35,7 +35,7 @@ DB_NAME = "MenzumaDB"
 MONGO_URL = os.environ.get("MONGO_URL")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash-latest")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
 # ── Telegram getFile rate limiting ────────────────────────────────────────────
 TG_MAX_PER_SEC = 15
@@ -171,14 +171,21 @@ def gemini_batch(titles, attempt=0):
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            raw = resp.read().decode("utf-8")
+            data = json.loads(raw)
         text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        if text.startswith("```"):
-            text = text.split("```", 2)[1].lstrip("json").strip() if "```" in text else text
+        # Be liberal: strip code fences and slice to the outermost JSON array.
+        if "```" in text:
+            text = text.replace("```json", "```").split("```")[1].strip() if text.count("```") >= 2 else text
+        i, j = text.find("["), text.rfind("]")
+        if i != -1 and j != -1:
+            text = text[i:j + 1]
         arr = json.loads(text)
+        non_empty = sum(1 for o in arr if isinstance(o, dict) and (o.get("artist") or o.get("genre_guess") not in (None, "", "unknown") or o.get("is_real_menzuma") is not None))
+        print(f"[gemini OK] model={GEMINI_MODEL} batch={len(titles)} parsed={len(arr)} populated={non_empty} sample={json.dumps(arr[0], ensure_ascii=False)[:160] if arr else 'EMPTY'}", flush=True)
         out = []
-        for i, t in enumerate(titles):
-            o = arr[i] if i < len(arr) and isinstance(arr[i], dict) else {}
+        for k, t in enumerate(titles):
+            o = arr[k] if k < len(arr) and isinstance(arr[k], dict) else {}
             out.append({
                 "artist": str(o.get("artist", "") or ""),
                 "clean_title": str(o.get("clean_title", t) or t),
@@ -187,14 +194,19 @@ def gemini_batch(titles, attempt=0):
             })
         return out
     except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8")
+        except Exception:
+            pass
         if e.code == 429 and attempt < GEMINI_MAX_RETRIES:
             print(f"[429] Gemini rate-limited, sleeping 30s (attempt {attempt+1}/{GEMINI_MAX_RETRIES})", flush=True)
             time.sleep(30)
             return gemini_batch(titles, attempt + 1)
-        print(f"[gemini FAIL] HTTP {e.code} — leaving {len(titles)} titles blank")
+        print(f"[gemini FAIL] HTTP {e.code} model={GEMINI_MODEL} body={body[:400]} — leaving {len(titles)} titles blank", flush=True)
         return [_empty_suggestion(t) for t in titles]
     except Exception as e:
-        print(f"[gemini ERROR] {e} — leaving {len(titles)} titles blank")
+        print(f"[gemini ERROR] {type(e).__name__}: {e} model={GEMINI_MODEL} — leaving {len(titles)} titles blank", flush=True)
         return [_empty_suggestion(t) for t in titles]
 
 
@@ -243,6 +255,8 @@ def main():
         print("WARN: BOT_TOKEN not set — health checks will all report BROKEN")
     if not GEMINI_API_KEY:
         print("WARN: GEMINI_API_KEY not set — title suggestions left blank")
+    else:
+        print(f"[gemini] key present (len={len(GEMINI_API_KEY)}), model={GEMINI_MODEL}")
 
     # Overall soft deadline (loops check it) + a hard SIGALRM backstop.
     if args.max_seconds and args.max_seconds > 0:
