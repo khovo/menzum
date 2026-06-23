@@ -18,6 +18,7 @@ import sys
 import csv
 import json
 import time
+import signal
 import argparse
 import urllib.request
 import urllib.error
@@ -40,8 +41,17 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash-latest")
 TG_MAX_PER_SEC = 15
 TG_MIN_GAP = 1.0 / TG_MAX_PER_SEC      # ~0.067s between calls
 GEMINI_BATCH = 30
-GEMINI_GAP = 4.0                       # delay between Gemini batches (free-tier RPM)
+GEMINI_GAP = 5.0                       # delay between Gemini batches (free-tier RPM)
+GEMINI_MAX_RETRIES = 3                 # cap 429 retries per batch (no infinite loop)
+TG_MAX_RETRIES = 4                     # cap 429 retries per getFile
+TG_RETRY_CAP = 60                      # never sleep more than this on a single 429
+PROGRESS_EVERY = 25                    # print a progress line every N items
 _last_tg_call = [0.0]
+_DEADLINE = [None]                     # monotonic time after which we stop processing
+
+
+def _past_deadline():
+    return _DEADLINE[0] is not None and time.monotonic() > _DEADLINE[0]
 
 
 def _csv_safe(v):
@@ -95,9 +105,9 @@ def telegram_getfile(file_id, attempt=0):
         except Exception:
             pass
         desc = body.get("description", f"HTTP {e.code}")
-        if e.code == 429 and attempt < 5:
-            retry_after = int(body.get("parameters", {}).get("retry_after", 3))
-            print(f"[429] getFile rate-limited, sleeping {retry_after}s (attempt {attempt+1}) file_id={str(file_id)[:12]}…")
+        if e.code == 429 and attempt < TG_MAX_RETRIES:
+            retry_after = min(int(body.get("parameters", {}).get("retry_after", 3)), TG_RETRY_CAP)
+            print(f"[429] getFile rate-limited, sleeping {retry_after}s (attempt {attempt+1}/{TG_MAX_RETRIES}) file_id={str(file_id)[:12]}…", flush=True)
             time.sleep(retry_after)
             return telegram_getfile(file_id, attempt + 1)
         print(f"[getFile FAIL] {desc} file_id={str(file_id)[:12]}…")
@@ -177,8 +187,8 @@ def gemini_batch(titles, attempt=0):
             })
         return out
     except urllib.error.HTTPError as e:
-        if e.code == 429 and attempt < 4:
-            print(f"[429] Gemini rate-limited, sleeping 30s (attempt {attempt+1})")
+        if e.code == 429 and attempt < GEMINI_MAX_RETRIES:
+            print(f"[429] Gemini rate-limited, sleeping 30s (attempt {attempt+1}/{GEMINI_MAX_RETRIES})", flush=True)
             time.sleep(30)
             return gemini_batch(titles, attempt + 1)
         print(f"[gemini FAIL] HTTP {e.code} — leaving {len(titles)} titles blank")
@@ -191,9 +201,13 @@ def gemini_batch(titles, attempt=0):
 def analyze_titles(titles):
     results = []
     for start in range(0, len(titles), GEMINI_BATCH):
+        if _past_deadline():
+            print(f"[TITLES] deadline reached — leaving remaining {len(titles) - len(results)} titles blank", flush=True)
+            results.extend(_empty_suggestion(t) for t in titles[len(results):])
+            break
         chunk = titles[start:start + GEMINI_BATCH]
         results.extend(gemini_batch(chunk))
-        print(f"[TITLES] analyzed {min(start + GEMINI_BATCH, len(titles))}/{len(titles)}")
+        print(f"[TITLES] analyzed {min(start + GEMINI_BATCH, len(titles))}/{len(titles)}", flush=True)
         if start + GEMINI_BATCH < len(titles):
             time.sleep(GEMINI_GAP)
     return results
@@ -208,9 +222,18 @@ def recommended_action(status, is_real_menzuma):
 
 
 def main():
+    # Line-buffer stdout/stderr so progress shows live in CI (not only at the end).
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
     ap = argparse.ArgumentParser(description="Al-Madih DRY-RUN DB audit (read-only).")
     ap.add_argument("--limit", type=int, default=0,
                     help="Health/title/audit only the first N of each collection (0 = all). Export is always full.")
+    ap.add_argument("--max-seconds", type=int, default=1500,
+                    help="Overall safeguard: stop processing after this many seconds and write partial results (default 1500).")
     args = ap.parse_args()
 
     if not MONGO_URL:
@@ -221,10 +244,31 @@ def main():
     if not GEMINI_API_KEY:
         print("WARN: GEMINI_API_KEY not set — title suggestions left blank")
 
-    client = MongoClient(MONGO_URL)
+    # Overall soft deadline (loops check it) + a hard SIGALRM backstop.
+    if args.max_seconds and args.max_seconds > 0:
+        _DEADLINE[0] = time.monotonic() + args.max_seconds
+        if hasattr(signal, "SIGALRM"):
+            def _hard_timeout(signum, frame):
+                print(f"FATAL: hard timeout after {args.max_seconds + 120}s — aborting.", file=sys.stderr, flush=True)
+                os._exit(2)
+            signal.signal(signal.SIGALRM, _hard_timeout)
+            signal.alarm(args.max_seconds + 120)  # backstop beyond the soft deadline
+
+    # Fail fast if Mongo is unreachable instead of hanging.
+    client = MongoClient(
+        MONGO_URL,
+        serverSelectionTimeoutMS=10000,
+        connectTimeoutMS=10000,
+        socketTimeoutMS=120000,
+    )
+    try:
+        client.admin.command("ping")
+    except Exception as e:
+        print(f"FATAL: cannot connect to MongoDB: {e}", file=sys.stderr)
+        sys.exit(1)
     db = client[DB_NAME]
     started = datetime.now(timezone.utc).isoformat()
-    print(f"[START] {started}  limit={args.limit or 'ALL'}  model={GEMINI_MODEL}")
+    print(f"[START] {started}  limit={args.limit or 'ALL'}  max_seconds={args.max_seconds}  model={GEMINI_MODEL}")
 
     # A) EXPORT (always full — this is the backup)
     audio_docs = export_collection(db.files, "full-export-audio.csv")
@@ -242,15 +286,25 @@ def main():
 
     print(f"[HEALTH] checking {len(audit_audio)} audio + {len(audit_pdfs)} pdfs…")
     audio_health = []
-    for d in audit_audio:
+    for i, d in enumerate(audit_audio, 1):
+        if _past_deadline():
+            print(f"[HEALTH] deadline reached at audio {i}/{len(audit_audio)} — stopping early", flush=True)
+            break
         status, detail = health_check(d, is_audio=True)
         audio_health.append((d, status, detail))
         add_status(status)
+        if i % PROGRESS_EVERY == 0:
+            print(f"[HEALTH] audio {i}/{len(audit_audio)}", flush=True)
     pdf_health = []
-    for d in audit_pdfs:
+    for i, d in enumerate(audit_pdfs, 1):
+        if _past_deadline():
+            print(f"[HEALTH] deadline reached at pdf {i}/{len(audit_pdfs)} — stopping early", flush=True)
+            break
         status, detail = health_check(d, is_audio=False)
         pdf_health.append((d, status, detail))
         add_status(status)
+        if i % PROGRESS_EVERY == 0:
+            print(f"[HEALTH] pdf {i}/{len(audit_pdfs)}", flush=True)
 
     # C) TITLES (audio only — menzuma analysis)
     titles = [str(d.get("display_name") or "") for d, _, _ in audio_health]

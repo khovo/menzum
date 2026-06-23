@@ -20,9 +20,9 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: "Health/title/audit only the first N items per collection (0 = all). Export is always full."
-        required: false
-        default: "0"
+        description: "How many items per collection to health/title/audit. Enter a positive number (e.g. 20 to validate). Use 0 only for the FULL run (~1,059, slow). Export is always full."
+        required: true
+        default: "20"
 
 permissions:
   contents: read
@@ -47,7 +47,8 @@ jobs:
           MONGO_URL: ${{ secrets.MONGO_URL }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python scripts/db_audit.py --limit ${{ github.event.inputs.limit }}
+          PYTHONUNBUFFERED: "1"
+        run: python scripts/db_audit.py --limit ${{ github.event.inputs.limit }} --max-seconds 1500
 
       - name: Upload audit artifacts
         if: always()
