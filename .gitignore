@@ -3,3 +3,10 @@ __pycache__/
 .env
 node_modules/
 .next/
+
+# Generated audit/apply outputs (uploaded as CI artifacts, not committed)
+full-export-audio.csv
+full-export-pdfs.csv
+audit-report.csv
+hidden-log.csv
+review-needed.csv
