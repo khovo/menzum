@@ -5,13 +5,13 @@ scripts/db_audit.py — Al-Madih DRY-RUN database audit (READ-ONLY).
 Does NOT modify MongoDB or send any Telegram messages. It only:
   A) EXPORT  — dumps all audio + all PDFs to CSV (reliable backup).
   B) HEALTH  — Telegram getFile on every file_id (OK / SHORT / TOO_BIG / BROKEN).
-  C) TITLES  — Gemini suggestions for audio titles (artist / clean title /
-               is_real_menzuma / genre). SUGGESTIONS ONLY — never written back.
+  C) TITLES  — rule-based suggestions for audio titles (artist / clean title /
+               is_real_menzuma; genre stays manual). No network, no API keys.
   D) REPORT  — audit-report.csv with a recommended_action per item.
   E) SUMMARY — totals + counts per status to stdout.
 
-Env: MONGO_URL (required), BOT_TOKEN (required for health), GEMINI_API_KEY
-(optional; titles are left blank if missing). Usage: python scripts/db_audit.py [--limit 50]
+Env: MONGO_URL (required), BOT_TOKEN (required for health).
+Usage: python scripts/db_audit.py [--limit 50]
 """
 import os
 import sys
@@ -34,15 +34,10 @@ except Exception as e:  # pragma: no cover
 DB_NAME = "MenzumaDB"
 MONGO_URL = os.environ.get("MONGO_URL")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
 # ── Telegram getFile rate limiting ────────────────────────────────────────────
 TG_MAX_PER_SEC = 15
 TG_MIN_GAP = 1.0 / TG_MAX_PER_SEC      # ~0.067s between calls
-GEMINI_BATCH = 30
-GEMINI_GAP = 5.0                       # delay between Gemini batches (free-tier RPM)
-GEMINI_MAX_RETRIES = 3                 # cap 429 retries per batch (no infinite loop)
 TG_MAX_RETRIES = 4                     # cap 429 retries per getFile
 TG_RETRY_CAP = 60                      # never sleep more than this on a single 429
 PROGRESS_EVERY = 25                    # print a progress line every N items
@@ -139,90 +134,71 @@ def health_check(doc, is_audio):
     return "OK", ""
 
 
-# ── C) TITLES (Gemini, batched) ───────────────────────────────────────────────
+# ── C) TITLES (rule-based heuristics — NO network, NO Gemini) ─────────────────
+import re
+
+_NOT_MENZUMA = (".mp3", "unknown", "coming soon", "በቅርብ ቀን ይጠብቁ")
+_LETTER_RE = re.compile(r"[A-Za-zሀ-፿]")          # Latin + Ethiopic letters
+
+
 def _empty_suggestion(title):
     return {"artist": "", "clean_title": title, "is_real_menzuma": "", "genre_guess": "unknown"}
 
 
-def gemini_batch(titles, attempt=0):
-    """Return a list of suggestion dicts (one per title). Never raises."""
-    if not GEMINI_API_KEY:
-        return [_empty_suggestion(t) for t in titles]
+def guess_artist(title):
+    """Extract a reciter name from common markers, else ''."""
+    t = title or ""
+    m = re.search(r"\{([^}]+)\}", t)                       # { name }
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"\|\|?([^|]+?)\|\|?", t)                # |name| or ||name||
+    if m and _LETTER_RE.search(m.group(1)):
+        return m.group(1).strip()
+    m = re.search(r"ማዲህ\s+([^\s|{}@]+(?:\s+[^\s|{}@]+)?)", t)   # "ማዲህ <name>"
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"\bby\s+([^\n|{}@]+)", t, re.I)         # "by <name>"
+    if m:
+        return m.group(1).strip()[:40]
+    m = re.search(r"@(\w+)", t)                            # @handle
+    if m:
+        return m.group(1).strip()
+    return ""
 
-    numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(titles))
-    prompt = (
-        "You analyze Amharic Islamic audio titles (menzuma/nasheed). For EACH numbered "
-        "title return one JSON object. Reply with ONLY a JSON array, same order, no prose.\n"
-        "Each object: {\"artist\": string, \"clean_title\": string, "
-        "\"is_real_menzuma\": boolean, \"genre_guess\": one of "
-        "[\"eshq\",\"abret\",\"katbare\",\"raya\",\"unknown\"]}.\n"
-        "- artist = reciter name if present in the title, else \"\".\n"
-        "- clean_title = title with filenames (e.g. 'sh selman 3.mp3'), channel tags and "
-        "emojis stripped.\n"
-        "- is_real_menzuma = false if it is a filename, speech/conversation, or has no real "
-        "title; true otherwise.\n\nTitles:\n" + numbered
-    )
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}")
-    payload = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0, "response_mime_type": "application/json"},
-    }).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            raw = resp.read().decode("utf-8")
-            data = json.loads(raw)
-        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        # Be liberal: strip code fences and slice to the outermost JSON array.
-        if "```" in text:
-            text = text.replace("```json", "```").split("```")[1].strip() if text.count("```") >= 2 else text
-        i, j = text.find("["), text.rfind("]")
-        if i != -1 and j != -1:
-            text = text[i:j + 1]
-        arr = json.loads(text)
-        non_empty = sum(1 for o in arr if isinstance(o, dict) and (o.get("artist") or o.get("genre_guess") not in (None, "", "unknown") or o.get("is_real_menzuma") is not None))
-        print(f"[gemini OK] model={GEMINI_MODEL} batch={len(titles)} parsed={len(arr)} populated={non_empty} sample={json.dumps(arr[0], ensure_ascii=False)[:160] if arr else 'EMPTY'}", flush=True)
-        out = []
-        for k, t in enumerate(titles):
-            o = arr[k] if k < len(arr) and isinstance(arr[k], dict) else {}
-            out.append({
-                "artist": str(o.get("artist", "") or ""),
-                "clean_title": str(o.get("clean_title", t) or t),
-                "is_real_menzuma": o.get("is_real_menzuma", ""),
-                "genre_guess": str(o.get("genre_guess", "unknown") or "unknown"),
-            })
-        return out
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode("utf-8")
-        except Exception:
-            pass
-        if e.code == 429 and attempt < GEMINI_MAX_RETRIES:
-            print(f"[429] Gemini rate-limited, sleeping 30s (attempt {attempt+1}/{GEMINI_MAX_RETRIES})", flush=True)
-            time.sleep(30)
-            return gemini_batch(titles, attempt + 1)
-        print(f"[gemini FAIL] HTTP {e.code} model={GEMINI_MODEL} body={body[:400]} — leaving {len(titles)} titles blank", flush=True)
-        return [_empty_suggestion(t) for t in titles]
-    except Exception as e:
-        print(f"[gemini ERROR] {type(e).__name__}: {e} model={GEMINI_MODEL} — leaving {len(titles)} titles blank", flush=True)
-        return [_empty_suggestion(t) for t in titles]
+
+def is_real_menzuma(title):
+    """False for filenames / placeholders / emoji-only titles; True otherwise."""
+    t = (title or "").strip()
+    low = t.lower()
+    if any(tok in low for tok in _NOT_MENZUMA):
+        return False
+    if len(_LETTER_RE.findall(t)) < 3:                     # mostly emojis/symbols
+        return False
+    return True
+
+
+def clean_title(title):
+    """Strip emojis/symbols, @handles, and 'Find telegram ...' channel tags."""
+    t = title or ""
+    t = re.sub(r"@\w+", "", t)
+    t = re.sub(r"find telegram.*$", "", t, flags=re.I)
+    # keep letters/digits/space/Ethiopic + basic punctuation; drop emojis & symbols
+    t = re.sub(r"[^\w\sሀ-፿.,!?'\"-]", "", t)
+    t = re.sub(r"\s+", " ", t).strip(" -|_.\t")
+    return t.strip()
 
 
 def analyze_titles(titles):
-    results = []
-    for start in range(0, len(titles), GEMINI_BATCH):
-        if _past_deadline():
-            print(f"[TITLES] deadline reached — leaving remaining {len(titles) - len(results)} titles blank", flush=True)
-            results.extend(_empty_suggestion(t) for t in titles[len(results):])
-            break
-        chunk = titles[start:start + GEMINI_BATCH]
-        results.extend(gemini_batch(chunk))
-        print(f"[TITLES] analyzed {min(start + GEMINI_BATCH, len(titles))}/{len(titles)}", flush=True)
-        if start + GEMINI_BATCH < len(titles):
-            time.sleep(GEMINI_GAP)
-    return results
+    """Pure, instant, offline classification — one dict per title."""
+    out = []
+    for t in titles:
+        out.append({
+            "artist": guess_artist(t),
+            "clean_title": clean_title(t) or t,
+            "is_real_menzuma": is_real_menzuma(t),
+            "genre_guess": "unknown",   # genre tagging stays manual via the bot
+        })
+    return out
 
 
 def recommended_action(status, is_real_menzuma):
@@ -253,10 +229,7 @@ def main():
         sys.exit(1)
     if not BOT_TOKEN:
         print("WARN: BOT_TOKEN not set — health checks will all report BROKEN")
-    if not GEMINI_API_KEY:
-        print("WARN: GEMINI_API_KEY not set — title suggestions left blank")
-    else:
-        print(f"[gemini] key present (len={len(GEMINI_API_KEY)}), model={GEMINI_MODEL}")
+    print("[TITLES] using offline rule-based heuristics (no Gemini, no network)")
 
     # Overall soft deadline (loops check it) + a hard SIGALRM backstop.
     if args.max_seconds and args.max_seconds > 0:
@@ -282,7 +255,7 @@ def main():
         sys.exit(1)
     db = client[DB_NAME]
     started = datetime.now(timezone.utc).isoformat()
-    print(f"[START] {started}  limit={args.limit or 'ALL'}  max_seconds={args.max_seconds}  model={GEMINI_MODEL}")
+    print(f"[START] {started}  limit={args.limit or 'ALL'}  max_seconds={args.max_seconds}")
 
     # A) EXPORT (always full — this is the backup)
     audio_docs = export_collection(db.files, "full-export-audio.csv")

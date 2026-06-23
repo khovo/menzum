@@ -2,11 +2,10 @@
 # Al-Madih DRY-RUN database audit (read-only).
 #
 # REQUIRED REPOSITORY SECRETS  (Settings → Secrets and variables → Actions → New
-# repository secret). Add these three:
+# repository secret). Add these two:
 #   1. MONGO_URL       — MongoDB Atlas connection string (MenzumaDB).
 #   2. BOT_TOKEN       — Telegram bot token (used ONLY for read-only getFile).
-#   3. GEMINI_API_KEY  — Google AI Studio key for title suggestions (optional;
-#                        without it, title columns are left blank).
+# (Title suggestions are rule-based/offline now — no Gemini / API key needed.)
 #
 # This workflow NEVER writes to MongoDB and sends NO Telegram messages. It runs
 # scripts/db_audit.py and uploads the CSVs (full-export-audio.csv,
@@ -46,7 +45,6 @@ jobs:
         env:
           MONGO_URL: ${{ secrets.MONGO_URL }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PYTHONUNBUFFERED: "1"
         run: python scripts/db_audit.py --limit ${{ github.event.inputs.limit }} --max-seconds 1500
 
