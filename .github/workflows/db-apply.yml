@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Al-Madih audit APPLY — the ONLY workflow that can WRITE to MongoDB.
+# It performs a SOFT-DELETE only: sets {hidden: true} on TOO_BIG / BROKEN items.
+# It NEVER deletes documents and NEVER auto-hides REVIEW items.
+#
+# SAFETY: writes happen ONLY when you type the confirmation token APPLY in the
+# `confirm` input. The default (dry-run) makes ZERO database changes — it just
+# previews what WOULD be hidden and uploads the CSV artifacts.
+#
+# REQUIRED REPOSITORY SECRETS:
+#   1. MONGO_URL — MongoDB Atlas connection string (MenzumaDB).
+#   2. BOT_TOKEN — Telegram bot token (read-only getFile health check).
+#
+# Trigger: Actions → "DB Apply (soft-delete)" → Run workflow.
+#   confirm = dry-run  → preview only, no writes (default)
+#   confirm = APPLY    → set hidden=true on TOO_BIG/BROKEN items
+# Artifacts: full-export-audio.csv, full-export-pdfs.csv, hidden-log.csv,
+#            review-needed.csv.
+# ─────────────────────────────────────────────────────────────────────────────
+name: DB Apply (soft-delete)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type APPLY (all caps) to actually set hidden=true. Anything else = dry-run preview (no writes).'
+        required: true
+        default: "dry-run"
+      limit:
+        description: "Process first N items per collection (0 = all). Export is always full."
+        required: true
+        default: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install --quiet pymongo dnspython
+
+      - name: Run audit APPLY (dry-run unless confirm=APPLY)
+        env:
+          MONGO_URL: ${{ secrets.MONGO_URL }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          PYTHONUNBUFFERED: "1"
+        run: >-
+          python scripts/db_audit_apply.py
+          --confirm "${{ github.event.inputs.confirm }}"
+          --limit ${{ github.event.inputs.limit }}
+          --max-seconds 1500
+
+      - name: Upload apply artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-apply-results
+          path: |
+            full-export-audio.csv
+            full-export-pdfs.csv
+            hidden-log.csv
+            review-needed.csv
+          if-no-files-found: warn
