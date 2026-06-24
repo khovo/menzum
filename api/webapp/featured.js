@@ -30,6 +30,7 @@ const { connectToDatabase } = require("./_db");
 const { ObjectId }          = require("mongodb");
 
 const PAGE_SIZE = 20;
+const GENRES = new Set(["eshq", "abret", "katbare", "raya"]);
 
 module.exports = withOptionalAuth(async function handler(req, res) {
   if (req.method !== "GET") {
@@ -37,27 +38,39 @@ module.exports = withOptionalAuth(async function handler(req, res) {
   }
 
   const cursorParam = (req.query.cursor || "").trim();
+  const category    = (req.query.category || "all").trim().toLowerCase();
   const limit       = Math.min(parseInt(req.query.limit || PAGE_SIZE, 10), 50);
 
   try {
     const { db }  = await connectToDatabase();
     const userId  = req.telegramUser ? parseInt(req.telegramUser.id, 10) : null;
 
-    // Build filter: if cursor provided, only return tracks older than cursor
+    // Base filter — every category excludes hidden docs.
     const filter = { file_id: { $exists: true }, hidden: { $ne: true } };
+    if (category === "neshida") {
+      // Auto-detected from the title — no stored field needed.
+      filter.display_name = { $regex: "ነሺዳ|neshida", $options: "i" };
+    } else if (GENRES.has(category)) {
+      filter.genre = category;
+    }
+
+    // Per-category sort. _id is the cursor key for ALL categories (ObjectId is
+    // creation-ordered, so "new" == _id desc); "new"/"trending" prepend their
+    // sort field with _id as the stable tiebreak so cursor paging stays valid.
+    let sort = { _id: -1 };
+    if (category === "new") sort = { created_at: -1, _id: -1 };
+    else if (category === "trending") sort = { play_count: -1, _id: -1 };
+
+    // Cursor: _id < cursor (works for every category, incl. the neshida regex).
     if (cursorParam && cursorParam.length === 24) {
-      try {
-        filter._id = { $lt: new ObjectId(cursorParam) };
-      } catch {
-        // Invalid ObjectId — ignore, start from top
-      }
+      try { filter._id = { $lt: new ObjectId(cursorParam) }; } catch { /* ignore */ }
     }
 
     // Fetch limit+1 to cheaply detect whether another page exists
     const [tracks, dbUser] = await Promise.all([
       db.collection("files")
-        .find(filter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1 } })
-        .sort({ _id: -1 })
+        .find(filter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1, genre: 1 } })
+        .sort(sort)
         .limit(limit + 1)
         .toArray(),
 
@@ -74,6 +87,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
     const response = pageTracks.map((t) => ({
       id:          t._id.toString(),
       name:        t.display_name || "Unknown",
+      genre:       t.genre || null,
       is_favorite: favoriteSet.has(t.file_id ?? ""),
       has_thumb:   !!t.thumb_file_id,
       audio_url:   `${base}/api/webapp/play?id=${t._id}&action=stream`,
@@ -82,6 +96,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
 
     return res.status(200).json({
       ok:          true,
+      category,
       tracks:      response,
       has_more:    hasMore,
       next_cursor: hasMore ? response[response.length - 1].id : null,

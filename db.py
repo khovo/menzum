@@ -200,15 +200,25 @@ async def get_fuzzy_suggestions(db, query_text: str, limit: int = 5) -> list[dic
 
 # ── Catalog Pagination ────────────────────────────────────────────────────────
 
-async def get_catalog_page(db, page: int) -> tuple[str, dict]:
+async def get_catalog_page(db, page: int, category: str = "all") -> tuple[str, dict]:
     limit       = ITEMS_PER_PAGE
     skip        = (page - 1) * limit
-    total       = await db.files.count_documents({"file_id": {"$exists": True}, "hidden": {"$ne": True}})
+
+    # Base filter — always exclude hidden. Optional category narrows it.
+    flt = {"file_id": {"$exists": True}, "hidden": {"$ne": True}}
+    category = (category or "all").lower()
+    if category == "neshida":
+        flt["display_name"] = {"$regex": "ነሺዳ|neshida", "$options": "i"}
+    elif category in ("eshq", "abret", "katbare", "raya"):
+        flt["genre"] = category
+    sort_field = "created_at" if category == "new" else ("play_count" if category == "trending" else "_id")
+
+    total       = await db.files.count_documents(flt)
     total_pages = max(1, (total + limit - 1) // limit)
 
     cursor = (
-        db.files.find({"file_id": {"$exists": True}, "hidden": {"$ne": True}}, {"display_name": 1})
-        .sort("_id", -1)
+        db.files.find(flt, {"display_name": 1})
+        .sort([(sort_field, -1), ("_id", -1)] if sort_field != "_id" else [("_id", -1)])
         .skip(skip)
         .limit(limit)
     )
