@@ -37,7 +37,7 @@ async def _resolve_macro(db, macro: str, arg: str) -> list[dict]:
         if macro == "latest_tracks":
             docs = await (
                 db.files
-                .find({"file_id": {"$exists": True}}, {"_id": 1, "display_name": 1})
+                .find({"file_id": {"$exists": True}, "hidden": {"$ne": True}}, {"_id": 1, "display_name": 1})
                 .sort("_id", -1)
                 .limit(n)
                 .to_list(length=n)
@@ -58,7 +58,7 @@ async def _resolve_macro(db, macro: str, arg: str) -> list[dict]:
             buttons = []
             for doc in docs:
                 try:
-                    file_doc = await db.files.find_one({"display_name": {"$regex": re.escape(doc.get("name", "")), "$options": "i"}}, {"_id": 1})
+                    file_doc = await db.files.find_one({"display_name": {"$regex": re.escape(doc.get("name", "")), "$options": "i"}, "hidden": {"$ne": True}}, {"_id": 1})
                     oid = str(file_doc["_id"]) if file_doc else doc["_id"]
                     buttons.append({"text": f"🔥 {doc.get('name', 'Track')[:38]} ({doc['plays']}▶)", "callback_data": f"play_{oid}"})
                 except Exception:
@@ -68,7 +68,7 @@ async def _resolve_macro(db, macro: str, arg: str) -> list[dict]:
         if macro == "latest_pdfs":
             docs = await (
                 db.pdfs
-                .find({}, {"_id": 1, "title": 1})
+                .find({"hidden": {"$ne": True}}, {"_id": 1, "title": 1})
                 .sort("approved_at", -1)
                 .limit(n)
                 .to_list(length=n)
@@ -76,10 +76,10 @@ async def _resolve_macro(db, macro: str, arg: str) -> list[dict]:
             return [{"text": f"📄 {doc.get('title', 'PDF')[:40]}", "callback_data": f"pdf_dl_{doc['_id']}"} for doc in docs]
 
         if macro == "random_track":
-            count = await db.files.count_documents({"file_id": {"$exists": True}})
+            count = await db.files.count_documents({"file_id": {"$exists": True}, "hidden": {"$ne": True}})
             if count == 0: return []
             skip  = random.randint(0, max(0, count - 1))
-            doc   = await db.files.find_one({"file_id": {"$exists": True}}, {"_id": 1, "display_name": 1}, skip=skip)
+            doc   = await db.files.find_one({"file_id": {"$exists": True}, "hidden": {"$ne": True}}, {"_id": 1, "display_name": 1}, skip=skip)
             if not doc: return []
             return [{"text": f"🎲 {doc.get('display_name', 'Discover')[:42]}", "callback_data": f"play_{doc['_id']}"}]
 

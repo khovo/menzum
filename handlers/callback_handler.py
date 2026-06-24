@@ -200,7 +200,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             if len(doc_id) == 24:
                 try:
                     file_doc = await db.files.find_one(
-                        {"_id": ObjectId(doc_id)},
+                        {"_id": ObjectId(doc_id), "hidden": {"$ne": True}},
                         {"file_id": 1, "display_name": 1},
                     )
                 except InvalidId:
@@ -231,7 +231,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
     if data_str.startswith("pdf_dl_"):
         pdf_id = data_str.replace("pdf_dl_", "")
         try:
-            pdf_doc = await db.pdfs.find_one({"_id": ObjectId(pdf_id)})
+            pdf_doc = await db.pdfs.find_one({"_id": ObjectId(pdf_id), "hidden": {"$ne": True}})
             if pdf_doc and "file_id" in pdf_doc:
                 bot_token = os.environ.get("BOT_TOKEN")
                 url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
@@ -271,7 +271,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
             if len(doc_id) == 24:
                 try:
                     file_doc = await db.files.find_one(
-                        {"_id": ObjectId(doc_id)},
+                        {"_id": ObjectId(doc_id), "hidden": {"$ne": True}},
                         {"_id": 1, "file_id": 1},
                     )
                 except InvalidId:
@@ -290,7 +290,7 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
     if data_str.startswith("report_"):
         doc_id = data_str.split("report_")[1]
         try:
-            file_doc = await db.files.find_one({"_id": ObjectId(doc_id)}, {"display_name": 1})
+            file_doc = await db.files.find_one({"_id": ObjectId(doc_id), "hidden": {"$ne": True}}, {"display_name": 1})
             if file_doc:
                 await send_message(session, ADMIN_ID, f"🚨 Report: `{file_doc.get('display_name')}`\nID: `{doc_id}`")
                 await answer_callback_query(session, cb_id, "✅ Reported!", show_alert=True)

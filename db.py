@@ -191,7 +191,7 @@ async def get_fuzzy_suggestions(db, query_text: str, limit: int = 5) -> list[dic
     conditions = [{"display_name": {"$regex": re.escape(w), "$options": "i"}} for w in words]
     query = {"$or": conditions} if len(conditions) > 1 else conditions[0]
     try:
-        cursor = db.files.find(query, {"file_id": 1, "display_name": 1}).limit(limit)
+        cursor = db.files.find({**query, "hidden": {"$ne": True}}, {"file_id": 1, "display_name": 1}).limit(limit)
         return await cursor.to_list(length=limit)
     except Exception:
         logger.exception("get_fuzzy_suggestions failed")
@@ -203,11 +203,11 @@ async def get_fuzzy_suggestions(db, query_text: str, limit: int = 5) -> list[dic
 async def get_catalog_page(db, page: int) -> tuple[str, dict]:
     limit       = ITEMS_PER_PAGE
     skip        = (page - 1) * limit
-    total       = await db.files.count_documents({"file_id": {"$exists": True}})
+    total       = await db.files.count_documents({"file_id": {"$exists": True}, "hidden": {"$ne": True}})
     total_pages = max(1, (total + limit - 1) // limit)
 
     cursor = (
-        db.files.find({"file_id": {"$exists": True}}, {"display_name": 1})
+        db.files.find({"file_id": {"$exists": True}, "hidden": {"$ne": True}}, {"display_name": 1})
         .sort("_id", -1)
         .skip(skip)
         .limit(limit)
@@ -352,7 +352,7 @@ async def create_playlist(db, creator_id: int, doc_ids: list[str]) -> str | None
             continue
         try:
             file_doc = await db.files.find_one(
-                {"_id": ObjectId(doc_id)},
+                {"_id": ObjectId(doc_id), "hidden": {"$ne": True}},
                 {"file_id": 1, "display_name": 1},
             )
             if file_doc:

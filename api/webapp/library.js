@@ -66,7 +66,7 @@ module.exports = withAuth(async function handler(req, res) {
     const favDocs = favoriteFileIds.length > 0
       ? await db.collection("files")
           .find(
-            { file_id: { $in: favoriteFileIds } },
+            { file_id: { $in: favoriteFileIds }, hidden: { $ne: true } },
             { projection: { display_name: 1, thumb_file_id: 1 } }   // never expose file_id
           )
           .limit(50)
@@ -77,7 +77,7 @@ module.exports = withAuth(async function handler(req, res) {
     const pdfFavDocs = pdfFavoriteIds.length > 0
       ? await db.collection("pdfs")
           .find(
-            { _id: { $in: pdfFavoriteIds.map((id) => { try { return new ObjectId(id); } catch { return null; } }).filter(Boolean) } },
+            { _id: { $in: pdfFavoriteIds.map((id) => { try { return new ObjectId(id); } catch { return null; } }).filter(Boolean) }, hidden: { $ne: true } },
             { projection: { title: 1, file_name: 1 } }
           )
           .limit(50)

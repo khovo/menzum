@@ -47,6 +47,8 @@ module.exports = withOptionalAuth(async function handler(req, res) {
 
     const audioFilter = buildAudioQuery(query);
     const pdfFilter   = buildPdfQuery(query);
+    audioFilter.hidden = { $ne: true };
+    pdfFilter.hidden   = { $ne: true };
 
     // Apply cursor to audio filter
     if (cursorParam && cursorParam.length === 24) {

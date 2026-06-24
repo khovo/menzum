@@ -143,7 +143,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     if state == "playlist_builder" and text and not text.startswith("/") and not (admin and text in _ADMIN_KB_TEXTS):
         await _react_to_message(session, chat_id, msg_id, "👀")
         sq  = build_search_query(text)
-        doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
+        doc = await db.files.find_one({**sq, "hidden": {"$ne": True}}, {"file_id": 1, "display_name": 1})
         if doc:
             kb = {"inline_keyboard": [[{"text": "➕ Add to Playlist", "callback_data": f"pl_add_{str(doc['_id'])}"}], [{"text": "❤️ Fav", "callback_data": f"fav_{str(doc['_id'])}"}]]}
             res = await send_audio(session, chat_id, doc["file_id"], f"{doc.get('display_name')}\n\n@{BOT_USERNAME}", reply_markup=kb)
@@ -166,7 +166,7 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     if text and not text.startswith("/"):
         await _react_to_message(session, chat_id, msg_id, "👀")
         sq  = build_search_query(text)
-        doc = await db.files.find_one(sq, {"file_id": 1, "display_name": 1})
+        doc = await db.files.find_one({**sq, "hidden": {"$ne": True}}, {"file_id": 1, "display_name": 1})
 
         if doc:
             matched_file_name = doc.get('display_name', 'Unknown')
