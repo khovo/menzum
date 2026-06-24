@@ -39,7 +39,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
     const { db } = await connectToDatabase();
 
     const doc = await db.collection("pdfs").findOne(
-      { _id: new ObjectId(id) },
+      { _id: new ObjectId(id), hidden: { $ne: true } },
       { projection: { file_id: 1 } }
     );
     if (!doc?.file_id) return res.status(404).json({ ok: false, error: "PDF not found." });

@@ -37,7 +37,7 @@ module.exports = async function handler(req, res) {
     const { db } = await connectToDatabase();
 
     const doc = await db.collection("files").findOne(
-      { _id: new ObjectId(id) },
+      { _id: new ObjectId(id), hidden: { $ne: true } },
       { projection: { thumb_file_id: 1 } }
     );
     if (!doc?.thumb_file_id) return res.status(404).end();

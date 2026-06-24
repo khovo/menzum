@@ -91,7 +91,7 @@ async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> No
         user    = await db.users.find_one({"_id": int(user_id)}, {"favorites": 1})
         fav_ids = (user or {}).get("favorites", [])
         if fav_ids:
-            docs = await db.files.find({"file_id": {"$in": fav_ids}}, {"file_id": 1, "display_name": 1, "thumb_file_id": 1}).limit(50).to_list(length=50)
+            docs = await db.files.find({"file_id": {"$in": fav_ids}, "hidden": {"$ne": True}}, {"file_id": 1, "display_name": 1, "thumb_file_id": 1}).limit(50).to_list(length=50)
             results = [r for r in (_track_result(doc, "💔 Remove") for doc in docs) if r]
         if not results:
             results = [{"type": "article", "id": "no_favorites", "title": "No Favorites Yet", "input_message_content": {"message_text": "No favorites saved yet."}}]
@@ -101,14 +101,14 @@ async def handle_inline_query(session, db, iq: dict, channels: list[dict]) -> No
         if cached:
             await answer_inline_query(session, query_id, cached, cache_time=300)
             return
-        docs = await db.files.find({"file_id": {"$exists": True}}, {"file_id": 1, "display_name": 1, "thumb_file_id": 1}).sort("_id", -1).limit(20).to_list(length=20)
+        docs = await db.files.find({"file_id": {"$exists": True}, "hidden": {"$ne": True}}, {"file_id": 1, "display_name": 1, "thumb_file_id": 1}).sort("_id", -1).limit(20).to_list(length=20)
         results = [r for r in (_track_result(doc) for doc in docs) if r]
         if results:  # never cache an empty list — would not serve, and avoids poisoning
             set_inline_empty_cache(results)
 
     else:
         sq   = build_search_query(query)
-        docs = await db.files.find(sq, {"file_id": 1, "display_name": 1, "thumb_file_id": 1}).limit(20).to_list(length=20)
+        docs = await db.files.find({**sq, "hidden": {"$ne": True}}, {"file_id": 1, "display_name": 1, "thumb_file_id": 1}).limit(20).to_list(length=20)
         results = [r for r in (_track_result(doc) for doc in docs) if r]
 
     resp = await answer_inline_query(session, query_id, results, cache_time=300)

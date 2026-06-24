@@ -44,7 +44,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
     const userId  = req.telegramUser ? parseInt(req.telegramUser.id, 10) : null;
 
     // Build filter: if cursor provided, only return tracks older than cursor
-    const filter = { file_id: { $exists: true } };
+    const filter = { file_id: { $exists: true }, hidden: { $ne: true } };
     if (cursorParam && cursorParam.length === 24) {
       try {
         filter._id = { $lt: new ObjectId(cursorParam) };

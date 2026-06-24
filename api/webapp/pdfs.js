@@ -25,7 +25,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
       const cursorParam = (req.query.cursor || "").trim();
       const limit       = Math.min(parseInt(req.query.limit || PAGE_SIZE, 10), 50);
 
-      const filter = {};
+      const filter = { hidden: { $ne: true } };
       if (cursorParam && cursorParam.length === 24) {
         try { filter._id = { $lt: new ObjectId(cursorParam) }; } catch {}
       }
@@ -73,7 +73,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
       }
 
       const doc = await db.collection("pdfs").findOne(
-        { _id: new ObjectId(pdf_id) },
+        { _id: new ObjectId(pdf_id), hidden: { $ne: true } },
         { projection: { file_id: 1, title: 1 } }
       );
       if (!doc) return res.status(404).json({ ok: false, error: "PDF not found." });

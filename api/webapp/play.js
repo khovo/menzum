@@ -50,7 +50,7 @@ async function streamAudio(req, res) {
 
   const { db } = await connectToDatabase();
   const doc = await db.collection("files").findOne(
-    { _id: new ObjectId(id) },
+    { _id: new ObjectId(id), hidden: { $ne: true } },
     { projection: { file_id: 1 } }
   );
   if (!doc?.file_id) return res.status(404).json({ ok: false, error: "Track not found." });
@@ -121,7 +121,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
     const { db } = await connectToDatabase();
 
     const track = await db.collection("files").findOne(
-      { _id: new ObjectId(track_id) },
+      { _id: new ObjectId(track_id), hidden: { $ne: true } },
       { projection: { file_id: 1, display_name: 1 } }
     );
     if (!track) {
