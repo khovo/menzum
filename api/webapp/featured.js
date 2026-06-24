@@ -55,11 +55,10 @@ module.exports = withOptionalAuth(async function handler(req, res) {
     }
 
     // Per-category sort. _id is the cursor key for ALL categories (ObjectId is
-    // creation-ordered, so "new" == _id desc); "new"/"trending" prepend their
-    // sort field with _id as the stable tiebreak so cursor paging stays valid.
+    // creation-ordered, so "new" == _id desc); "new" prepends created_at with
+    // _id as the stable tiebreak so cursor paging stays valid.
     let sort = { _id: -1 };
     if (category === "new") sort = { created_at: -1, _id: -1 };
-    else if (category === "trending") sort = { play_count: -1, _id: -1 };
 
     // Cursor: _id < cursor (works for every category, incl. the neshida regex).
     if (cursorParam && cursorParam.length === 24) {

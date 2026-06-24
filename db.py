@@ -211,7 +211,7 @@ async def get_catalog_page(db, page: int, category: str = "all") -> tuple[str, d
         flt["display_name"] = {"$regex": "ነሺዳ|neshida", "$options": "i"}
     elif category in ("eshq", "abret", "katbare", "raya"):
         flt["genre"] = category
-    sort_field = "created_at" if category == "new" else ("play_count" if category == "trending" else "_id")
+    sort_field = "created_at" if category == "new" else "_id"
 
     total       = await db.files.count_documents(flt)
     total_pages = max(1, (total + limit - 1) // limit)
