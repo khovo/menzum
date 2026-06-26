@@ -42,7 +42,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
       { _id: new ObjectId(id), hidden: { $ne: true } },
       { projection: { file_id: 1 } }
     );
-    if (!doc?.file_id) return res.status(404).json({ ok: false, error: "PDF not found." });
+    if (!doc?.file_id) return res.status(404).json({ ok: false, reason: "not_found", error: "PDF not found." });
 
     const gfRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${doc.file_id}`);
     const gfData = await gfRes.json();
@@ -52,10 +52,19 @@ module.exports = withOptionalAuth(async function handler(req, res) {
       const desc = (gfData && gfData.description) || "unknown";
       console.error(`pdf-view.js getFile failed id=${id} file_id=${String(doc.file_id).slice(0, 12)}… desc="${desc}"`);
       if (/too big/i.test(desc)) {
-        // Bot API can only download files up to 20 MB — larger PDFs can't be served this way.
-        return res.status(413).json({ ok: false, error: "This PDF is too large to stream (Telegram Bot API limit is 20 MB).", reason: desc });
+        // >20 MB: can't stream via the Bot API, but the bot can deliver it to chat
+        // (re-sending a file_id has no size limit). Return a structured payload so
+        // the app shows a "get it via Telegram" CTA instead of a generic error.
+        const botUser = process.env.BOT_USERNAME || "Almadihbot";
+        return res.status(200).json({
+          ok: false,
+          reason: "too_large",
+          error: "This book is too large to preview here. Tap to get it via Telegram.",
+          telegram_link: `https://t.me/${botUser}?start=pdf_${id}`,
+        });
       }
-      return res.status(404).json({ ok: false, error: "This PDF is no longer available from Telegram.", reason: desc });
+      // Genuinely broken/missing file → 404 (distinct reason).
+      return res.status(404).json({ ok: false, reason: "not_found", error: "This PDF is no longer available from Telegram." });
     }
 
     const tgUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${gfData.result.file_path}`;

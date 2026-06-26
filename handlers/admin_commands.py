@@ -39,6 +39,8 @@ from db import (
     set_maintenance,
     get_db_stats,
     get_all_users_for_export,
+    unhide_by_id,
+    unhide_by_file_id,
 )
 from utils import (
     send_message,
@@ -175,6 +177,24 @@ async def _cmd_editaudio(session, db, message, chat_id, user_id, arg):
         await send_message(session, chat_id, f"✅ Renamed to: `{arg}`")
     else:
         await send_message(session, chat_id, "⚠️ That audio isn't in the database.")
+
+
+async def _cmd_unhide(session, db, message, chat_id, user_id, arg):
+    """Admin override: un-hide an audio/PDF (reply to it, or /unhide <id>)."""
+    reply = message.get("reply_to_message") or {}
+    media = reply.get("audio") or reply.get("voice") or reply.get("document")
+    if media and media.get("file_id"):
+        result = await unhide_by_file_id(db, media["file_id"])
+    elif arg and len(arg.strip()) == 24:
+        result = await unhide_by_id(db, arg.strip())
+    else:
+        await send_message(session, chat_id, "⚠️ Reply to an audio/PDF with `/unhide`, or use `/unhide <id>`.")
+        return
+    if result:
+        kind, title = result
+        await send_message(session, chat_id, f"✅ Unhidden ({kind}): `{title}`\n_It will appear in search & lists again._")
+    else:
+        await send_message(session, chat_id, "⚠️ Not found in the database (check the id, or that you replied to a saved item).")
 
 
 async def _cmd_deleteaudio(session, db, message, chat_id, user_id, arg):
@@ -428,6 +448,7 @@ _COMMANDS = {
     "/listadmins":  _cmd_listadmins,
     "/editaudio":   _cmd_editaudio,
     "/deleteaudio": _cmd_deleteaudio,
+    "/unhide":      _cmd_unhide,
     "/findaudio":   _cmd_findaudio,
     "/editpdf":     _cmd_editpdf,
     "/removepdf":   _cmd_removepdf,
