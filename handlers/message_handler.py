@@ -27,11 +27,13 @@ from db import (
     link_login_nonce,
     is_banned,
     get_maintenance,
+    get_visible_pdf,
 )
 from utils import (
     check_membership,
     send_message,
     send_audio,
+    send_document,
     delete_message,
     get_not_found_kb,
     get_fuzzy_suggestions_kb,
@@ -119,6 +121,19 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
                 if result and result.get("ok"):
                     await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
                 return
+
+        # Deep link for large books: bot delivers the PDF directly (bypasses the
+        # 20 MB Bot-API getFile limit by re-sending the existing file_id).
+        if start_param and start_param.startswith("pdf_"):
+            pdf = await get_visible_pdf(db, start_param[len("pdf_"):])
+            if pdf and pdf.get("file_id"):
+                await send_document(session, chat_id, pdf["file_id"], caption=f"📄 {pdf.get('title', '')}\n\n@{BOT_USERNAME}")
+            else:
+                await send_message(session, chat_id, "⚠️ ይቅርታ! ይህ ፋይል አልተገኘም።")
+            result = await _send_html_message(session, chat_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
+            if result and result.get("ok"):
+                await save_last_menu_msg_id(db, user_id, result["result"]["message_id"])
+            return
 
         result = await _send_html_message(session, chat_id, WELCOME_TEXT, reply_markup=_get_main_menu_kb_local())
         if result and result.get("ok"):

@@ -1,0 +1,37 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Auto-tag audio genre from title keywords (eshq/abret/katbare/raya).
+# Soft write only: sets the `genre` field on UNTAGGED matching docs; never
+# overwrites existing tags, never deletes. DRY-RUN unless confirm = APPLY.
+#
+# REQUIRED SECRET: MONGO_URL (MongoDB Atlas connection string).
+# Trigger: Actions → "Genre Auto-Tag" → Run workflow.
+#   confirm = dry-run  → preview per-genre counts, no writes (default)
+#   confirm = APPLY    → set genre where keywords match
+# ─────────────────────────────────────────────────────────────────────────────
+name: Genre Auto-Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type APPLY to write genre. Anything else = dry-run preview (no writes).'
+        required: true
+        default: "dry-run"
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pymongo dnspython
+      - name: Run genre auto-tag
+        env:
+          MONGO_URL: ${{ secrets.MONGO_URL }}
+          PYTHONUNBUFFERED: "1"
+        run: python scripts/genre_tag.py --confirm "${{ github.event.inputs.confirm }}"

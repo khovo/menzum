@@ -690,3 +690,52 @@ async def get_all_users_for_export(db) -> list[dict]:
     except Exception:
         logger.exception("get_all_users_for_export failed")
         return []
+
+
+# ── Soft-unhide (admin override for the cleanup pipeline) ─────────────────────
+
+async def _set_hidden(coll, oid, value: bool) -> None:
+    await coll.update_one({"_id": oid}, {"$set": {"hidden": value}})
+
+
+async def unhide_by_id(db, doc_id: str):
+    """Set hidden=false on a files OR pdfs doc by _id. Returns (kind, title) or None."""
+    try:
+        oid = ObjectId(doc_id)
+    except (InvalidId, Exception):
+        return None
+    try:
+        for coll, kind, tkey in ((db.files, "audio", "display_name"), (db.pdfs, "pdf", "title")):
+            doc = await coll.find_one({"_id": oid}, {tkey: 1})
+            if doc:
+                await _set_hidden(coll, oid, False)
+                return kind, doc.get(tkey, "Unknown")
+        return None
+    except Exception:
+        logger.exception("unhide_by_id failed doc_id=%s", doc_id)
+        return None
+
+
+async def unhide_by_file_id(db, file_id: str):
+    """Set hidden=false on a files OR pdfs doc matching file_id. Returns (kind, title) or None."""
+    try:
+        for coll, kind, tkey in ((db.files, "audio", "display_name"), (db.pdfs, "pdf", "title")):
+            doc = await coll.find_one({"file_id": file_id}, {tkey: 1})
+            if doc:
+                await _set_hidden(coll, doc["_id"], False)
+                return kind, doc.get(tkey, "Unknown")
+        return None
+    except Exception:
+        logger.exception("unhide_by_file_id failed")
+        return None
+
+
+async def get_visible_pdf(db, object_id: str) -> dict | None:
+    """Fetch a non-hidden PDF by _id (for deep-link delivery). None if missing/hidden."""
+    try:
+        return await db.pdfs.find_one(
+            {"_id": ObjectId(object_id), "hidden": {"$ne": True}},
+            {"file_id": 1, "title": 1},
+        )
+    except (InvalidId, Exception):
+        return None
