@@ -1,0 +1,6 @@
+# Extra dependency for scripts/migrate_from_telegram.py ONLY.
+# Kept out of the root requirements.txt so the deployed bot's Vercel function
+# (which installs requirements.txt) doesn't ship boto3/botocore it never uses.
+#
+# Install with: pip install -r requirements.txt -r scripts/requirements-migrate.txt
+boto3
