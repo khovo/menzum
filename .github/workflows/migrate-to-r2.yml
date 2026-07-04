@@ -1,0 +1,45 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Migrate all audio + PDFs from Telegram to Cloudflare R2.
+# Additive only: sets `r2_url` on each doc, never touches/removes `file_id`.
+# Skips docs that already have `r2_url`, so it's safe to re-run.
+#
+# REQUIRED SECRETS: BOT_TOKEN, MONGO_URL, R2_ENDPOINT_URL, R2_ACCESS_KEY_ID,
+#                    R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_PUBLIC_URL
+# Trigger: Actions → "Migrate to R2" → Run workflow.
+# No inputs — triggering this workflow IS the confirmation; it always runs a
+# full --confirm APPLY migration (no --limit), so only run it when you mean it.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Migrate to R2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --quiet -r requirements.txt -r scripts/requirements-migrate.txt
+
+      - name: Run migration (full run)
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          MONGO_URL: ${{ secrets.MONGO_URL }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          PYTHONUNBUFFERED: "1"
+        run: python scripts/migrate_from_telegram.py --confirm APPLY
