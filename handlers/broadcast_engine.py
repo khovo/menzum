@@ -151,6 +151,30 @@ def _bml_syntax_guide() -> str:
     )
 
 
+async def try_acquire_broadcast_lock(db, admin_id: int) -> bool:
+    """
+    Atomically claim the broadcast lock for this admin. Returns True if acquired
+    (no broadcast was already in progress), False if one is already running.
+
+    Prevents duplicate sends when Telegram redelivers the broadcast_confirm
+    webhook update (e.g. because our response was slow) — the retry finds the
+    flag already set and does nothing instead of re-running the whole broadcast.
+    """
+    result = await db.users.update_one(
+        {"_id": admin_id, "broadcasting_in_progress": {"$ne": True}},
+        {"$set": {"broadcasting_in_progress": True}},
+    )
+    return result.modified_count > 0
+
+
+async def release_broadcast_lock(db, admin_id: int) -> None:
+    """Clear the broadcast lock. Always call this when the broadcast finishes or errors."""
+    await db.users.update_one(
+        {"_id": admin_id},
+        {"$unset": {"broadcasting_in_progress": ""}},
+    )
+
+
 async def _execute_broadcast(session, db, admin_chat_id: int, msg_id: int, markup: dict | None) -> str:
     total, failed, consecutive = 0, 0, 0
     CIRCUIT_BREAKER, CHUNK_SLEEP, CHUNK_SIZE = 10, 0.025, 25

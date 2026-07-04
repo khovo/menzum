@@ -55,7 +55,12 @@ from .helpers import (
     WELCOME_TEXT,
     BOT_USERNAME,
 )
-from .broadcast_engine import _execute_broadcast, _bml_syntax_guide
+from .broadcast_engine import (
+    _execute_broadcast,
+    _bml_syntax_guide,
+    try_acquire_broadcast_lock,
+    release_broadcast_lock,
+)
 from .admin_commands import handle_admin_delete_callback
 
 logger = logging.getLogger(__name__)
@@ -300,14 +305,27 @@ async def handle_callback(session, db, cb: dict, channels: list[dict]) -> None:
 
     if data_str.startswith("broadcast_") and admin:
         if data_str == "broadcast_confirm":
-            admin_data = await get_user_data(db, user_id)
-            msg_id_bc  = (admin_data or {}).get("broadcast_msg_id")
-            markup_bc  = (admin_data or {}).get("broadcast_markup")
-            if msg_id_bc:
-                await set_user_state(db, user_id, "idle")
-                await edit_message_text(session, chat_id, message_id, "🚀 *Broadcasting…* please wait.")
-                summary = await _execute_broadcast(session, db, chat_id, msg_id_bc, markup_bc)
-                await send_message(session, chat_id, summary)
+            # Ack immediately — tells Telegram we received the update so it stops
+            # retrying (redelivering) this callback_query while we're still busy.
+            await answer_callback_query(session, cb_id)
+
+            if not await try_acquire_broadcast_lock(db, user_id):
+                # A broadcast is already running for this admin (e.g. this is a
+                # redelivered webhook update) — do not send it again.
+                return
+
+            try:
+                admin_data = await get_user_data(db, user_id)
+                msg_id_bc  = (admin_data or {}).get("broadcast_msg_id")
+                markup_bc  = (admin_data or {}).get("broadcast_markup")
+                if msg_id_bc:
+                    await set_user_state(db, user_id, "idle")
+                    await edit_message_text(session, chat_id, message_id, "🚀 *Broadcasting…* please wait.")
+                    summary = await _execute_broadcast(session, db, chat_id, msg_id_bc, markup_bc)
+                    await send_message(session, chat_id, summary)
+            finally:
+                await release_broadcast_lock(db, user_id)
+            return
 
         elif data_str == "broadcast_cancel":
             await edit_message_text(session, chat_id, message_id, "❌ Broadcast cancelled.")
