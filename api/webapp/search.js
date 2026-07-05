@@ -58,7 +58,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
     const [audioRes, pdfRes, dbUser] = await Promise.all([
       typeFilter !== "pdf"
         ? db.collection("files")
-            .find(audioFilter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1 } })
+            .find(audioFilter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1, r2_url: 1 } })
             .sort({ _id: -1 })
             .limit(limit + 1)
             .toArray()
@@ -90,6 +90,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
       has_thumb:   !!t.thumb_file_id,
       audio_url:   `${base}/api/webapp/play?id=${t._id}&action=stream`,
       thumb_url:   t.thumb_file_id ? `${base}/api/webapp/thumb?id=${t._id}` : null,
+      r2_url:      t.r2_url || null,
       type:        "audio",
     }));
 
