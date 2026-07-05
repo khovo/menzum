@@ -32,6 +32,18 @@ module.exports = async function handler(req, res) {
     const emailMatches = String(email).trim().toLowerCase() === adminEmail;
     const passwordMatches = await checkPassword(password, adminHash);
 
+    // ── TEMPORARY DEBUG — remove once login works ───────────────────────────
+    // NOTE: deliberately NOT logging the full hash value — bcrypt hashes are
+    // credential-adjacent and Vercel logs can persist/be exported. Logging
+    // length + prefix is enough to catch truncation/whitespace/wrong-value
+    // issues without putting the real hash in the log stream.
+    console.log('ENV EMAIL:', process.env.ADMIN_EMAIL);
+    console.log('ENV HASH exists:', !!process.env.ADMIN_PASSWORD_HASH);
+    console.log('ENV HASH length:', (process.env.ADMIN_PASSWORD_HASH || '').length);
+    console.log('ENV HASH prefix:', (process.env.ADMIN_PASSWORD_HASH || '').slice(0, 7));
+    console.log('Input email:', email);
+    console.log('bcrypt result:', passwordMatches);
+
     // Always run both checks (even when email is already wrong) so failed-login
     // timing doesn't leak which part (email vs password) was incorrect.
     if (!emailMatches || !passwordMatches) {
