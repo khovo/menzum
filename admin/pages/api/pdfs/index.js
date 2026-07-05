@@ -99,4 +99,5 @@ module.exports = withAdminAuth(async function handler(req, res) {
   }
 });
 
+module.exports.default = module.exports;
 module.exports.config = { api: { bodyParser: false } };
