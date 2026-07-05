@@ -62,3 +62,9 @@ module.exports = withAdminAuth(async function handler(req, res) {
     return res.status(500).json({ ok: false, error: "Database error." });
   }
 });
+
+// Next.js production API runtime requires `.default` specifically — a bare
+// CommonJS `module.exports = fn` alone is not picked up at request time (only
+// at build-time page listing), which caused every route to 500 with
+// "does not export a default function".
+module.exports.default = module.exports;
