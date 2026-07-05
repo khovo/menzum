@@ -4,6 +4,7 @@
  * single admin account (env vars) and sets the httpOnly session cookie.
  */
 const { checkPassword, signAdminToken, serializeSessionCookie } = require("../../../lib/auth");
+const bcrypt = require("bcryptjs"); // TEMPORARY DEBUG — remove once login works
 
 module.exports = async function handler(req, res) {
   // ── TEMPORARY DEBUG — remove once login works ─────────────────────────────
@@ -43,6 +44,15 @@ module.exports = async function handler(req, res) {
     console.log('ENV HASH prefix:', (process.env.ADMIN_PASSWORD_HASH || '').slice(0, 7));
     console.log('Input email:', email);
     console.log('bcrypt result:', passwordMatches);
+
+    // ── TEMPORARY DEBUG — remove once login works ───────────────────────────
+    // Diagnostic only — does NOT feed the actual auth decision below (which
+    // still uses checkPassword()/passwordMatches). bcryptjs already treats
+    // $2a$/$2b$/$2y$ hashes identically, so this is likely a no-op, but it's
+    // a cheap way to rule out a version-tag mismatch as the cause.
+    const normalizedHash = adminHash.replace(/^\$2a\$/, '$2b$');
+    const passwordMatch = await bcrypt.compare(password, normalizedHash);
+    console.log('DEBUG normalized-hash bcrypt.compare result:', passwordMatch);
 
     // Always run both checks (even when email is already wrong) so failed-login
     // timing doesn't leak which part (email vs password) was incorrect.
