@@ -50,6 +50,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
         title:       p.title || "Untitled",
         file_name:   p.file_name || "",
         is_favorite: favSet.has(p._id.toString()),
+        r2_url:      p.r2_url || null,
       }));
 
       return res.status(200).json({

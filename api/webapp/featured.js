@@ -69,7 +69,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
     // Fetch limit+1 to cheaply detect whether another page exists
     const [tracks, dbUser] = await Promise.all([
       db.collection("files")
-        .find(filter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1, genre: 1 } })
+        .find(filter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1, genre: 1, r2_url: 1 } })
         .sort(sort)
         .limit(limit + 1)
         .toArray(),
@@ -92,6 +92,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
       has_thumb:   !!t.thumb_file_id,
       audio_url:   `${base}/api/webapp/play?id=${t._id}&action=stream`,
       thumb_url:   t.thumb_file_id ? `${base}/api/webapp/thumb?id=${t._id}` : null,
+      r2_url:      t.r2_url || null,
     }));
 
     return res.status(200).json({
