@@ -13,17 +13,15 @@
  */
 const { CATEGORY_SLUGS, DEFAULT_LABELS } = require("./categories");
 
-const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-
-/** Validate a user-submitted slug for a NEW custom category. */
+/**
+ * Validate a user-submitted name for a NEW custom category. The slug IS the
+ * display name as typed (trimmed) — no charset restriction, so Amharic,
+ * Arabic, or any other script works the same as Latin text.
+ */
 function validateNewSlug(slug) {
-  if (!slug || typeof slug !== "string") return "Slug is required.";
-  const s = slug.trim().toLowerCase();
-  if (!SLUG_PATTERN.test(s)) {
-    return "Slug must be lowercase letters, numbers, and hyphens only (e.g. \"ramadan-specials\").";
-  }
-  if (CATEGORY_SLUGS.includes(s)) {
-    return `"${s}" is one of the fixed categories already.`;
+  if (!slug || typeof slug !== "string" || !slug.trim()) return "Name is required.";
+  if (CATEGORY_SLUGS.includes(slug.trim())) {
+    return `"${slug.trim()}" is one of the fixed categories already.`;
   }
   return null;
 }

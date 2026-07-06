@@ -30,7 +30,10 @@ const { connectToDatabase } = require("./_db");
 const { ObjectId }          = require("mongodb");
 
 const PAGE_SIZE = 20;
-const GENRES = new Set(["eshq", "abret", "katbare", "raya"]);
+// Fixed baseline genres — merged at request time with whatever custom
+// categories exist in the `categories` collection (admin panel-created),
+// so a newly-added category is filterable here without a redeploy.
+const FIXED_GENRES = ["eshq", "abret", "katbare", "raya"];
 
 module.exports = withOptionalAuth(async function handler(req, res) {
   if (req.method !== "GET") {
@@ -45,12 +48,15 @@ module.exports = withOptionalAuth(async function handler(req, res) {
     const { db }  = await connectToDatabase();
     const userId  = req.telegramUser ? parseInt(req.telegramUser.id, 10) : null;
 
+    const categoryDocs = await db.collection("categories").find({}, { projection: { _id: 1 } }).toArray();
+    const validCategories = new Set([...FIXED_GENRES, ...categoryDocs.map((d) => d._id)]);
+
     // Base filter — every category excludes hidden docs.
     const filter = { file_id: { $exists: true }, hidden: { $ne: true } };
     if (category === "neshida") {
       // Auto-detected from the title — no stored field needed.
       filter.display_name = { $regex: "ነሺዳ|neshida", $options: "i" };
-    } else if (GENRES.has(category)) {
+    } else if (validCategories.has(category)) {
       filter.genre = category;
     }
 
