@@ -6,7 +6,13 @@
  * in their API route — Next.js's default JSON body parser must be disabled
  * for multipart requests to reach formidable un-consumed.
  */
-const formidable = require("formidable");
+// formidable v3's CJS entry exports a namespace object, not a directly
+// callable function — `require("formidable")` is `{ formidable: fn,
+// default: fn, IncomingForm, ... }`. Calling the namespace itself (as a
+// previous version of this file did) throws "X is not a function" the
+// moment any multipart upload is attempted; the callable factory is the
+// named `formidable` export.
+const { formidable } = require("formidable");
 
 async function parseForm(req, { maxFileSize = 200 * 1024 * 1024 } = {}) {
   const form = formidable({ multiples: false, maxFileSize });
