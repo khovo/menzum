@@ -1,8 +1,11 @@
 /**
  * GET  /api/categories        — the 5 fixed slugs + any custom categories,
  *                                 each with editable display name + track count
- * POST /api/categories  { slug, display_name }  — create a new custom category
- * PUT  /api/categories  { slug, display_name }  — rename a fixed or custom slug
+ * POST   /api/categories  { display_name }        — create a new custom category
+ *          (slug is the display name as typed, trimmed only — any script/charset)
+ * PUT    /api/categories  { slug, display_name }  — rename a fixed or custom slug
+ * DELETE /api/categories?slug=xxx                 — remove a custom category
+ *          (fixed categories can never be deleted, only renamed)
  *
  * Not in the original API route spec, but the /categories page needs a data
  * source — added as the minimal necessary route. Display-name overrides (and
@@ -21,15 +24,14 @@ async function handleGet(req, res, db) {
 }
 
 async function handlePost(req, res, db) {
-  const { slug: rawSlug, display_name } = req.body || {};
-  const slug = (rawSlug || "").trim().toLowerCase();
+  const { display_name } = req.body || {};
+  // The slug IS the display name as typed, trimmed only — no lowercasing or
+  // charset restriction, so Amharic/Arabic/any script names work as-is.
+  const slug = String(display_name || "").trim();
 
   const slugError = validateNewSlug(slug);
   if (slugError) {
     return res.status(400).json({ ok: false, error: slugError });
-  }
-  if (!display_name || !String(display_name).trim()) {
-    return res.status(400).json({ ok: false, error: "display_name is required." });
   }
 
   const existing = await db.collection("categories").findOne({ _id: slug });
@@ -40,11 +42,26 @@ async function handlePost(req, res, db) {
   await db.collection("categories").insertOne({
     _id: slug,
     slug,
-    display_name: String(display_name).trim(),
+    display_name: slug,
     created_at: new Date(),
     custom: true,
   });
   return res.status(201).json({ ok: true, slug });
+}
+
+async function handleDelete(req, res, db) {
+  const slug = (req.query.slug || "").trim();
+  if (!slug) {
+    return res.status(400).json({ ok: false, error: "slug is required." });
+  }
+  if (CATEGORY_SLUGS.includes(slug)) {
+    return res.status(400).json({ ok: false, error: "Fixed categories cannot be deleted." });
+  }
+  const result = await db.collection("categories").deleteOne({ _id: slug });
+  if (result.deletedCount === 0) {
+    return res.status(404).json({ ok: false, error: "Category not found." });
+  }
+  return res.status(200).json({ ok: true });
 }
 
 async function handlePut(req, res, db) {
@@ -77,6 +94,7 @@ module.exports = withAdminAuth(async function handler(req, res) {
     if (req.method === "GET") return await handleGet(req, res, db);
     if (req.method === "POST") return await handlePost(req, res, db);
     if (req.method === "PUT") return await handlePut(req, res, db);
+    if (req.method === "DELETE") return await handleDelete(req, res, db);
     return res.status(405).json({ ok: false, error: "Method not allowed." });
   } catch (err) {
     console.error("api/categories/index.js error:", err);
