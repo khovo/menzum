@@ -1,38 +1,59 @@
 /**
- * GET /api/categories        — the 5 fixed slugs + editable display name + track count
- * PUT /api/categories  { slug, display_name }
+ * GET  /api/categories        — the 5 fixed slugs + any custom categories,
+ *                                 each with editable display name + track count
+ * POST /api/categories  { slug, display_name }  — create a new custom category
+ * PUT  /api/categories  { slug, display_name }  — rename a fixed or custom slug
  *
  * Not in the original API route spec, but the /categories page needs a data
- * source — added as the minimal necessary route. Display-name overrides are
- * stored in a small `categories` collection ({_id: slug, display_name}); the
- * slugs themselves are fixed (lib/categories.js), not user-creatable.
+ * source — added as the minimal necessary route. Display-name overrides (and
+ * custom categories themselves) are stored in a small `categories` collection
+ * ({_id: slug, display_name, ...}); the 5 fixed slugs are still hardcoded in
+ * lib/categories.js and can never be deleted here, only renamed.
  */
 const { connectToDatabase } = require("../../../lib/db");
 const { withAdminAuth } = require("../../../lib/withAdminAuth");
-const { CATEGORY_SLUGS, DEFAULT_LABELS } = require("../../../lib/categories");
+const { CATEGORY_SLUGS } = require("../../../lib/categories");
+const { validateNewSlug, listAllCategories, isValidCategorySlug } = require("../../../lib/categoryHelpers");
 
 async function handleGet(req, res, db) {
-  const [overrides, counts] = await Promise.all([
-    db.collection("categories").find({ _id: { $in: CATEGORY_SLUGS } }).toArray(),
-    Promise.all(CATEGORY_SLUGS.map((slug) => db.collection("files").countDocuments({ genre: slug }))),
-  ]);
-  const overrideMap = {};
-  for (const o of overrides) overrideMap[o._id] = o.display_name;
+  const categories = await listAllCategories(db);
+  return res.status(200).json({ ok: true, categories });
+}
 
-  return res.status(200).json({
-    ok: true,
-    categories: CATEGORY_SLUGS.map((slug, i) => ({
-      slug,
-      display_name: overrideMap[slug] || DEFAULT_LABELS[slug],
-      track_count: counts[i],
-    })),
+async function handlePost(req, res, db) {
+  const { slug: rawSlug, display_name } = req.body || {};
+  const slug = (rawSlug || "").trim().toLowerCase();
+
+  const slugError = validateNewSlug(slug);
+  if (slugError) {
+    return res.status(400).json({ ok: false, error: slugError });
+  }
+  if (!display_name || !String(display_name).trim()) {
+    return res.status(400).json({ ok: false, error: "display_name is required." });
+  }
+
+  const existing = await db.collection("categories").findOne({ _id: slug });
+  if (existing) {
+    return res.status(409).json({ ok: false, error: `Category "${slug}" already exists.` });
+  }
+
+  await db.collection("categories").insertOne({
+    _id: slug,
+    slug,
+    display_name: String(display_name).trim(),
+    created_at: new Date(),
+    custom: true,
   });
+  return res.status(201).json({ ok: true, slug });
 }
 
 async function handlePut(req, res, db) {
   const { slug, display_name } = req.body || {};
-  if (!CATEGORY_SLUGS.includes(slug)) {
-    return res.status(400).json({ ok: false, error: `Invalid slug. Must be one of: ${CATEGORY_SLUGS.join(", ")}` });
+  if (!(await isValidCategorySlug(db, slug))) {
+    return res.status(400).json({
+      ok: false,
+      error: `Invalid slug. Must be one of the fixed categories (${CATEGORY_SLUGS.join(", ")}) or an existing custom category.`,
+    });
   }
   if (!display_name || !String(display_name).trim()) {
     return res.status(400).json({ ok: false, error: "display_name is required." });
@@ -48,8 +69,14 @@ async function handlePut(req, res, db) {
 module.exports = withAdminAuth(async function handler(req, res) {
   try {
     const { db } = await connectToDatabase();
-    if (req.method === "GET") return handleGet(req, res, db);
-    if (req.method === "PUT") return handlePut(req, res, db);
+    // NOTE: these awaits matter — `return handleX(...)` without awaiting would
+    // let a rejection inside handleX escape this try/catch (it only rejects
+    // *after* the synchronous `return` already exited the try block), which
+    // surfaces to the client as Next.js's default HTML error page instead of
+    // JSON. See pages/api/pdfs/index.js for the write-up of this bug.
+    if (req.method === "GET") return await handleGet(req, res, db);
+    if (req.method === "POST") return await handlePost(req, res, db);
+    if (req.method === "PUT") return await handlePut(req, res, db);
     return res.status(405).json({ ok: false, error: "Method not allowed." });
   } catch (err) {
     console.error("api/categories/index.js error:", err);

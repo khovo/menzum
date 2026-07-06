@@ -2,8 +2,8 @@ import { useEffect, useState, useCallback } from "react";
 import Layout from "../../components/Layout";
 import Modal from "../../components/Modal";
 import Pagination from "../../components/Pagination";
+import VisibilityToggle from "../../components/VisibilityToggle";
 import { requireAdmin } from "../../lib/requireAdmin";
-import { CATEGORY_SLUGS } from "../../lib/categories";
 
 export async function getServerSideProps(context) {
   const guard = requireAdmin(context);
@@ -11,7 +11,23 @@ export async function getServerSideProps(context) {
   return { props: {} };
 }
 
-function UploadForm({ onDone }) {
+/**
+ * Category options come from /api/categories at runtime (fixed 5 + any
+ * custom ones created on the Categories page) rather than the static
+ * CATEGORY_SLUGS constant, so a newly-created custom category shows up here
+ * immediately without a redeploy.
+ */
+function useCategoryOptions() {
+  const [categories, setCategories] = useState([]);
+  useEffect(() => {
+    fetch("/api/categories")
+      .then((r) => r.json())
+      .then((d) => d.ok && setCategories(d.categories));
+  }, []);
+  return categories;
+}
+
+function UploadForm({ categories, onDone }) {
   const [title, setTitle] = useState("");
   const [artist, setArtist] = useState("");
   const [category, setCategory] = useState("");
@@ -56,7 +72,7 @@ function UploadForm({ onDone }) {
       <Field label="Category">
         <select value={category} onChange={(e) => setCategory(e.target.value)} className="input">
           <option value="">— none —</option>
-          {CATEGORY_SLUGS.map((c) => <option key={c} value={c}>{c}</option>)}
+          {categories.map((c) => <option key={c.slug} value={c.slug}>{c.display_name}</option>)}
         </select>
       </Field>
       <Field label="Audio file">
@@ -70,7 +86,7 @@ function UploadForm({ onDone }) {
   );
 }
 
-function EditForm({ track, onDone }) {
+function EditForm({ track, categories, onDone }) {
   const [title, setTitle] = useState(track.display_name);
   const [artist, setArtist] = useState(track.artist || "");
   const [category, setCategory] = useState(track.genre || "");
@@ -112,7 +128,7 @@ function EditForm({ track, onDone }) {
       <Field label="Category">
         <select value={category} onChange={(e) => setCategory(e.target.value)} className="input">
           <option value="">— none —</option>
-          {CATEGORY_SLUGS.map((c) => <option key={c} value={c}>{c}</option>)}
+          {categories.map((c) => <option key={c.slug} value={c.slug}>{c.display_name}</option>)}
         </select>
       </Field>
       <Field label="Replace thumbnail (optional)">
@@ -133,6 +149,7 @@ function Field({ label, children }) {
 }
 
 export default function AudioPage() {
+  const categories = useCategoryOptions();
   const [items, setItems] = useState([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -142,6 +159,7 @@ export default function AudioPage() {
   const [showUpload, setShowUpload] = useState(false);
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
+  const [toggling, setToggling] = useState(null); // `${id}:${field}` while a PATCH is in flight
 
   const load = useCallback(() => {
     setLoading(true);
@@ -165,6 +183,21 @@ export default function AudioPage() {
     load();
   }
 
+  async function toggleField(item, field) {
+    const key = `${item.id}:${field}`;
+    setToggling(key);
+    try {
+      await fetch(`/api/audio/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ field, value: !item[field] }),
+      });
+      load();
+    } finally {
+      setToggling(null);
+    }
+  }
+
   return (
     <Layout title="Audio">
       <div className="flex flex-wrap items-center gap-3 mb-5">
@@ -176,7 +209,7 @@ export default function AudioPage() {
         />
         <select value={category} onChange={(e) => { setPage(1); setCategory(e.target.value); }} className="input max-w-[160px]">
           <option value="">All categories</option>
-          {CATEGORY_SLUGS.map((c) => <option key={c} value={c}>{c}</option>)}
+          {categories.map((c) => <option key={c.slug} value={c.slug}>{c.display_name}</option>)}
         </select>
         <button onClick={() => setShowUpload(true)} className="btn-gold ml-auto">+ Upload Audio</button>
       </div>
@@ -190,7 +223,7 @@ export default function AudioPage() {
               <th className="px-4 py-3">Category</th>
               <th className="px-4 py-3">Plays</th>
               <th className="px-4 py-3">Storage</th>
-              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Visibility</th>
               <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
@@ -205,12 +238,31 @@ export default function AudioPage() {
                   {t.has_r2 ? <Badge color="green">R2</Badge> : <Badge color="gray">none</Badge>}
                   {t.has_telegram && <Badge color="blue">Telegram</Badge>}
                 </td>
-                <td className="px-4 py-3">{t.hidden ? <Badge color="red">Hidden</Badge> : <Badge color="green">Visible</Badge>}</td>
+                <td className="px-4 py-3">
+                  <div className="flex flex-wrap gap-1.5">
+                    <VisibilityToggle
+                      label="Visible"
+                      hidden={t.hidden}
+                      busy={toggling === `${t.id}:hidden`}
+                      onToggle={() => toggleField(t, "hidden")}
+                    />
+                    <VisibilityToggle
+                      label="Bot"
+                      hidden={t.hidden_bot}
+                      busy={toggling === `${t.id}:hidden_bot`}
+                      onToggle={() => toggleField(t, "hidden_bot")}
+                    />
+                    <VisibilityToggle
+                      label="App"
+                      hidden={t.hidden_app}
+                      busy={toggling === `${t.id}:hidden_app`}
+                      onToggle={() => toggleField(t, "hidden_app")}
+                    />
+                  </div>
+                </td>
                 <td className="px-4 py-3 space-x-2 whitespace-nowrap">
                   <button onClick={() => setEditing(t)} className="text-gold hover:underline text-xs">Edit</button>
-                  <button onClick={() => setDeleting(t)} className="text-red-400 hover:underline text-xs">
-                    {t.hidden ? "Hidden" : "Hide"}
-                  </button>
+                  <button onClick={() => setDeleting(t)} className="text-red-400 hover:underline text-xs">Delete</button>
                 </td>
               </tr>
             ))}
@@ -224,22 +276,22 @@ export default function AudioPage() {
       <Pagination page={page} totalPages={totalPages} onChange={setPage} />
 
       <Modal open={showUpload} title="Upload Audio" onClose={() => setShowUpload(false)}>
-        <UploadForm onDone={() => { setShowUpload(false); load(); }} />
+        <UploadForm categories={categories} onDone={() => { setShowUpload(false); load(); }} />
       </Modal>
 
       <Modal open={!!editing} title="Edit Track" onClose={() => setEditing(null)}>
-        {editing && <EditForm track={editing} onDone={() => { setEditing(null); load(); }} />}
+        {editing && <EditForm track={editing} categories={categories} onDone={() => { setEditing(null); load(); }} />}
       </Modal>
 
-      <Modal open={!!deleting} title="Hide Track" onClose={() => setDeleting(null)}>
+      <Modal open={!!deleting} title="Delete Track" onClose={() => setDeleting(null)}>
         {deleting && (
           <div className="space-y-4">
             <p className="text-sm text-gray-300">
-              Soft-delete <strong>{deleting.display_name}</strong>? This sets it hidden — it stays in the
-              database and can be restored later; it is never actually deleted.
+              Are you sure? This will permanently hide <strong>{deleting.display_name}</strong>. It stays in
+              the database and can be restored later via the Visible toggle; it is never actually deleted.
             </p>
             <div className="flex gap-3">
-              <button onClick={confirmDelete} className="btn-gold flex-1">Confirm Hide</button>
+              <button onClick={confirmDelete} className="flex-1 rounded-lg bg-red-600 hover:bg-red-500 text-white py-2.5 text-sm font-medium transition-colors">Delete</button>
               <button onClick={() => setDeleting(null)} className="flex-1 rounded-lg border border-border py-2.5 text-sm text-gray-300 hover:bg-surface2">Cancel</button>
             </div>
           </div>

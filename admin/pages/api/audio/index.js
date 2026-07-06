@@ -2,6 +2,9 @@
  * GET  /api/audio?page=1&search=&category=          — paginated list (20/page)
  * POST /api/audio  (multipart: title, artist, category, audio, thumbnail)
  *
+ * `category` accepts any of the 5 fixed genre slugs (lib/categories.js) OR a
+ * custom category created via /api/categories — see lib/categoryHelpers.js.
+ *
  * NOTE ON VISIBILITY: uploads here are R2-native and have no Telegram
  * `file_id`. The bot's own catalog/search and the existing Mini App API
  * (api/webapp/featured.js, search.js, handlers/*.py) all filter on
@@ -13,7 +16,7 @@ const { connectToDatabase } = require("../../../lib/db");
 const { withAdminAuth } = require("../../../lib/withAdminAuth");
 const { uploadToR2 } = require("../../../lib/r2");
 const { parseForm, flat, flatFile } = require("../../../lib/parseForm");
-const { CATEGORY_SLUGS } = require("../../../lib/categories");
+const { isValidCategorySlug } = require("../../../lib/categoryHelpers");
 const fs = require("fs");
 
 const PAGE_SIZE = 20;
@@ -27,7 +30,7 @@ async function handleGet(req, res, db) {
   if (search) {
     filter.display_name = { $regex: search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
   }
-  if (category && CATEGORY_SLUGS.includes(category)) {
+  if (category) {
     filter.genre = category;
   }
 
@@ -50,6 +53,8 @@ async function handleGet(req, res, db) {
       genre: d.genre || null,
       play_count: d.play_count || 0,
       hidden: !!d.hidden,
+      hidden_bot: !!d.hidden_bot,
+      hidden_app: !!d.hidden_app,
       has_r2: !!d.r2_url,
       has_telegram: !!d.file_id,
       r2_url: d.r2_url || null,
@@ -74,8 +79,8 @@ async function handlePost(req, res, db) {
   if (!audioFile) {
     return res.status(400).json({ ok: false, error: "An audio file is required." });
   }
-  if (category && !CATEGORY_SLUGS.includes(category)) {
-    return res.status(400).json({ ok: false, error: `Invalid category. Must be one of: ${CATEGORY_SLUGS.join(", ")}` });
+  if (category && !(await isValidCategorySlug(db, category))) {
+    return res.status(400).json({ ok: false, error: `Unknown category "${category}". Create it first on the Categories page.` });
   }
 
   const now = new Date();
@@ -85,6 +90,8 @@ async function handlePost(req, res, db) {
     genre: category || null,
     file_id: null, // R2-native upload — see module note above
     hidden: false,
+    hidden_bot: false,
+    hidden_app: false,
     play_count: 0,
     created_at: now,
   });
@@ -110,8 +117,11 @@ async function handlePost(req, res, db) {
 module.exports = withAdminAuth(async function handler(req, res) {
   try {
     const { db } = await connectToDatabase();
-    if (req.method === "GET") return handleGet(req, res, db);
-    if (req.method === "POST") return handlePost(req, res, db);
+    // These awaits matter — see pages/api/pdfs/index.js for the write-up of
+    // why a bare `return handleX(...)` lets a later rejection escape this
+    // try/catch and surface as an HTML 500 instead of a JSON error body.
+    if (req.method === "GET") return await handleGet(req, res, db);
+    if (req.method === "POST") return await handlePost(req, res, db);
     return res.status(405).json({ ok: false, error: "Method not allowed." });
   } catch (err) {
     console.error("api/audio/index.js error:", err);

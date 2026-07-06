@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import Layout from "../../components/Layout";
 import Modal from "../../components/Modal";
 import Pagination from "../../components/Pagination";
+import VisibilityToggle from "../../components/VisibilityToggle";
 import { requireAdmin } from "../../lib/requireAdmin";
 
 export async function getServerSideProps(context) {
@@ -9,6 +10,8 @@ export async function getServerSideProps(context) {
   if (guard) return guard;
   return { props: {} };
 }
+
+const ACCEPTED_EXTENSIONS = ".pdf,.doc,.docx,.txt,.epub";
 
 function formatBytes(bytes) {
   if (!bytes) return "—";
@@ -25,7 +28,7 @@ function UploadForm({ onDone }) {
 
   async function submit(e) {
     e.preventDefault();
-    if (!file) return setError("Please choose a PDF file.");
+    if (!file) return setError("Please choose a document file.");
     setBusy(true);
     setError("");
     try {
@@ -56,8 +59,8 @@ function UploadForm({ onDone }) {
         <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} className="input" />
       </div>
       <div>
-        <label className="block text-xs text-gray-400 mb-1.5">PDF file (no size limit)</label>
-        <input type="file" accept="application/pdf" required onChange={(e) => setFile(e.target.files[0])} className="input" />
+        <label className="block text-xs text-gray-400 mb-1.5">Document file (PDF, DOC, DOCX, TXT, or EPUB — no size limit)</label>
+        <input type="file" accept={ACCEPTED_EXTENSIONS} required onChange={(e) => setFile(e.target.files[0])} className="input" />
       </div>
       <button disabled={busy} className="btn-gold w-full">{busy ? "Uploading…" : "Upload"}</button>
     </form>
@@ -115,6 +118,7 @@ export default function PdfsPage() {
   const [showUpload, setShowUpload] = useState(false);
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
+  const [toggling, setToggling] = useState(null); // `${id}:${field}` while a PATCH is in flight
 
   const load = useCallback(() => {
     setLoading(true);
@@ -135,6 +139,21 @@ export default function PdfsPage() {
     load();
   }
 
+  async function toggleField(item, field) {
+    const key = `${item.id}:${field}`;
+    setToggling(key);
+    try {
+      await fetch(`/api/pdfs/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ field, value: !item[field] }),
+      });
+      load();
+    } finally {
+      setToggling(null);
+    }
+  }
+
   return (
     <Layout title="PDFs">
       <div className="flex flex-wrap items-center gap-3 mb-5">
@@ -144,7 +163,7 @@ export default function PdfsPage() {
           onChange={(e) => { setPage(1); setSearch(e.target.value); }}
           className="input max-w-xs"
         />
-        <button onClick={() => setShowUpload(true)} className="btn-gold ml-auto">+ Upload PDF</button>
+        <button onClick={() => setShowUpload(true)} className="btn-gold ml-auto">+ Upload Document</button>
       </div>
 
       <div className="bg-surface border border-border rounded-xl overflow-x-auto">
@@ -155,7 +174,7 @@ export default function PdfsPage() {
               <th className="px-4 py-3">Size</th>
               <th className="px-4 py-3">Downloads</th>
               <th className="px-4 py-3">Storage</th>
-              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Visibility</th>
               <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
@@ -169,12 +188,31 @@ export default function PdfsPage() {
                   {p.has_r2 ? <Badge color="green">R2</Badge> : <Badge color="gray">none</Badge>}
                   {p.has_telegram && <Badge color="blue">Telegram</Badge>}
                 </td>
-                <td className="px-4 py-3">{p.hidden ? <Badge color="red">Hidden</Badge> : <Badge color="green">Visible</Badge>}</td>
+                <td className="px-4 py-3">
+                  <div className="flex flex-wrap gap-1.5">
+                    <VisibilityToggle
+                      label="Visible"
+                      hidden={p.hidden}
+                      busy={toggling === `${p.id}:hidden`}
+                      onToggle={() => toggleField(p, "hidden")}
+                    />
+                    <VisibilityToggle
+                      label="Bot"
+                      hidden={p.hidden_bot}
+                      busy={toggling === `${p.id}:hidden_bot`}
+                      onToggle={() => toggleField(p, "hidden_bot")}
+                    />
+                    <VisibilityToggle
+                      label="App"
+                      hidden={p.hidden_app}
+                      busy={toggling === `${p.id}:hidden_app`}
+                      onToggle={() => toggleField(p, "hidden_app")}
+                    />
+                  </div>
+                </td>
                 <td className="px-4 py-3 space-x-2 whitespace-nowrap">
                   <button onClick={() => setEditing(p)} className="text-gold hover:underline text-xs">Edit</button>
-                  <button onClick={() => setDeleting(p)} className="text-red-400 hover:underline text-xs">
-                    {p.hidden ? "Hidden" : "Hide"}
-                  </button>
+                  <button onClick={() => setDeleting(p)} className="text-red-400 hover:underline text-xs">Delete</button>
                 </td>
               </tr>
             ))}
@@ -187,7 +225,7 @@ export default function PdfsPage() {
 
       <Pagination page={page} totalPages={totalPages} onChange={setPage} />
 
-      <Modal open={showUpload} title="Upload PDF" onClose={() => setShowUpload(false)}>
+      <Modal open={showUpload} title="Upload Document" onClose={() => setShowUpload(false)}>
         <UploadForm onDone={() => { setShowUpload(false); load(); }} />
       </Modal>
 
@@ -195,15 +233,15 @@ export default function PdfsPage() {
         {editing && <EditForm pdf={editing} onDone={() => { setEditing(null); load(); }} />}
       </Modal>
 
-      <Modal open={!!deleting} title="Hide PDF" onClose={() => setDeleting(null)}>
+      <Modal open={!!deleting} title="Delete PDF" onClose={() => setDeleting(null)}>
         {deleting && (
           <div className="space-y-4">
             <p className="text-sm text-gray-300">
-              Soft-delete <strong>{deleting.title}</strong>? It stays in the database and can be restored
-              later; it is never actually deleted.
+              Are you sure? This will permanently hide <strong>{deleting.title}</strong>. It stays in the
+              database and can be restored later via the Visible toggle; it is never actually deleted.
             </p>
             <div className="flex gap-3">
-              <button onClick={confirmDelete} className="btn-gold flex-1">Confirm Hide</button>
+              <button onClick={confirmDelete} className="flex-1 rounded-lg bg-red-600 hover:bg-red-500 text-white py-2.5 text-sm font-medium transition-colors">Delete</button>
               <button onClick={() => setDeleting(null)} className="flex-1 rounded-lg border border-border py-2.5 text-sm text-gray-300 hover:bg-surface2">Cancel</button>
             </div>
           </div>

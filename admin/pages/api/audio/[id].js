@@ -1,6 +1,9 @@
 /**
  * PUT    /api/audio/:id  (multipart: title, artist, category, thumbnail?)
  *        Edits metadata; thumbnail file is optional (only re-uploaded if sent).
+ * PATCH  /api/audio/:id  (JSON: { field: "hidden"|"hidden_bot"|"hidden_app", value: boolean })
+ *        Instant visibility toggle — see pages/api/pdfs/[id].js for what each
+ *        field means. Reads its own JSON body manually (see note below).
  * DELETE /api/audio/:id
  *        Soft-delete only — sets hidden:true. Never removes the document.
  */
@@ -9,16 +12,18 @@ const fs = require("fs");
 const { connectToDatabase } = require("../../../lib/db");
 const { withAdminAuth } = require("../../../lib/withAdminAuth");
 const { uploadToR2 } = require("../../../lib/r2");
-const { parseForm, flat, flatFile } = require("../../../lib/parseForm");
-const { CATEGORY_SLUGS } = require("../../../lib/categories");
+const { parseForm, flat, flatFile, readJsonBody } = require("../../../lib/parseForm");
+const { isValidCategorySlug } = require("../../../lib/categoryHelpers");
+
+const TOGGLE_FIELDS = ["hidden", "hidden_bot", "hidden_app"];
 
 async function handlePut(req, res, db, id) {
   const { fields, files } = await parseForm(req);
   const { title, artist, category } = flat(fields);
   const thumbFile = flatFile(files, "thumbnail");
 
-  if (category && !CATEGORY_SLUGS.includes(category)) {
-    return res.status(400).json({ ok: false, error: `Invalid category. Must be one of: ${CATEGORY_SLUGS.join(", ")}` });
+  if (category && !(await isValidCategorySlug(db, category))) {
+    return res.status(400).json({ ok: false, error: `Unknown category "${category}". Create it first on the Categories page.` });
   }
 
   const update = {};
@@ -43,6 +48,34 @@ async function handlePut(req, res, db, id) {
   return res.status(200).json({ ok: true });
 }
 
+async function handlePatch(req, res, db, id) {
+  // This route disables Next.js's default body parser (config.api.bodyParser
+  // = false below) so PUT's multipart thumbnail upload can reach formidable
+  // un-consumed — but that setting applies to every method on this route, so
+  // a JSON PATCH request has to parse its own body instead of using req.body.
+  const body = await readJsonBody(req);
+  const { field, value } = body || {};
+
+  if (!TOGGLE_FIELDS.includes(field)) {
+    return res.status(400).json({ ok: false, error: `field must be one of: ${TOGGLE_FIELDS.join(", ")}` });
+  }
+  if (typeof value !== "boolean") {
+    return res.status(400).json({ ok: false, error: "value must be a boolean." });
+  }
+
+  const update = { [field]: value };
+  if (field === "hidden") {
+    update.hidden_reason = value ? "admin_panel" : null;
+    update.hidden_at = value ? new Date() : null;
+  }
+
+  const result = await db.collection("files").updateOne({ _id: new ObjectId(id) }, { $set: update });
+  if (result.matchedCount === 0) {
+    return res.status(404).json({ ok: false, error: "Track not found." });
+  }
+  return res.status(200).json({ ok: true, [field]: value });
+}
+
 async function handleDelete(req, res, db, id) {
   const result = await db.collection("files").updateOne(
     { _id: new ObjectId(id) },
@@ -62,8 +95,11 @@ module.exports = withAdminAuth(async function handler(req, res) {
 
   try {
     const { db } = await connectToDatabase();
-    if (req.method === "PUT") return handlePut(req, res, db, id);
-    if (req.method === "DELETE") return handleDelete(req, res, db, id);
+    // Awaiting these matters — see pages/api/pdfs/index.js for why a bare
+    // `return handleX(...)` lets errors escape this try/catch as an HTML 500.
+    if (req.method === "PUT") return await handlePut(req, res, db, id);
+    if (req.method === "PATCH") return await handlePatch(req, res, db, id);
+    if (req.method === "DELETE") return await handleDelete(req, res, db, id);
     return res.status(405).json({ ok: false, error: "Method not allowed." });
   } catch (err) {
     console.error("api/audio/[id].js error:", err);
