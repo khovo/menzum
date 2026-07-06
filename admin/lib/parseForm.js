@@ -32,4 +32,25 @@ function flatFile(files, name) {
   return Array.isArray(f) ? f[0] : f || null;
 }
 
-module.exports = { parseForm, flat, flatFile };
+/**
+ * Manually read + JSON.parse a request body on routes that set
+ * `config.api.bodyParser = false` for multipart PUT/POST support — Next.js's
+ * automatic body parser doesn't run on those routes for ANY method, so a
+ * same-route JSON request (e.g. a PATCH toggle) needs to parse itself.
+ */
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (chunk) => { data += chunk; });
+    req.on("end", () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch (err) {
+        reject(new Error("Invalid JSON body."));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+module.exports = { parseForm, flat, flatFile, readJsonBody };

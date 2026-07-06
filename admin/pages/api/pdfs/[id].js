@@ -1,10 +1,21 @@
 /**
  * PUT    /api/pdfs/:id  { title, description }
+ * PATCH  /api/pdfs/:id  { field: "hidden"|"hidden_bot"|"hidden_app", value: boolean }
+ *        Instant visibility toggle — independent of the DELETE soft-delete below.
+ *        hidden      — the master admin-panel visibility flag (all read paths
+ *                       across bot + Mini App already filter on this one).
+ *        hidden_bot  — Telegram-bot-only visibility (admin-panel field only;
+ *                       not yet consumed by handlers/db.py — see note in
+ *                       pages/pdfs/index.js UI).
+ *        hidden_app  — Al-Madih Flutter app-only visibility (admin-panel
+ *                       field only; not yet consumed by api/webapp/*.js).
  * DELETE /api/pdfs/:id  — soft-delete only (hidden:true), never removes the doc.
  */
 const { ObjectId } = require("mongodb");
 const { connectToDatabase } = require("../../../lib/db");
 const { withAdminAuth } = require("../../../lib/withAdminAuth");
+
+const TOGGLE_FIELDS = ["hidden", "hidden_bot", "hidden_app"];
 
 async function handlePut(req, res, db, id) {
   const { title, description } = req.body || {};
@@ -21,6 +32,28 @@ async function handlePut(req, res, db, id) {
     return res.status(404).json({ ok: false, error: "PDF not found." });
   }
   return res.status(200).json({ ok: true });
+}
+
+async function handlePatch(req, res, db, id) {
+  const { field, value } = req.body || {};
+  if (!TOGGLE_FIELDS.includes(field)) {
+    return res.status(400).json({ ok: false, error: `field must be one of: ${TOGGLE_FIELDS.join(", ")}` });
+  }
+  if (typeof value !== "boolean") {
+    return res.status(400).json({ ok: false, error: "value must be a boolean." });
+  }
+
+  const update = { [field]: value };
+  if (field === "hidden") {
+    update.hidden_reason = value ? "admin_panel" : null;
+    update.hidden_at = value ? new Date() : null;
+  }
+
+  const result = await db.collection("pdfs").updateOne({ _id: new ObjectId(id) }, { $set: update });
+  if (result.matchedCount === 0) {
+    return res.status(404).json({ ok: false, error: "PDF not found." });
+  }
+  return res.status(200).json({ ok: true, [field]: value });
 }
 
 async function handleDelete(req, res, db, id) {
@@ -42,8 +75,11 @@ module.exports = withAdminAuth(async function handler(req, res) {
 
   try {
     const { db } = await connectToDatabase();
-    if (req.method === "PUT") return handlePut(req, res, db, id);
-    if (req.method === "DELETE") return handleDelete(req, res, db, id);
+    // Awaiting these matters — see pages/api/pdfs/index.js for why a bare
+    // `return handleX(...)` lets errors escape this try/catch as an HTML 500.
+    if (req.method === "PUT") return await handlePut(req, res, db, id);
+    if (req.method === "PATCH") return await handlePatch(req, res, db, id);
+    if (req.method === "DELETE") return await handleDelete(req, res, db, id);
     return res.status(405).json({ ok: false, error: "Method not allowed." });
   } catch (err) {
     console.error("api/pdfs/[id].js error:", err);

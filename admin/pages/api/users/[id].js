@@ -90,8 +90,10 @@ module.exports = withAdminAuth(async function handler(req, res) {
 
   try {
     const { db } = await connectToDatabase();
-    if (req.method === "GET") return handleGet(req, res, db, userId);
-    if (req.method === "PUT") return handlePut(req, res, db, userId);
+    // Awaiting these matters — see pages/api/pdfs/index.js for why a bare
+    // `return handleX(...)` lets errors escape this try/catch as an HTML 500.
+    if (req.method === "GET") return await handleGet(req, res, db, userId);
+    if (req.method === "PUT") return await handlePut(req, res, db, userId);
     return res.status(405).json({ ok: false, error: "Method not allowed." });
   } catch (err) {
     console.error("api/users/[id].js error:", err);
