@@ -21,7 +21,7 @@ module.exports = async function handler(req, res) {
 
     const { email, password } = req.body || {};
     const adminEmail = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
-    const adminHash = process.env.ADMIN_PASSWORD_HASH;
+    const adminHash = (process.env.ADMIN_PASSWORD_HASH || "").trim();
 
     if (!adminEmail || !adminHash) {
       return res.status(503).json({ ok: false, error: "Admin account not configured on the server." });
@@ -40,8 +40,9 @@ module.exports = async function handler(req, res) {
     // issues without putting the real hash in the log stream.
     console.log('ENV EMAIL:', process.env.ADMIN_EMAIL);
     console.log('ENV HASH exists:', !!process.env.ADMIN_PASSWORD_HASH);
-    console.log('ENV HASH length:', (process.env.ADMIN_PASSWORD_HASH || '').length);
-    console.log('ENV HASH prefix:', (process.env.ADMIN_PASSWORD_HASH || '').slice(0, 7));
+    console.log('ENV HASH raw length:', (process.env.ADMIN_PASSWORD_HASH || '').length);
+    console.log('ENV HASH trimmed length:', adminHash.length);
+    console.log('ENV HASH prefix:', adminHash.slice(0, 7));
     console.log('Input email:', email);
     console.log('bcrypt result:', passwordMatches);
 
