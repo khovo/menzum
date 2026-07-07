@@ -26,7 +26,7 @@ async function handleGet(req, res, db) {
   const search = (req.query.search || "").trim();
   const category = (req.query.category || "").trim();
 
-  const filter = {};
+  const filter = { hidden: { $ne: true } };
   if (search) {
     filter.display_name = { $regex: search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
   }
