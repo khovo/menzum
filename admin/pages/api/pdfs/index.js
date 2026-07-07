@@ -35,7 +35,7 @@ async function handleGet(req, res, db) {
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const search = (req.query.search || "").trim();
 
-  const filter = {};
+  const filter = { hidden: { $ne: true } };
   if (search) {
     filter.title = { $regex: search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
   }
