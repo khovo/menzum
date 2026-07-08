@@ -18,6 +18,7 @@ module.exports = withAdminAuth(async function handler(req, res) {
 
     const [
       totalUsers,
+      totalAppUsers,
       totalAudio,
       totalPdfs,
       totalPlaysAgg,
@@ -28,6 +29,12 @@ module.exports = withAdminAuth(async function handler(req, res) {
       storageAgg,
     ] = await Promise.all([
       db.collection("users").countDocuments({}),
+      // "App users" are Telegram accounts stamped source:"app" the first time
+      // they complete the Flutter app's Login-with-Telegram nonce flow (see
+      // api/webapp/auth.js's "poll" action). Everyone else counts as a bot
+      // user — the two sets overlap conceptually (an app user is still a
+      // Telegram user) but this field distinguishes who has ever used the app.
+      db.collection("users").countDocuments({ source: "app" }),
       db.collection("files").countDocuments({}),
       db.collection("pdfs").countDocuments({}),
 
@@ -98,6 +105,8 @@ module.exports = withAdminAuth(async function handler(req, res) {
       ok: true,
       stats: {
         totalUsers,
+        totalAppUsers,
+        totalBotUsers: totalUsers - totalAppUsers,
         totalAudio,
         totalPdfs,
         totalPlays: totalPlaysAgg[0]?.total ?? 0,

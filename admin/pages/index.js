@@ -21,6 +21,49 @@ function formatBytes(bytes) {
   return `${mb.toFixed(1)} MB`;
 }
 
+function StoragePanel() {
+  const [storage, setStorage] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/dashboard/storage")
+      .then((r) => r.json())
+      .then((d) => d.ok && setStorage(d))
+      .catch(() => {});
+  }, []);
+
+  if (!storage) return null;
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
+      <div className="bg-surface border border-border rounded-xl p-5">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-sm font-medium text-gray-300">R2 Storage</h2>
+          <span className="text-xs text-gray-500">{formatBytes(storage.r2.totalBytes)} used</span>
+        </div>
+        <div className="w-full h-2 rounded-full bg-surface2 overflow-hidden">
+          <div className="h-full bg-gold" style={{ width: `${storage.r2.usedPercent}%` }} />
+        </div>
+        <div className="text-xs text-gray-500 mt-2">
+          {storage.r2.usedPercent.toFixed(1)}% of {formatBytes(storage.r2.limitBytes)}
+          {(storage.r2.audio.truncated || storage.r2.pdf.truncated) && " (partial count — bucket is large)"}
+        </div>
+      </div>
+      <div className="bg-surface border border-border rounded-xl p-5">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-sm font-medium text-gray-300">MongoDB Storage</h2>
+          <span className="text-xs text-gray-500">{formatBytes(storage.mongo.dataSizeBytes)} used</span>
+        </div>
+        <div className="w-full h-2 rounded-full bg-surface2 overflow-hidden">
+          <div className="h-full bg-gold" style={{ width: `${storage.mongo.usedPercent}%` }} />
+        </div>
+        <div className="text-xs text-gray-500 mt-2">
+          {storage.mongo.usedPercent.toFixed(1)}% of {formatBytes(storage.mongo.limitBytes)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -39,13 +82,19 @@ export default function Dashboard() {
 
   return (
     <Layout title="Dashboard">
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
-        <StatCard label="Total Users" value={stats.totalUsers.toLocaleString()} icon="👥" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+        <StatCard label="App Users" value={stats.totalAppUsers.toLocaleString()} icon="📱" />
+        <StatCard label="Bot Users" value={stats.totalBotUsers.toLocaleString()} icon="🤖" />
         <StatCard label="Total Audio" value={stats.totalAudio.toLocaleString()} icon="🎵" />
         <StatCard label="Total PDFs" value={stats.totalPdfs.toLocaleString()} icon="📄" />
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+        <StatCard label="Total Users" value={stats.totalUsers.toLocaleString()} icon="👥" />
         <StatCard label="Total Plays" value={stats.totalPlays.toLocaleString()} icon="▶️" />
         <StatCard label="R2 Storage Used" value={formatBytes(stats.storageUsedBytes)} icon="💾" />
       </div>
+
+      <StoragePanel />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
         <div className="bg-surface border border-border rounded-xl p-5">
