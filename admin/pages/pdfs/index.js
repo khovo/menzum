@@ -136,12 +136,14 @@ export default function PdfsPage() {
   async function confirmDelete() {
     const res = await fetch(`/api/pdfs/${deleting.id}`, { method: "DELETE" });
     const data = await res.json();
-    if (res.ok && data.ok) {
-      // Remove locally right away — soft-delete keeps the doc (hidden:true)
-      // but the admin list shouldn't keep showing it as if nothing happened.
-      setItems((prev) => prev.filter((p) => p.id !== deleting.id));
-    }
     setDeleting(null);
+    if (res.ok && data.ok) {
+      // Refetch from the server rather than only splicing local state — a
+      // slower in-flight GET (e.g. from a just-changed page/search filter)
+      // resolving after this DELETE would otherwise overwrite the optimistic
+      // removal and make the row appear to "come back".
+      load();
+    }
   }
 
   async function toggleField(item, field) {
@@ -152,6 +154,21 @@ export default function PdfsPage() {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ field, value: !item[field] }),
+      });
+      load();
+    } finally {
+      setToggling(null);
+    }
+  }
+
+  async function setStatus(item, status) {
+    const key = `${item.id}:status`;
+    setToggling(key);
+    try {
+      await fetch(`/api/pdfs/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ field: "status", value: status }),
       });
       load();
     } finally {
@@ -179,6 +196,7 @@ export default function PdfsPage() {
               <th className="px-4 py-3">Size</th>
               <th className="px-4 py-3">Downloads</th>
               <th className="px-4 py-3">Storage</th>
+              <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Visibility</th>
               <th className="px-4 py-3">Actions</th>
             </tr>
@@ -192,6 +210,20 @@ export default function PdfsPage() {
                 <td className="px-4 py-3">
                   {p.has_r2 ? <Badge color="green">R2</Badge> : <Badge color="gray">none</Badge>}
                   {p.has_telegram && <Badge color="blue">Telegram</Badge>}
+                </td>
+                <td className="px-4 py-3">
+                  <button
+                    onClick={() => setStatus(p, p.status === "published" ? "draft" : "published")}
+                    disabled={toggling === `${p.id}:status`}
+                    className={`text-[10px] px-2 py-0.5 rounded border font-medium disabled:opacity-50 ${
+                      p.status === "published"
+                        ? "bg-green-950/50 text-green-400 border-green-900 hover:bg-green-900/50"
+                        : "bg-yellow-950/50 text-yellow-400 border-yellow-900 hover:bg-yellow-900/50"
+                    }`}
+                    title={p.status === "published" ? "Click to unpublish (revert to draft)" : "Click to publish"}
+                  >
+                    {p.status === "published" ? "Published" : "Draft — Approve"}
+                  </button>
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-1.5">
@@ -222,7 +254,7 @@ export default function PdfsPage() {
               </tr>
             ))}
             {!loading && items.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-500">No PDFs found.</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-500">No PDFs found.</td></tr>
             )}
           </tbody>
         </table>

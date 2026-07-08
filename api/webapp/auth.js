@@ -73,6 +73,13 @@ module.exports = async function handler(req, res) {
       }
       const token = jwtSign({ uid: doc.user_id });
       await db.collection("login_sessions").deleteOne({ _id: nonce });
+      // Stamp this Telegram account as an app user the first time it
+      // completes the mobile Login-with-Telegram flow (as opposed to the
+      // Mini App's initData path below, or bot-only usage) — lets the admin
+      // dashboard report app vs. bot user counts separately.
+      db.collection("users")
+        .updateOne({ _id: doc.user_id }, { $set: { source: "app" } }, { upsert: true })
+        .catch((e) => console.error("auth.js: failed to stamp source=app:", e));
       return res.status(200).json({
         ok: true,
         status: "linked",

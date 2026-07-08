@@ -16,6 +16,7 @@ const { connectToDatabase } = require("../../../lib/db");
 const { withAdminAuth } = require("../../../lib/withAdminAuth");
 
 const TOGGLE_FIELDS = ["hidden", "hidden_bot", "hidden_app"];
+const STATUS_VALUES = ["draft", "published"];
 
 async function handlePut(req, res, db, id) {
   const { title, description } = req.body || {};
@@ -36,8 +37,20 @@ async function handlePut(req, res, db, id) {
 
 async function handlePatch(req, res, db, id) {
   const { field, value } = req.body || {};
+
+  if (field === "status") {
+    if (!STATUS_VALUES.includes(value)) {
+      return res.status(400).json({ ok: false, error: `value must be one of: ${STATUS_VALUES.join(", ")}` });
+    }
+    const result = await db.collection("pdfs").updateOne({ _id: new ObjectId(id) }, { $set: { status: value } });
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ ok: false, error: "PDF not found." });
+    }
+    return res.status(200).json({ ok: true, field, value });
+  }
+
   if (!TOGGLE_FIELDS.includes(field)) {
-    return res.status(400).json({ ok: false, error: `field must be one of: ${TOGGLE_FIELDS.join(", ")}` });
+    return res.status(400).json({ ok: false, error: `field must be one of: ${TOGGLE_FIELDS.join(", ")}, status` });
   }
   if (typeof value !== "boolean") {
     return res.status(400).json({ ok: false, error: "value must be a boolean." });

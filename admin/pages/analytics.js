@@ -26,7 +26,7 @@ export default function AnalyticsPage() {
   if (error) return <Layout title="Analytics"><p className="text-red-400">{error}</p></Layout>;
   if (!data) return <Layout title="Analytics"><p className="text-gray-500">Loading…</p></Layout>;
 
-  const { userGrowth, playsByCategory, topPdfs } = data;
+  const { userGrowth, playsByCategory, topPdfs, dailyPlays, topTracks } = data;
 
   return (
     <Layout title="Analytics">
@@ -45,6 +45,21 @@ export default function AnalyticsPage() {
         </div>
 
         <div className="bg-surface border border-border rounded-xl p-5">
+          <h2 className="text-sm font-medium text-gray-300 mb-4">Plays per Day (last 30 days)</h2>
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart data={dailyPlays}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" />
+              <XAxis dataKey="date" stroke="#666" fontSize={11} />
+              <YAxis stroke="#666" fontSize={11} allowDecimals={false} />
+              <Tooltip contentStyle={{ background: "#141414", border: "1px solid #2a2a2a", borderRadius: 8 }} />
+              <Line type="monotone" dataKey="plays" stroke="#C9A84C" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <div className="bg-surface border border-border rounded-xl p-5">
           <h2 className="text-sm font-medium text-gray-300 mb-4">Plays per Category</h2>
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={playsByCategory}>
@@ -53,6 +68,26 @@ export default function AnalyticsPage() {
               <YAxis stroke="#666" fontSize={11} allowDecimals={false} />
               <Tooltip contentStyle={{ background: "#141414", border: "1px solid #2a2a2a", borderRadius: 8 }} />
               <Bar dataKey="plays" fill="#C9A84C" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="bg-surface border border-border rounded-xl p-5">
+          <h2 className="text-sm font-medium text-gray-300 mb-4">Top 10 Most Played Tracks</h2>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={topTracks} layout="vertical" margin={{ left: 40 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" horizontal={false} />
+              <XAxis type="number" stroke="#666" fontSize={11} allowDecimals={false} />
+              <YAxis
+                type="category"
+                dataKey="name"
+                stroke="#666"
+                fontSize={10}
+                width={120}
+                tickFormatter={(v) => (v.length > 18 ? v.slice(0, 18) + "…" : v)}
+              />
+              <Tooltip contentStyle={{ background: "#141414", border: "1px solid #2a2a2a", borderRadius: 8 }} />
+              <Bar dataKey="plays" fill="#C9A84C" radius={[0, 4, 4, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
