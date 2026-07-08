@@ -11,13 +11,23 @@
  *     if (guard) return guard;
  *     return { props: {} };
  *   }
+ *
+ * Pass { permission } (a lib/roles.js PERMISSIONS value) to also require the
+ * session's role to have that permission — a role without it is bounced to
+ * the dashboard instead of rendering the page:
+ *   const guard = requireAdmin(ctx, { permission: PERMISSIONS.ADMINS });
  */
 const { getAdminFromCookieHeader } = require("./auth");
+const { hasPermission } = require("./roles");
 
-function requireAdmin(context) {
+function requireAdmin(context, options = {}) {
+  const { permission } = options;
   const admin = getAdminFromCookieHeader(context.req.headers.cookie);
   if (!admin) {
     return { redirect: { destination: "/login", permanent: false } };
+  }
+  if (permission && !hasPermission(admin.role, permission)) {
+    return { redirect: { destination: "/", permanent: false } };
   }
   return null;
 }

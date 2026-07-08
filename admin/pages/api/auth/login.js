@@ -1,12 +1,20 @@
 /**
  * POST /api/auth/login  { email, password }
- * No auth required (this IS the auth entry point). Validates against the
- * single admin account (env vars) and sets the httpOnly session cookie.
+ * No auth required (this IS the auth entry point). Sets the httpOnly session
+ * cookie on success. Two account sources are checked:
  *
- * "password" here is really a shared secret (ADMIN_SECRET) checked with a
- * constant-time comparison, not a hashed/salted password — see lib/auth.js.
+ *   1. The original single super-admin, sourced from env vars (ADMIN_EMAIL /
+ *      ADMIN_SECRET), checked with a constant-time comparison — not a
+ *      hashed/salted password, see lib/auth.js. Always resolves to
+ *      ROLES.SUPER_ADMIN. Kept for backward compatibility.
+ *   2. Additional admins created via the panel, stored in the `admins`
+ *      collection with a role from lib/roles.js and a scrypt-hashed secret
+ *      (see lib/adminUsers.js).
  */
 const { checkSecret, signAdminToken, serializeSessionCookie } = require("../../../lib/auth");
+const { verifyAdminCredentials } = require("../../../lib/adminUsers");
+const { connectToDatabase } = require("../../../lib/db");
+const { ROLES } = require("../../../lib/roles");
 
 module.exports = async function handler(req, res) {
   try {
@@ -15,26 +23,27 @@ module.exports = async function handler(req, res) {
     }
 
     const { email, password } = req.body || {};
-    const adminEmail = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
-    const adminSecret = (process.env.ADMIN_SECRET || "").trim();
-
-    if (!adminEmail || !adminSecret) {
-      return res.status(503).json({ ok: false, error: "Admin account not configured on the server." });
-    }
     if (!email || !password) {
       return res.status(400).json({ ok: false, error: "Email and password are required." });
     }
 
-    const emailMatches = String(email).trim().toLowerCase() === adminEmail;
-    const secretMatches = checkSecret(password, adminSecret);
+    const normEmail = String(email).trim().toLowerCase();
+    const envEmail = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+    const envSecret = (process.env.ADMIN_SECRET || "").trim();
 
-    // Always run both checks (even when email is already wrong) so failed-login
-    // timing doesn't leak which part (email vs password) was incorrect.
-    if (!emailMatches || !secretMatches) {
+    if (envEmail && envSecret && normEmail === envEmail && checkSecret(password, envSecret)) {
+      const token = signAdminToken({ sub: "env-admin", email: envEmail, role: ROLES.SUPER_ADMIN, name: "Super Admin" });
+      res.setHeader("Set-Cookie", serializeSessionCookie(token));
+      return res.status(200).json({ ok: true });
+    }
+
+    const { db } = await connectToDatabase();
+    const admin = await verifyAdminCredentials(db, normEmail, password);
+    if (!admin) {
       return res.status(401).json({ ok: false, error: "Invalid email or password." });
     }
 
-    const token = signAdminToken();
+    const token = signAdminToken(admin);
     res.setHeader("Set-Cookie", serializeSessionCookie(token));
     return res.status(200).json({ ok: true });
   } catch (err) {
