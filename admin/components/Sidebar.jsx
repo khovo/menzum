@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import clsx from "clsx";
-import { PERMISSIONS, ROLE_LABELS, hasPermission } from "../lib/roles";
+import { PERMISSIONS, hasPermission } from "../lib/roles";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: "📊", permission: PERMISSIONS.DASHBOARD },
@@ -16,21 +15,10 @@ const NAV = [
   { href: "/admins", label: "Admins", icon: "🛡️", permission: PERMISSIONS.ADMINS },
 ];
 
-export default function Sidebar() {
+/** admin is passed down from Layout (fetched once via /api/auth/me there,
+ *  shared with the header) rather than fetched again here. */
+export default function Sidebar({ admin }) {
   const router = useRouter();
-  const [admin, setAdmin] = useState(null);
-
-  useEffect(() => {
-    fetch("/api/auth/me")
-      .then((r) => r.json())
-      .then((d) => d.ok && setAdmin(d.admin))
-      .catch(() => {});
-  }, []);
-
-  async function handleLogout() {
-    await fetch("/api/auth/logout", { method: "POST" });
-    router.push("/login");
-  }
 
   // While the role hasn't loaded yet, show every item rather than flashing
   // an empty sidebar — getServerSideProps' requireAdmin() already guarantees
@@ -54,33 +42,18 @@ export default function Sidebar() {
               key={item.href}
               href={item.href}
               className={clsx(
-                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors",
+                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors border-l-2",
                 active
-                  ? "bg-gold/10 text-gold border border-gold/30"
-                  : "text-gray-400 hover:text-gray-100 hover:bg-surface2"
+                  ? "bg-gold/10 text-gold border-gold"
+                  : "text-gray-400 border-transparent hover:text-gray-100 hover:bg-surface2"
               )}
             >
-              <span>{item.icon}</span>
+              <span className={clsx("text-base", !active && "opacity-70")}>{item.icon}</span>
               <span>{item.label}</span>
             </Link>
           );
         })}
       </nav>
-
-      <div className="p-3 border-t border-border">
-        {admin && (
-          <div className="px-3 pb-2 mb-1">
-            <div className="text-xs text-gray-300 truncate">{admin.name || admin.email}</div>
-            <div className="text-[10px] text-gold/80 mt-0.5">{ROLE_LABELS[admin.role] || admin.role}</div>
-          </div>
-        )}
-        <button
-          onClick={handleLogout}
-          className="w-full px-3 py-2.5 rounded-lg text-sm text-gray-400 hover:text-red-400 hover:bg-surface2 transition-colors text-left"
-        >
-          🚪 Logout
-        </button>
-      </div>
     </aside>
   );
 }
