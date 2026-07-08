@@ -51,8 +51,13 @@ module.exports = withOptionalAuth(async function handler(req, res) {
     const categoryDocs = await db.collection("categories").find({}, { projection: { _id: 1 } }).toArray();
     const validCategories = new Set([...FIXED_GENRES, ...categoryDocs.map((d) => d._id)]);
 
-    // Base filter — every category excludes hidden docs.
-    const filter = { file_id: { $exists: true }, hidden: { $ne: true } };
+    // Base filter — every category excludes hidden docs (both the master
+    // `hidden` flag and the app-only `hidden_app` flag). No longer requires
+    // `file_id` to exist: R2-native tracks (admin-panel uploads with no
+    // Telegram file_id) must also appear in the app feed — the client falls
+    // back to `r2_url` for playback when `file_id` isn't present (see
+    // audio_handler.dart's `hasR2Url` check).
+    const filter = { hidden: { $ne: true }, hidden_app: { $ne: true } };
     if (category === "neshida") {
       // Auto-detected from the title — no stored field needed.
       filter.display_name = { $regex: "ነሺዳ|neshida", $options: "i" };
@@ -75,7 +80,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
     // Fetch limit+1 to cheaply detect whether another page exists
     const [tracks, dbUser] = await Promise.all([
       db.collection("files")
-        .find(filter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1, genre: 1, r2_url: 1 } })
+        .find(filter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1, thumb_url: 1, genre: 1, r2_url: 1 } })
         .sort(sort)
         .limit(limit + 1)
         .toArray(),
@@ -99,6 +104,9 @@ module.exports = withOptionalAuth(async function handler(req, res) {
       audio_url:   `${base}/api/webapp/play?id=${t._id}&action=stream`,
       thumb_url:   t.thumb_file_id ? `${base}/api/webapp/thumb?id=${t._id}` : null,
       r2_url:      t.r2_url || null,
+      // Admin-panel-set R2 cover image (raw `thumb_url` field on the Mongo
+      // doc — distinct from the computed Telegram-CDN `thumb_url` above).
+      r2_thumb_url: t.thumb_url || null,
     }));
 
     return res.status(200).json({

@@ -195,12 +195,14 @@ export default function AudioPage() {
   async function confirmDelete() {
     const res = await fetch(`/api/audio/${deleting.id}`, { method: "DELETE" });
     const data = await res.json();
-    if (res.ok && data.ok) {
-      // Remove locally right away — soft-delete keeps the doc (hidden:true)
-      // but the admin list shouldn't keep showing it as if nothing happened.
-      setItems((prev) => prev.filter((t) => t.id !== deleting.id));
-    }
     setDeleting(null);
+    if (res.ok && data.ok) {
+      // Refetch from the server rather than only splicing local state — a
+      // slower in-flight GET (e.g. from a just-changed page/search/category
+      // filter) resolving after this DELETE would otherwise overwrite the
+      // optimistic removal and make the row appear to "come back".
+      load();
+    }
   }
 
   async function toggleField(item, field) {
