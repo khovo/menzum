@@ -89,10 +89,17 @@ function UploadForm({ categories, onDone }) {
 function EditForm({ track, categories, onDone }) {
   const [title, setTitle] = useState(track.display_name);
   const [artist, setArtist] = useState(track.artist || "");
-  const [category, setCategory] = useState(track.genre || "");
+  // genre may be a legacy single string or the current array shape — normalize either way.
+  const [selectedCategories, setSelectedCategories] = useState(
+    Array.isArray(track.genre) ? track.genre : track.genre ? [track.genre] : []
+  );
   const [thumbFile, setThumbFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  function toggleCategory(slug, checked) {
+    setSelectedCategories((prev) => (checked ? [...prev, slug] : prev.filter((s) => s !== slug)));
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -102,7 +109,7 @@ function EditForm({ track, categories, onDone }) {
       const fd = new FormData();
       fd.append("title", title);
       fd.append("artist", artist);
-      fd.append("category", category);
+      fd.append("category", selectedCategories.join(","));
       if (thumbFile) fd.append("thumbnail", thumbFile);
 
       const res = await fetch(`/api/audio/${track.id}`, { method: "PUT", body: fd });
@@ -125,11 +132,19 @@ function EditForm({ track, categories, onDone }) {
       <Field label="Artist">
         <input value={artist} onChange={(e) => setArtist(e.target.value)} className="input" />
       </Field>
-      <Field label="Category">
-        <select value={category} onChange={(e) => setCategory(e.target.value)} className="input">
-          <option value="">— none —</option>
-          {categories.map((c) => <option key={c.slug} value={c.slug}>{c.display_name}</option>)}
-        </select>
+      <Field label="Categories">
+        <div className="grid grid-cols-2 gap-1.5 max-h-40 overflow-y-auto border border-border rounded-lg p-2">
+          {categories.map((c) => (
+            <label key={c.slug} className="flex items-center gap-2 text-sm text-gray-300">
+              <input
+                type="checkbox"
+                checked={selectedCategories.includes(c.slug)}
+                onChange={(e) => toggleCategory(c.slug, e.target.checked)}
+              />
+              {c.display_name}
+            </label>
+          ))}
+        </div>
       </Field>
       <Field label="Replace thumbnail (optional)">
         <input type="file" accept="image/*" onChange={(e) => setThumbFile(e.target.files[0])} className="input" />
@@ -237,7 +252,9 @@ export default function AudioPage() {
               <tr key={t.id} className="border-b border-border last:border-0 hover:bg-surface2/50">
                 <td className="px-4 py-3 text-gray-200 max-w-[240px] truncate">{t.display_name}</td>
                 <td className="px-4 py-3 text-gray-400">{t.artist || "—"}</td>
-                <td className="px-4 py-3 text-gray-400">{t.genre || "—"}</td>
+                <td className="px-4 py-3 text-gray-400">
+                  {Array.isArray(t.genre) ? (t.genre.join(", ") || "—") : (t.genre || "—")}
+                </td>
                 <td className="px-4 py-3 text-gray-400">{t.play_count}</td>
                 <td className="px-4 py-3">
                   {t.has_r2 ? <Badge color="green">R2</Badge> : <Badge color="gray">none</Badge>}

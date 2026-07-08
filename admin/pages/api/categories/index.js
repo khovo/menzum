@@ -3,7 +3,9 @@
  *                                 each with editable display name + track count
  * POST   /api/categories  { display_name }        — create a new custom category
  *          (slug is the display name as typed, trimmed only — any script/charset)
- * PUT    /api/categories  { slug, display_name }  — rename a fixed or custom slug
+ * PUT    /api/categories  { slug, display_name? , sort_order? }
+ *          — rename a fixed/custom slug and/or set its sort_order (either field
+ *            may be omitted; at least one is required)
  * DELETE /api/categories?slug=xxx                 — remove a custom category
  *          (fixed categories can never be deleted, only renamed)
  *
@@ -39,10 +41,15 @@ async function handlePost(req, res, db) {
     return res.status(409).json({ ok: false, error: `Category "${slug}" already exists.` });
   }
 
+  // Append new custom categories after the fixed 5 + any existing custom
+  // ones, so it starts at the end of the list rather than colliding with
+  // the default sort_order listAllCategories() would otherwise compute.
+  const customCount = await db.collection("categories").countDocuments({ _id: { $nin: CATEGORY_SLUGS } });
   await db.collection("categories").insertOne({
     _id: slug,
     slug,
     display_name: slug,
+    sort_order: CATEGORY_SLUGS.length + customCount,
     created_at: new Date(),
     custom: true,
   });
@@ -65,21 +72,33 @@ async function handleDelete(req, res, db) {
 }
 
 async function handlePut(req, res, db) {
-  const { slug, display_name } = req.body || {};
+  const { slug, display_name, sort_order } = req.body || {};
   if (!(await isValidCategorySlug(db, slug))) {
     return res.status(400).json({
       ok: false,
       error: `Invalid slug. Must be one of the fixed categories (${CATEGORY_SLUGS.join(", ")}) or an existing custom category.`,
     });
   }
-  if (!display_name || !String(display_name).trim()) {
-    return res.status(400).json({ ok: false, error: "display_name is required." });
+
+  const update = {};
+  if (display_name !== undefined) {
+    if (!String(display_name).trim()) {
+      return res.status(400).json({ ok: false, error: "display_name is required." });
+    }
+    update.display_name = String(display_name).trim();
   }
-  await db.collection("categories").updateOne(
-    { _id: slug },
-    { $set: { display_name: String(display_name).trim() } },
-    { upsert: true }
-  );
+  if (sort_order !== undefined) {
+    const n = Number(sort_order);
+    if (!Number.isFinite(n)) {
+      return res.status(400).json({ ok: false, error: "sort_order must be a number." });
+    }
+    update.sort_order = n;
+  }
+  if (Object.keys(update).length === 0) {
+    return res.status(400).json({ ok: false, error: "Nothing to update — pass display_name and/or sort_order." });
+  }
+
+  await db.collection("categories").updateOne({ _id: slug }, { $set: update }, { upsert: true });
   return res.status(200).json({ ok: true });
 }
 

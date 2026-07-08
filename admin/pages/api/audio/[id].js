@@ -22,14 +22,23 @@ async function handlePut(req, res, db, id) {
   const { title, artist, category } = flat(fields);
   const thumbFile = flatFile(files, "thumbnail");
 
-  if (category && !(await isValidCategorySlug(db, category))) {
-    return res.status(400).json({ ok: false, error: `Unknown category "${category}". Create it first on the Categories page.` });
+  // genre is stored as an array — the edit form's multi-select checkboxes
+  // send the chosen slugs joined by commas.
+  const genres = category !== undefined
+    ? category.split(",").map((c) => c.trim()).filter(Boolean)
+    : undefined;
+  if (genres) {
+    for (const g of genres) {
+      if (!(await isValidCategorySlug(db, g))) {
+        return res.status(400).json({ ok: false, error: `Unknown category "${g}". Create it first on the Categories page.` });
+      }
+    }
   }
 
   const update = {};
   if (title !== undefined && title.trim()) update.display_name = title.trim();
   if (artist !== undefined) update.artist = artist.trim() || null;
-  if (category !== undefined) update.genre = category || null;
+  if (genres !== undefined) update.genre = genres;
 
   if (thumbFile) {
     const thumbBuf = fs.readFileSync(thumbFile.filepath);
