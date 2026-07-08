@@ -17,7 +17,7 @@ module.exports = withAdminAuth(async function handler(req, res) {
     const now = new Date();
     const since30d = new Date(now - 30 * 86_400_000);
 
-    const [growthRaw, playsByGenreRaw, topPdfs] = await Promise.all([
+    const [growthRaw, playsByGenreRaw, topPdfs, dailyPlaysRaw, topTracks] = await Promise.all([
       db.collection("users").aggregate([
         { $match: { joined_at: { $gte: since30d } } },
         {
@@ -38,6 +38,26 @@ module.exports = withAdminAuth(async function handler(req, res) {
         .sort({ download_count: -1 })
         .limit(10)
         .toArray(),
+
+      // Same source as dashboard/stats.js's dailyPlays: users.listen_history
+      // is the only per-play timestamped record kept anywhere in this system.
+      db.collection("users").aggregate([
+        { $match: { listen_history: { $exists: true, $ne: [] } } },
+        { $unwind: "$listen_history" },
+        { $match: { "listen_history.played_at": { $gte: since30d } } },
+        {
+          $group: {
+            _id: { $dateToString: { format: "%Y-%m-%d", date: "$listen_history.played_at" } },
+            count: { $sum: 1 },
+          },
+        },
+      ]).toArray(),
+
+      db.collection("files")
+        .find({}, { projection: { display_name: 1, play_count: 1 } })
+        .sort({ play_count: -1 })
+        .limit(10)
+        .toArray(),
     ]);
 
     const growthMap = {};
@@ -53,10 +73,24 @@ module.exports = withAdminAuth(async function handler(req, res) {
     for (const row of playsByGenreRaw) playsMap[row._id] = row.plays;
     const playsByCategory = CATEGORY_SLUGS.map((slug) => ({ category: slug, plays: playsMap[slug] ?? 0 }));
 
+    const dailyPlaysMap = {};
+    for (const row of dailyPlaysRaw) dailyPlaysMap[row._id] = row.count;
+    const dailyPlays = [];
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(now - i * 86_400_000);
+      const key = d.toISOString().slice(0, 10);
+      dailyPlays.push({ date: key.slice(5), plays: dailyPlaysMap[key] ?? 0 });
+    }
+
     return res.status(200).json({
       ok: true,
       userGrowth,
       playsByCategory,
+      dailyPlays,
+      topTracks: topTracks.map((t) => ({
+        name: t.display_name || "Unknown",
+        plays: t.play_count || 0,
+      })),
       topPdfs: topPdfs.map((p) => ({
         id: p._id.toString(),
         title: p.title || "Untitled",
