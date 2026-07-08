@@ -1,9 +1,12 @@
-import { useEffect, useState, useCallback } from "react";
+import { Fragment, useEffect, useState, useCallback } from "react";
 import Layout from "../../components/Layout";
 import Modal from "../../components/Modal";
 import Pagination from "../../components/Pagination";
 import VisibilityToggle from "../../components/VisibilityToggle";
+import BulkUploadModal from "../../components/BulkUploadModal";
 import { requireAdmin } from "../../lib/requireAdmin";
+
+const PUBLIC_STREAM_BASE = "https://menzum.vercel.app/api/webapp/play";
 
 export async function getServerSideProps(context) {
   const guard = requireAdmin(context);
@@ -172,9 +175,11 @@ export default function AudioPage() {
   const [category, setCategory] = useState("");
   const [loading, setLoading] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
+  const [showBulkUpload, setShowBulkUpload] = useState(false);
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
   const [toggling, setToggling] = useState(null); // `${id}:${field}` while a PATCH is in flight
+  const [previewing, setPreviewing] = useState(null); // track id currently expanded for preview
 
   const load = useCallback(() => {
     setLoading(true);
@@ -220,6 +225,21 @@ export default function AudioPage() {
     }
   }
 
+  async function setStatus(item, status) {
+    const key = `${item.id}:status`;
+    setToggling(key);
+    try {
+      await fetch(`/api/audio/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ field: "status", value: status }),
+      });
+      load();
+    } finally {
+      setToggling(null);
+    }
+  }
+
   return (
     <Layout title="Audio">
       <div className="flex flex-wrap items-center gap-3 mb-5">
@@ -233,7 +253,8 @@ export default function AudioPage() {
           <option value="">All categories</option>
           {categories.map((c) => <option key={c.slug} value={c.slug}>{c.display_name}</option>)}
         </select>
-        <button onClick={() => setShowUpload(true)} className="btn-gold ml-auto">+ Upload Audio</button>
+        <button onClick={() => setShowBulkUpload(true)} className="rounded-lg border border-gold/40 text-gold px-4 py-2 text-sm hover:bg-gold/10 transition-colors">⬆ Bulk Upload</button>
+        <button onClick={() => setShowUpload(true)} className="btn-gold">+ Upload Audio</button>
       </div>
 
       <div className="bg-surface border border-border rounded-xl overflow-x-auto">
@@ -245,53 +266,89 @@ export default function AudioPage() {
               <th className="px-4 py-3">Category</th>
               <th className="px-4 py-3">Plays</th>
               <th className="px-4 py-3">Storage</th>
+              <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Visibility</th>
               <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {items.map((t) => (
-              <tr key={t.id} className="border-b border-border last:border-0 hover:bg-surface2/50">
-                <td className="px-4 py-3 text-gray-200 max-w-[240px] truncate">{t.display_name}</td>
-                <td className="px-4 py-3 text-gray-400">{t.artist || "—"}</td>
-                <td className="px-4 py-3 text-gray-400">
-                  {Array.isArray(t.genre) ? (t.genre.join(", ") || "—") : (t.genre || "—")}
-                </td>
-                <td className="px-4 py-3 text-gray-400">{t.play_count}</td>
-                <td className="px-4 py-3">
-                  {t.has_r2 ? <Badge color="green">R2</Badge> : <Badge color="gray">none</Badge>}
-                  {t.has_telegram && <Badge color="blue">Telegram</Badge>}
-                </td>
-                <td className="px-4 py-3">
-                  <div className="flex flex-wrap gap-1.5">
-                    <VisibilityToggle
-                      label="Visible"
-                      hidden={t.hidden}
-                      busy={toggling === `${t.id}:hidden`}
-                      onToggle={() => toggleField(t, "hidden")}
-                    />
-                    <VisibilityToggle
-                      label="Bot"
-                      hidden={t.hidden_bot}
-                      busy={toggling === `${t.id}:hidden_bot`}
-                      onToggle={() => toggleField(t, "hidden_bot")}
-                    />
-                    <VisibilityToggle
-                      label="App"
-                      hidden={t.hidden_app}
-                      busy={toggling === `${t.id}:hidden_app`}
-                      onToggle={() => toggleField(t, "hidden_app")}
-                    />
-                  </div>
-                </td>
-                <td className="px-4 py-3 space-x-2 whitespace-nowrap">
-                  <button onClick={() => setEditing(t)} className="text-gold hover:underline text-xs">Edit</button>
-                  <button onClick={() => setDeleting(t)} className="text-red-400 hover:underline text-xs">Delete</button>
-                </td>
-              </tr>
-            ))}
+            {items.map((t) => {
+              const previewSrc = t.r2_url || `${PUBLIC_STREAM_BASE}?id=${t.id}&action=stream`;
+              return (
+              <Fragment key={t.id}>
+                <tr className="border-b border-border last:border-0 hover:bg-surface2/50">
+                  <td className="px-4 py-3 text-gray-200 max-w-[240px] truncate">
+                    <button
+                      onClick={() => setPreviewing(previewing === t.id ? null : t.id)}
+                      className="mr-1.5 text-gold hover:text-gold-bright"
+                      title="Preview"
+                    >
+                      {previewing === t.id ? "⏸" : "▶"}
+                    </button>
+                    {t.display_name}
+                  </td>
+                  <td className="px-4 py-3 text-gray-400">{t.artist || "—"}</td>
+                  <td className="px-4 py-3 text-gray-400">
+                    {Array.isArray(t.genre) ? (t.genre.join(", ") || "—") : (t.genre || "—")}
+                  </td>
+                  <td className="px-4 py-3 text-gray-400">{t.play_count}</td>
+                  <td className="px-4 py-3">
+                    {t.has_r2 ? <Badge color="green">R2</Badge> : <Badge color="gray">none</Badge>}
+                    {t.has_telegram && <Badge color="blue">Telegram</Badge>}
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => setStatus(t, t.status === "published" ? "draft" : "published")}
+                      disabled={toggling === `${t.id}:status`}
+                      className={`text-[10px] px-2 py-0.5 rounded border font-medium disabled:opacity-50 ${
+                        t.status === "published"
+                          ? "bg-green-950/50 text-green-400 border-green-900 hover:bg-green-900/50"
+                          : "bg-yellow-950/50 text-yellow-400 border-yellow-900 hover:bg-yellow-900/50"
+                      }`}
+                      title={t.status === "published" ? "Click to unpublish (revert to draft)" : "Click to publish"}
+                    >
+                      {t.status === "published" ? "Published" : "Draft — Approve"}
+                    </button>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-wrap gap-1.5">
+                      <VisibilityToggle
+                        label="Visible"
+                        hidden={t.hidden}
+                        busy={toggling === `${t.id}:hidden`}
+                        onToggle={() => toggleField(t, "hidden")}
+                      />
+                      <VisibilityToggle
+                        label="Bot"
+                        hidden={t.hidden_bot}
+                        busy={toggling === `${t.id}:hidden_bot`}
+                        onToggle={() => toggleField(t, "hidden_bot")}
+                      />
+                      <VisibilityToggle
+                        label="App"
+                        hidden={t.hidden_app}
+                        busy={toggling === `${t.id}:hidden_app`}
+                        onToggle={() => toggleField(t, "hidden_app")}
+                      />
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 space-x-2 whitespace-nowrap">
+                    <button onClick={() => setEditing(t)} className="text-gold hover:underline text-xs">Edit</button>
+                    <button onClick={() => setDeleting(t)} className="text-red-400 hover:underline text-xs">Delete</button>
+                  </td>
+                </tr>
+                {previewing === t.id && (
+                  <tr className="border-b border-border last:border-0 bg-surface2/40">
+                    <td colSpan={8} className="px-4 py-3">
+                      <audio controls autoPlay src={previewSrc} className="w-full h-9" onEnded={() => setPreviewing(null)} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+              );
+            })}
             {!loading && items.length === 0 && (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-500">No tracks found.</td></tr>
+              <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-500">No tracks found.</td></tr>
             )}
           </tbody>
         </table>
@@ -301,6 +358,10 @@ export default function AudioPage() {
 
       <Modal open={showUpload} title="Upload Audio" onClose={() => setShowUpload(false)}>
         <UploadForm categories={categories} onDone={() => { setShowUpload(false); load(); }} />
+      </Modal>
+
+      <Modal open={showBulkUpload} title="Bulk Upload Audio" onClose={() => setShowBulkUpload(false)}>
+        <BulkUploadModal categories={categories} onDone={() => { setShowBulkUpload(false); load(); }} />
       </Modal>
 
       <Modal open={!!editing} title="Edit Track" onClose={() => setEditing(null)}>

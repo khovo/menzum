@@ -16,6 +16,7 @@ const { parseForm, flat, flatFile, readJsonBody } = require("../../../lib/parseF
 const { isValidCategorySlug } = require("../../../lib/categoryHelpers");
 
 const TOGGLE_FIELDS = ["hidden", "hidden_bot", "hidden_app"];
+const STATUS_VALUES = ["draft", "published"];
 
 async function handlePut(req, res, db, id) {
   const { fields, files } = await parseForm(req);
@@ -65,8 +66,19 @@ async function handlePatch(req, res, db, id) {
   const body = await readJsonBody(req);
   const { field, value } = body || {};
 
+  if (field === "status") {
+    if (!STATUS_VALUES.includes(value)) {
+      return res.status(400).json({ ok: false, error: `value must be one of: ${STATUS_VALUES.join(", ")}` });
+    }
+    const result = await db.collection("files").updateOne({ _id: new ObjectId(id) }, { $set: { status: value } });
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ ok: false, error: "Track not found." });
+    }
+    return res.status(200).json({ ok: true, field, value });
+  }
+
   if (!TOGGLE_FIELDS.includes(field)) {
-    return res.status(400).json({ ok: false, error: `field must be one of: ${TOGGLE_FIELDS.join(", ")}` });
+    return res.status(400).json({ ok: false, error: `field must be one of: ${TOGGLE_FIELDS.join(", ")}, status` });
   }
   if (typeof value !== "boolean") {
     return res.status(400).json({ ok: false, error: "value must be a boolean." });

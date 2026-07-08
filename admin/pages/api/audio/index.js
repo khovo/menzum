@@ -55,6 +55,7 @@ async function handleGet(req, res, db) {
       hidden: !!d.hidden,
       hidden_bot: !!d.hidden_bot,
       hidden_app: !!d.hidden_app,
+      status: d.status || "published",
       has_r2: !!d.r2_url,
       has_telegram: !!d.file_id,
       r2_url: d.r2_url || null,
@@ -98,6 +99,10 @@ async function handlePost(req, res, db) {
     hidden: false,
     hidden_bot: false,
     hidden_app: false,
+    // New uploads start as a draft pending admin approval (content approval
+    // workflow). NOTE: api/webapp/* read paths don't filter on `status` yet
+    // — this is admin-panel-side state only until that's wired in.
+    status: "draft",
     play_count: 0,
     created_at: now,
   });
