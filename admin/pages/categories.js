@@ -94,6 +94,30 @@ export default function CategoriesPage() {
     setDeleting(null);
   }
 
+  // Reordering is scoped to custom categories only — swap sort_order with
+  // the neighboring custom row so fixed categories always stay on top.
+  async function moveCategory(cat, direction) {
+    const customList = categories.filter((c) => c.custom);
+    const idx = customList.findIndex((c) => c.slug === cat.slug);
+    const swapIdx = idx + direction;
+    if (swapIdx < 0 || swapIdx >= customList.length) return;
+    const other = customList[swapIdx];
+
+    await Promise.all([
+      fetch("/api/categories", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug: cat.slug, sort_order: other.sort_order }),
+      }),
+      fetch("/api/categories", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug: other.slug, sort_order: cat.sort_order }),
+      }),
+    ]);
+    load();
+  }
+
   return (
     <Layout title="Categories">
       <p className="text-sm text-gray-500 mb-5 max-w-2xl">
@@ -116,7 +140,10 @@ export default function CategoriesPage() {
             </tr>
           </thead>
           <tbody>
-            {categories.map((c) => (
+            {categories.map((c) => {
+              const customList = categories.filter((x) => x.custom);
+              const customIdx = customList.findIndex((x) => x.slug === c.slug);
+              return (
               <tr key={c.slug} className="border-b border-border last:border-0 hover:bg-surface2/50">
                 <td className="px-4 py-3 text-gray-500 font-mono text-xs">{c.slug}</td>
                 <td className="px-4 py-3 text-gray-200">
@@ -151,13 +178,28 @@ export default function CategoriesPage() {
                     <>
                       <button onClick={() => startEdit(c)} className="text-gold hover:underline text-xs">Rename</button>
                       {c.custom && (
-                        <button onClick={() => setDeleting(c)} className="text-red-400 hover:underline text-xs">Delete</button>
+                        <>
+                          <button onClick={() => setDeleting(c)} className="text-red-400 hover:underline text-xs">Delete</button>
+                          <button
+                            onClick={() => moveCategory(c, -1)}
+                            disabled={customIdx <= 0}
+                            className="text-gray-400 hover:text-gray-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs"
+                            title="Move up"
+                          >▲</button>
+                          <button
+                            onClick={() => moveCategory(c, 1)}
+                            disabled={customIdx >= customList.length - 1}
+                            className="text-gray-400 hover:text-gray-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs"
+                            title="Move down"
+                          >▼</button>
+                        </>
                       )}
                     </>
                   )}
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {!loading && categories.length === 0 && (
               <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-500">No categories.</td></tr>
             )}

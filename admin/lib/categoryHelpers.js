@@ -26,24 +26,34 @@ function validateNewSlug(slug) {
   return null;
 }
 
-/** Fixed + custom categories, each with a live track count from `files.genre`. */
+/**
+ * Fixed + custom categories, each with a live track count from `files.genre`
+ * and a sort_order (explicit if set via the reorder buttons, else a sensible
+ * default — fixed slugs keep their canonical 0-4 order, custom ones append
+ * after). Sorted ascending by sort_order, same as api/webapp/categories.js.
+ */
 async function listAllCategories(db) {
-  const customDocs = await db.collection("categories").find({ _id: { $nin: CATEGORY_SLUGS } }).toArray();
-  const allSlugs = [...CATEGORY_SLUGS, ...customDocs.map((d) => d._id)];
+  const allDocs = await db.collection("categories").find({}).toArray();
+  const docMap = {};
+  for (const d of allDocs) docMap[d._id] = d;
+  const customSlugs = allDocs.map((d) => d._id).filter((slug) => !CATEGORY_SLUGS.includes(slug));
+  const allSlugs = [...CATEGORY_SLUGS, ...customSlugs];
 
-  const [overrides, counts] = await Promise.all([
-    db.collection("categories").find({ _id: { $in: CATEGORY_SLUGS } }).toArray(),
-    Promise.all(allSlugs.map((slug) => db.collection("files").countDocuments({ genre: slug }))),
-  ]);
-  const overrideMap = {};
-  for (const o of overrides) overrideMap[o._id] = o.display_name;
+  const counts = await Promise.all(allSlugs.map((slug) => db.collection("files").countDocuments({ genre: slug })));
 
-  return allSlugs.map((slug, i) => ({
-    slug,
-    display_name: overrideMap[slug] || DEFAULT_LABELS[slug] || slug,
-    track_count: counts[i],
-    custom: !CATEGORY_SLUGS.includes(slug),
-  }));
+  const categories = allSlugs.map((slug, i) => {
+    const isFixed = CATEGORY_SLUGS.includes(slug);
+    const defaultOrder = isFixed ? CATEGORY_SLUGS.indexOf(slug) : CATEGORY_SLUGS.length + customSlugs.indexOf(slug);
+    return {
+      slug,
+      display_name: docMap[slug]?.display_name || DEFAULT_LABELS[slug] || slug,
+      track_count: counts[i],
+      custom: !isFixed,
+      sort_order: docMap[slug]?.sort_order ?? defaultOrder,
+    };
+  });
+
+  return categories.sort((a, b) => a.sort_order - b.sort_order);
 }
 
 /** True if `slug` is either a fixed category or an existing custom one. */

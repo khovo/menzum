@@ -79,15 +79,21 @@ async function handlePost(req, res, db) {
   if (!audioFile) {
     return res.status(400).json({ ok: false, error: "An audio file is required." });
   }
-  if (category && !(await isValidCategorySlug(db, category))) {
-    return res.status(400).json({ ok: false, error: `Unknown category "${category}". Create it first on the Categories page.` });
+  // genre is stored as an array — the form sends a comma-separated string
+  // (a single dropdown value, or multiple slugs joined by the edit form's
+  // multi-select checkboxes).
+  const genres = category ? category.split(",").map((c) => c.trim()).filter(Boolean) : [];
+  for (const g of genres) {
+    if (!(await isValidCategorySlug(db, g))) {
+      return res.status(400).json({ ok: false, error: `Unknown category "${g}". Create it first on the Categories page.` });
+    }
   }
 
   const now = new Date();
   const insertResult = await db.collection("files").insertOne({
     display_name: title.trim(),
     artist: artist ? artist.trim() : null,
-    genre: category || null,
+    genre: genres,
     file_id: null, // R2-native upload — see module note above
     hidden: false,
     hidden_bot: false,
