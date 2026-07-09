@@ -112,12 +112,18 @@ module.exports = withOptionalAuth(async function handler(req, res) {
       name:        t.display_name || "Unknown",
       genre:       t.genre || null,
       is_favorite: favoriteSet.has(t.file_id ?? ""),
-      has_thumb:   !!t.thumb_file_id,
+      // thumb_url is the ONE field clients should render — prefer the
+      // admin-panel-set R2 cover (t.thumb_url, a full URL stored directly on
+      // the doc) and fall back to the legacy Telegram-CDN proxy for
+      // bot-uploaded tracks that only have thumb_file_id. Previously this key
+      // ONLY checked thumb_file_id, so R2-native admin uploads always got
+      // null here even when a real thumbnail existed under a different key.
+      has_thumb:   !!(t.thumb_url || t.thumb_file_id),
       audio_url:   `${base}/api/webapp/play?id=${t._id}&action=stream`,
-      thumb_url:   t.thumb_file_id ? `${base}/api/webapp/thumb?id=${t._id}` : null,
+      thumb_url:   t.thumb_url || (t.thumb_file_id ? `${base}/api/webapp/thumb?id=${t._id}` : null),
       r2_url:      t.r2_url || null,
-      // Admin-panel-set R2 cover image (raw `thumb_url` field on the Mongo
-      // doc — distinct from the computed Telegram-CDN `thumb_url` above).
+      // Kept for backward compatibility with anything already reading this
+      // specific key — thumb_url above is now the canonical field to use.
       r2_thumb_url: t.thumb_url || null,
     }));
 
