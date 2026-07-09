@@ -1,11 +1,11 @@
 {
   "version": 2,
   "builds": [
-    { "src": "api/index.py",    "use": "@vercel/python" },
-    { "src": "api/webapp/*.js", "use": "@vercel/node"   }
+    { "src": "api/index.py",       "use": "@vercel/python" },
+    { "src": "api/webapp/index.js", "use": "@vercel/node"   }
   ],
   "routes": [
-    { "src": "/api/webapp/(.*)", "dest": "/api/webapp/$1.js" },
+    { "src": "/api/webapp/(.*)", "dest": "/api/webapp/index.js?__route=$1" },
     { "src": "/(.*)",            "dest": "/api/index.py"     }
   ]
 }
