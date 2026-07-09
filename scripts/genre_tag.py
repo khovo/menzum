@@ -61,14 +61,22 @@ def main():
 
     print(f"===== MODE: {'APPLY (writes)' if write_enabled else 'DRY-RUN (no writes)'} =====")
 
+    # Q5: the admin panel now also stores genre as an EMPTY array ([]) for "no
+    # category selected" (multi-category support), not just missing/null. A
+    # plain `{"genre": None}` filter doesn't match an empty array in Mongo
+    # (distinct BSON types), so those docs would silently never get
+    # auto-tagged. $in covers both shapes; an already-tagged doc (a real
+    # string or a non-empty array) still isn't touched either way.
+    UNTAGGED = {"$in": [None, []]}
+
     counts = {}
     for genre, pattern in GENRE_PATTERNS:
-        # Untagged audio whose title matches this genre's keyword. The genre==None
-        # clause (matches missing OR null) means an already-tagged doc — manual or
-        # set by an earlier genre in this loop — is never overwritten (first match wins).
+        # Untagged audio whose title matches this genre's keyword. The UNTAGGED
+        # clause means an already-tagged doc — manual or set by an earlier
+        # genre in this loop — is never overwritten (first match wins).
         flt = {
             "file_id": {"$exists": True},
-            "genre": None,
+            "genre": UNTAGGED,
             "display_name": {"$regex": pattern, "$options": "i"},
         }
         if write_enabled:
@@ -79,7 +87,7 @@ def main():
         print(f"  {genre:8} ({pattern}) -> {counts[genre]}")
 
     total = sum(counts.values())
-    untagged = db.files.count_documents({"file_id": {"$exists": True}, "genre": None})
+    untagged = db.files.count_documents({"file_id": {"$exists": True}, "genre": UNTAGGED})
     print("\n===== SUMMARY =====")
     for g, c in counts.items():
         print(f"{g:8}: {c}")
