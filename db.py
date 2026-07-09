@@ -658,6 +658,28 @@ async def get_maintenance(db) -> bool:
         return False
 
 
+# ── Force-Update: minimum app version (settings collection) ──────────────────
+# Consumed by api/webapp/featured.js, which omits min_version_code from its
+# response entirely when this doc doesn't exist — never hardcoded there.
+
+async def set_min_version_code(db, value: int) -> None:
+    try:
+        await db.settings.update_one(
+            {"type": "min_version"},
+            {"$set": {"type": "min_version", "value": int(value)}},
+            upsert=True,
+        )
+    except Exception:
+        logger.exception("set_min_version_code failed")
+
+
+async def clear_min_version_code(db) -> None:
+    try:
+        await db.settings.delete_one({"type": "min_version"})
+    except Exception:
+        logger.exception("clear_min_version_code failed")
+
+
 # ── Database Statistics & Export ──────────────────────────────────────────────
 
 async def get_db_stats(db) -> dict:

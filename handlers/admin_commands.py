@@ -11,7 +11,8 @@ Commands:
   Audio        : /editaudio /deleteaudio /findaudio
   PDF          : /editpdf /removepdf /listpdfs
   Users        : /userinfo /banuser /unbanuser /listbanned
-  Bot control  : /maintenance /dbstats
+  Bot control  : /maintenance /dbstats /clearbroadcastlock
+  Force-update : /setminversion /clearminversion
   Export       : /exportalldb
 Callbacks: del_audio_confirm_<id> / del_audio_cancel / del_pdf_confirm_<id> / del_pdf_cancel
 """
@@ -37,6 +38,8 @@ from db import (
     is_banned,
     list_banned,
     set_maintenance,
+    set_min_version_code,
+    clear_min_version_code,
     get_db_stats,
     get_all_users_for_export,
     unhide_by_id,
@@ -381,6 +384,22 @@ async def _cmd_clearbroadcastlock(session, db, message, chat_id, user_id, arg):
     await send_message(session, chat_id, f"✅ Broadcast lock cleared for `{target}`.")
 
 
+async def _cmd_setminversion(session, db, message, chat_id, user_id, arg):
+    """Force-update: mobile app builds below this version code get told to
+    update (Flutter reads min_version_code from /api/webapp/featured)."""
+    if not _is_int(arg) or int(arg) < 1:
+        await send_message(session, chat_id, "Usage: `/setminversion <number>` (e.g. `/setminversion 5`)")
+        return
+    value = int(arg)
+    await set_min_version_code(db, value)
+    await send_message(session, chat_id, f"✅ Minimum app version code set to `{value}`. Older app builds will be prompted to update.")
+
+
+async def _cmd_clearminversion(session, db, message, chat_id, user_id, arg):
+    await clear_min_version_code(db)
+    await send_message(session, chat_id, "✅ Minimum version requirement cleared. No app will be forced to update.")
+
+
 async def _cmd_dbstats(session, db, message, chat_id, user_id, arg):
     s = await get_db_stats(db)
     if not s:
@@ -479,6 +498,8 @@ _COMMANDS = {
     "/unbanuser":   _cmd_unbanuser,
     "/listbanned":  _cmd_listbanned,
     "/maintenance": _cmd_maintenance,
+    "/setminversion":   _cmd_setminversion,
+    "/clearminversion": _cmd_clearminversion,
     "/dbstats":     _cmd_dbstats,
     "/clearbroadcastlock": _cmd_clearbroadcastlock,
     "/exportalldb": _cmd_exportalldb,

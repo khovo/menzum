@@ -19,10 +19,20 @@
  * RESPONSE 200:
  *   {
  *     "ok": true,
- *     "tracks":      [...],         // up to `limit` tracks
- *     "has_more":    true,          // false when the catalog is exhausted
- *     "next_cursor": "64a1b2..."    // pass this as cursor on the next call
+ *     "tracks":            [...],   // up to `limit` tracks
+ *     "has_more":          true,    // false when the catalog is exhausted
+ *     "next_cursor":       "64a1b2...", // pass this as cursor on the next call
+ *     "min_version_code":  5        // OPTIONAL — omitted entirely unless an
+ *                                    // admin has set one (see below). The
+ *                                    // Flutter app treats absent as "no
+ *                                    // force update"; existing/older clients
+ *                                    // that don't know this field ignore it.
  *   }
+ *
+ * min_version_code is sourced from the `settings` collection
+ * ({type: "min_version", value: <int>}) — set via the bot's
+ * /setminversion <number> / /clearminversion admin commands
+ * (handlers/admin_commands.py), never hardcoded here.
  */
 
 const { withOptionalAuth }          = require("./_auth");
@@ -78,7 +88,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
     }
 
     // Fetch limit+1 to cheaply detect whether another page exists
-    const [tracks, dbUser] = await Promise.all([
+    const [tracks, dbUser, minVersionDoc] = await Promise.all([
       db.collection("files")
         .find(filter, { projection: { display_name: 1, file_id: 1, thumb_file_id: 1, thumb_url: 1, genre: 1, r2_url: 1 } })
         .sort(sort)
@@ -88,6 +98,8 @@ module.exports = withOptionalAuth(async function handler(req, res) {
       userId
         ? db.collection("users").findOne({ _id: userId }, { projection: { favorites: 1 } })
         : Promise.resolve(null),
+
+      db.collection("settings").findOne({ type: "min_version" }, { projection: { value: 1 } }),
     ]);
 
     const hasMore    = tracks.length > limit;
@@ -109,13 +121,22 @@ module.exports = withOptionalAuth(async function handler(req, res) {
       r2_thumb_url: t.thumb_url || null,
     }));
 
-    return res.status(200).json({
+    const payload = {
       ok:          true,
       category,
       tracks:      response,
       has_more:    hasMore,
       next_cursor: hasMore ? response[response.length - 1].id : null,
-    });
+    };
+    // Omit entirely (not null/0) unless an admin has actually set one — this
+    // is the "default/safe state" the field must have for full backward
+    // compatibility with clients that don't know about it yet.
+    const minVersionCode = minVersionDoc?.value;
+    if (typeof minVersionCode === "number" && Number.isFinite(minVersionCode)) {
+      payload.min_version_code = minVersionCode;
+    }
+
+    return res.status(200).json(payload);
 
   } catch (err) {
     console.error("featured.js error:", err);
