@@ -17,11 +17,18 @@ import asyncio
 import re
 import random
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from utils import copy_message
 
 logger = logging.getLogger(__name__)
+
+# H3: a broadcast killed mid-send by the platform's function timeout never
+# reaches its `finally`/release_broadcast_lock — the lock would otherwise
+# stay set forever with no way to broadcast again. This TTL lets a lock older
+# than this self-heal on the next attempt; the admin-only /clearbroadcastlock
+# command (admin_commands.py) is the immediate escape hatch in the meantime.
+BROADCAST_LOCK_TTL_SECONDS = 600
 
 _BML_TOKEN_RE = re.compile(
     r"\[(?P<label>[^\]]+)\]\((?P<type>url|app|cb|switch|switch_cur):(?P<value>[^)]*)\)"
@@ -154,15 +161,25 @@ def _bml_syntax_guide() -> str:
 async def try_acquire_broadcast_lock(db, admin_id: int) -> bool:
     """
     Atomically claim the broadcast lock for this admin. Returns True if acquired
-    (no broadcast was already in progress), False if one is already running.
+    (no broadcast was already in progress, or the existing lock is older than
+    BROADCAST_LOCK_TTL_SECONDS and treated as stale), False if one is already
+    running.
 
     Prevents duplicate sends when Telegram redelivers the broadcast_confirm
     webhook update (e.g. because our response was slow) — the retry finds the
     flag already set and does nothing instead of re-running the whole broadcast.
     """
+    now = datetime.now(timezone.utc)
+    stale_before = now - timedelta(seconds=BROADCAST_LOCK_TTL_SECONDS)
     result = await db.users.update_one(
-        {"_id": admin_id, "broadcasting_in_progress": {"$ne": True}},
-        {"$set": {"broadcasting_in_progress": True}},
+        {
+            "_id": admin_id,
+            "$or": [
+                {"broadcasting_in_progress": {"$ne": True}},
+                {"broadcast_lock_at": {"$lt": stale_before}},
+            ],
+        },
+        {"$set": {"broadcasting_in_progress": True, "broadcast_lock_at": now}},
     )
     return result.modified_count > 0
 
@@ -171,7 +188,7 @@ async def release_broadcast_lock(db, admin_id: int) -> None:
     """Clear the broadcast lock. Always call this when the broadcast finishes or errors."""
     await db.users.update_one(
         {"_id": admin_id},
-        {"$unset": {"broadcasting_in_progress": ""}},
+        {"$unset": {"broadcasting_in_progress": "", "broadcast_lock_at": ""}},
     )
 
 
