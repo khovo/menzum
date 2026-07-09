@@ -49,6 +49,7 @@ from utils import (
     answer_callback_query,
 )
 from .broadcast_engine import release_broadcast_lock
+from .helpers import is_admin
 
 logger = logging.getLogger(__name__)
 
@@ -317,6 +318,12 @@ async def _cmd_banuser(session, db, message, chat_id, user_id, arg):
     reason = parts[1].strip() if len(parts) > 1 else ""
     if str(target) == str(ADMIN_ID):
         await send_message(session, chat_id, "⚠️ Cannot ban the root admin.")
+        return
+    # Q3: banning a co-admin was a silent no-op — is_admin() short-circuits the
+    # ban check everywhere else in the codebase, so the ban_user() call below
+    # would have "succeeded" in the DB but had no actual effect. Warn instead.
+    if await is_admin(db, target):
+        await send_message(session, chat_id, "⚠️ This user is an admin — use `/removeadmin` first.")
         return
     if await ban_user(db, target, reason, user_id):
         await send_message(session, target, "⛔ You have been restricted from using Al-Madih.")
