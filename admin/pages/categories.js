@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Layout from "../components/Layout";
 import Modal from "../components/Modal";
+import VisibilityToggle from "../components/VisibilityToggle";
 import { requireAdmin } from "../lib/requireAdmin";
 
 export async function getServerSideProps(context) {
@@ -59,6 +60,7 @@ export default function CategoriesPage() {
   const [editValue, setEditValue] = useState("");
   const [deleting, setDeleting] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [togglingHidden, setTogglingHidden] = useState(null); // slug currently being hidden/shown
 
   function load() {
     setLoading(true);
@@ -94,6 +96,23 @@ export default function CategoriesPage() {
     setDeleting(null);
   }
 
+  // Works for BOTH fixed and custom categories — hiding is the only way to
+  // remove a fixed category from the public app-facing list, since its slug
+  // can never actually be deleted.
+  async function toggleHidden(cat) {
+    setTogglingHidden(cat.slug);
+    try {
+      await fetch("/api/categories", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug: cat.slug, hidden: !cat.hidden }),
+      });
+      load();
+    } finally {
+      setTogglingHidden(null);
+    }
+  }
+
   // Reordering is scoped to custom categories only — swap sort_order with
   // the neighboring custom row so fixed categories always stay on top.
   async function moveCategory(cat, direction) {
@@ -122,8 +141,10 @@ export default function CategoriesPage() {
     <Layout title="Categories">
       <p className="text-sm text-gray-500 mb-5 max-w-2xl">
         The 5 built-in categories (neshida/eshq/abret/katbare/raya) are fixed — the same genre tags the
-        bot and Mini App use — and can't be removed, only renamed. Custom categories you create below can
-        be renamed or deleted, and are assignable from the Audio page's category dropdown.
+        bot and Mini App use — and can't be deleted, only renamed or hidden from the app's category list.
+        Custom categories you create below can be renamed, hidden, or deleted outright, and are assignable
+        from the Audio page's category dropdown. Hiding or deleting a category never affects tracks already
+        tagged with it — they stay tagged and remain reachable under "All."
       </p>
 
       <CreateCategoryForm onDone={load} />
@@ -136,6 +157,7 @@ export default function CategoriesPage() {
               <th className="px-4 py-3">Display Name</th>
               <th className="px-4 py-3">Type</th>
               <th className="px-4 py-3">Tracks</th>
+              <th className="px-4 py-3">Visibility</th>
               <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
@@ -168,6 +190,14 @@ export default function CategoriesPage() {
                   </span>
                 </td>
                 <td className="px-4 py-3 text-gray-400">{c.track_count}</td>
+                <td className="px-4 py-3">
+                  <VisibilityToggle
+                    label="App list"
+                    hidden={c.hidden}
+                    busy={togglingHidden === c.slug}
+                    onToggle={() => toggleHidden(c)}
+                  />
+                </td>
                 <td className="px-4 py-3 space-x-2 whitespace-nowrap">
                   {editingSlug === c.slug ? (
                     <>
@@ -201,7 +231,7 @@ export default function CategoriesPage() {
               );
             })}
             {!loading && categories.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-500">No categories.</td></tr>
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-500">No categories.</td></tr>
             )}
           </tbody>
         </table>

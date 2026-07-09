@@ -99,9 +99,11 @@ module.exports = withAuth(async function handler(req, res) {
       id:          doc._id.toString(),
       name:        doc.display_name || "Unknown",
       is_favorite: true,
-      has_thumb:   !!doc.thumb_file_id,
+      // See featured.js for why this prefers the admin-set R2 thumbnail
+      // (doc.thumb_url) over the legacy Telegram-CDN proxy.
+      has_thumb:   !!(doc.thumb_url || doc.thumb_file_id),
       audio_url:   `${base}/api/webapp/play?id=${doc._id}&action=stream`,
-      thumb_url:   doc.thumb_file_id ? `${base}/api/webapp/thumb?id=${doc._id}` : null,
+      thumb_url:   doc.thumb_url || (doc.thumb_file_id ? `${base}/api/webapp/thumb?id=${doc._id}` : null),
       r2_thumb_url: doc.thumb_url || null,
     }));
 

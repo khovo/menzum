@@ -91,9 +91,11 @@ module.exports = withOptionalAuth(async function handler(req, res) {
       id:          t._id.toString(),
       name:        t.display_name || "Unknown",
       is_favorite: favSet.has(t.file_id ?? ""),
-      has_thumb:   !!t.thumb_file_id,
+      // See featured.js for why this prefers the admin-set R2 thumbnail
+      // (t.thumb_url) over the legacy Telegram-CDN proxy.
+      has_thumb:   !!(t.thumb_url || t.thumb_file_id),
       audio_url:   `${base}/api/webapp/play?id=${t._id}&action=stream`,
-      thumb_url:   t.thumb_file_id ? `${base}/api/webapp/thumb?id=${t._id}` : null,
+      thumb_url:   t.thumb_url || (t.thumb_file_id ? `${base}/api/webapp/thumb?id=${t._id}` : null),
       r2_url:      t.r2_url || null,
       r2_thumb_url: t.thumb_url || null,
       type:        "audio",

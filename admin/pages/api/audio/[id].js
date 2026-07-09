@@ -11,7 +11,7 @@ const { ObjectId } = require("mongodb");
 const fs = require("fs");
 const { connectToDatabase } = require("../../../lib/db");
 const { withAdminAuth } = require("../../../lib/withAdminAuth");
-const { uploadToR2 } = require("../../../lib/r2");
+const { uploadToR2, deleteFromR2 } = require("../../../lib/r2");
 const { parseForm, flat, flatFile, readJsonBody } = require("../../../lib/parseForm");
 const { isValidCategorySlug } = require("../../../lib/categoryHelpers");
 
@@ -102,14 +102,42 @@ async function handlePatch(req, res, db, id) {
 }
 
 async function handleDelete(req, res, db, id) {
-  const result = await db.collection("files").updateOne(
-    { _id: new ObjectId(id) },
-    { $set: { hidden: true, hidden_reason: "admin_panel", hidden_at: new Date() } }
-  );
-  if (result.matchedCount === 0) {
+  // ?permanent=true is the second-stage "Delete Forever" — everything else
+  // about this handler (soft-hide) is unchanged.
+  if (req.query.permanent !== "true") {
+    const result = await db.collection("files").updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { hidden: true, hidden_reason: "admin_panel", hidden_at: new Date() } }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ ok: false, error: "Track not found." });
+    }
+    return res.status(200).json({ ok: true });
+  }
+
+  const doc = await db.collection("files").findOne({ _id: new ObjectId(id) });
+  if (!doc) {
     return res.status(404).json({ ok: false, error: "Track not found." });
   }
-  return res.status(200).json({ ok: true });
+  // Never allow permanent delete on a visible item — hide first, then
+  // delete forever. This is the one hard rule for this action.
+  if (!doc.hidden) {
+    return res.status(400).json({ ok: false, error: "This track must be hidden first before it can be permanently deleted." });
+  }
+
+  // Best-effort R2 cleanup — a failed object delete (e.g. it was already
+  // removed, or the URL predates R2 entirely) must not block removing the
+  // Mongo doc, which is the actual source of truth for "is this gone."
+  const r2Errors = [];
+  if (doc.r2_url) {
+    try { await deleteFromR2("audio", doc.r2_url); } catch (e) { r2Errors.push(`audio file: ${e.message}`); }
+  }
+  if (doc.thumb_url) {
+    try { await deleteFromR2("audio", doc.thumb_url); } catch (e) { r2Errors.push(`thumbnail: ${e.message}`); }
+  }
+
+  await db.collection("files").deleteOne({ _id: new ObjectId(id) });
+  return res.status(200).json({ ok: true, permanent: true, r2_errors: r2Errors.length ? r2Errors : undefined });
 }
 
 module.exports = withAdminAuth(async function handler(req, res) {

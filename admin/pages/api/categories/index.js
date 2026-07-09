@@ -3,9 +3,14 @@
  *                                 each with editable display name + track count
  * POST   /api/categories  { display_name }        — create a new custom category
  *          (slug is the display name as typed, trimmed only — any script/charset)
- * PUT    /api/categories  { slug, display_name? , sort_order? }
- *          — rename a fixed/custom slug and/or set its sort_order (either field
- *            may be omitted; at least one is required)
+ * PUT    /api/categories  { slug, display_name?, sort_order?, hidden? }
+ *          — rename a fixed/custom slug, set its sort_order, and/or hide it
+ *            from the public api/webapp/categories listing (any field may be
+ *            omitted; at least one is required). Hiding a FIXED category is
+ *            the only way to remove it from that listing — the 5 fixed slugs
+ *            can never be deleted (see DELETE below), only hidden or renamed.
+ *            Tracks already tagged with a hidden/deleted category are
+ *            unaffected and remain reachable under "All".
  * DELETE /api/categories?slug=xxx                 — remove a custom category
  *          (fixed categories can never be deleted, only renamed)
  *
@@ -72,7 +77,7 @@ async function handleDelete(req, res, db) {
 }
 
 async function handlePut(req, res, db) {
-  const { slug, display_name, sort_order } = req.body || {};
+  const { slug, display_name, sort_order, hidden } = req.body || {};
   if (!(await isValidCategorySlug(db, slug))) {
     return res.status(400).json({
       ok: false,
@@ -94,10 +99,19 @@ async function handlePut(req, res, db) {
     }
     update.sort_order = n;
   }
+  if (hidden !== undefined) {
+    if (typeof hidden !== "boolean") {
+      return res.status(400).json({ ok: false, error: "hidden must be a boolean." });
+    }
+    update.hidden = hidden;
+  }
   if (Object.keys(update).length === 0) {
-    return res.status(400).json({ ok: false, error: "Nothing to update — pass display_name and/or sort_order." });
+    return res.status(400).json({ ok: false, error: "Nothing to update — pass display_name, sort_order, and/or hidden." });
   }
 
+  // upsert:true matters here specifically for FIXED categories — they have
+  // no doc in this collection at all until the first override (rename,
+  // reorder, or now hide) is made.
   await db.collection("categories").updateOne({ _id: slug }, { $set: update }, { upsert: true });
   return res.status(200).json({ ok: true });
 }

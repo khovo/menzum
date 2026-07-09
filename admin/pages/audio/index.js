@@ -4,6 +4,7 @@ import Modal from "../../components/Modal";
 import Pagination from "../../components/Pagination";
 import VisibilityToggle from "../../components/VisibilityToggle";
 import BulkUploadModal from "../../components/BulkUploadModal";
+import PermanentDeleteModal from "../../components/PermanentDeleteModal";
 import { requireAdmin } from "../../lib/requireAdmin";
 
 const PUBLIC_STREAM_BASE = "https://menzum.vercel.app/api/webapp/play";
@@ -178,6 +179,9 @@ export default function AudioPage() {
   const [showBulkUpload, setShowBulkUpload] = useState(false);
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
+  const [purging, setPurging] = useState(null); // item pending "Delete Forever" — only shown for already-hidden items
+  const [purgeBusy, setPurgeBusy] = useState(false);
+  const [purgeError, setPurgeError] = useState("");
   const [toggling, setToggling] = useState(null); // `${id}:${field}` while a PATCH is in flight
   const [previewing, setPreviewing] = useState(null); // track id currently expanded for preview
 
@@ -207,6 +211,23 @@ export default function AudioPage() {
       // filter) resolving after this DELETE would otherwise overwrite the
       // optimistic removal and make the row appear to "come back".
       load();
+    }
+  }
+
+  async function confirmPurge() {
+    setPurgeBusy(true);
+    setPurgeError("");
+    try {
+      const res = await fetch(`/api/audio/${purging.id}?permanent=true`, { method: "DELETE" });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setPurging(null);
+        load();
+      } else {
+        setPurgeError(data.error || "Could not permanently delete this track.");
+      }
+    } finally {
+      setPurgeBusy(false);
     }
   }
 
@@ -335,6 +356,13 @@ export default function AudioPage() {
                   <td className="px-4 py-3 space-x-2 whitespace-nowrap">
                     <button onClick={() => setEditing(t)} className="text-gold hover:underline text-xs">Edit</button>
                     <button onClick={() => setDeleting(t)} className="text-red-400 hover:underline text-xs">Delete</button>
+                    {/* Delete Forever only ever appears once an item is already hidden —
+                        never allowed on a visible item, per the two-stage delete rule. */}
+                    {t.hidden && (
+                      <button onClick={() => { setPurgeError(""); setPurging(t); }} className="text-red-600 hover:underline text-xs font-semibold">
+                        Delete Forever
+                      </button>
+                    )}
                   </td>
                 </tr>
                 {previewing === t.id && (
@@ -380,6 +408,18 @@ export default function AudioPage() {
               <button onClick={() => setDeleting(null)} className="flex-1 rounded-lg border border-border py-2.5 text-sm text-gray-300 hover:bg-surface2">Cancel</button>
             </div>
           </div>
+        )}
+      </Modal>
+
+      <Modal open={!!purging} title="Delete Forever" onClose={() => setPurging(null)}>
+        {purging && (
+          <PermanentDeleteModal
+            itemName={purging.display_name}
+            busy={purgeBusy}
+            error={purgeError}
+            onConfirm={confirmPurge}
+            onCancel={() => setPurging(null)}
+          />
         )}
       </Modal>
     </Layout>

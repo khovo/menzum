@@ -3,6 +3,7 @@ import Layout from "../../components/Layout";
 import Modal from "../../components/Modal";
 import Pagination from "../../components/Pagination";
 import VisibilityToggle from "../../components/VisibilityToggle";
+import PermanentDeleteModal from "../../components/PermanentDeleteModal";
 import { requireAdmin } from "../../lib/requireAdmin";
 
 export async function getServerSideProps(context) {
@@ -118,6 +119,9 @@ export default function PdfsPage() {
   const [showUpload, setShowUpload] = useState(false);
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
+  const [purging, setPurging] = useState(null); // item pending "Delete Forever" — only shown for already-hidden items
+  const [purgeBusy, setPurgeBusy] = useState(false);
+  const [purgeError, setPurgeError] = useState("");
   const [toggling, setToggling] = useState(null); // `${id}:${field}` while a PATCH is in flight
 
   const load = useCallback(() => {
@@ -143,6 +147,23 @@ export default function PdfsPage() {
       // resolving after this DELETE would otherwise overwrite the optimistic
       // removal and make the row appear to "come back".
       load();
+    }
+  }
+
+  async function confirmPurge() {
+    setPurgeBusy(true);
+    setPurgeError("");
+    try {
+      const res = await fetch(`/api/pdfs/${purging.id}?permanent=true`, { method: "DELETE" });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setPurging(null);
+        load();
+      } else {
+        setPurgeError(data.error || "Could not permanently delete this PDF.");
+      }
+    } finally {
+      setPurgeBusy(false);
     }
   }
 
@@ -250,6 +271,13 @@ export default function PdfsPage() {
                 <td className="px-4 py-3 space-x-2 whitespace-nowrap">
                   <button onClick={() => setEditing(p)} className="text-gold hover:underline text-xs">Edit</button>
                   <button onClick={() => setDeleting(p)} className="text-red-400 hover:underline text-xs">Delete</button>
+                  {/* Delete Forever only ever appears once an item is already hidden —
+                      never allowed on a visible item, per the two-stage delete rule. */}
+                  {p.hidden && (
+                    <button onClick={() => { setPurgeError(""); setPurging(p); }} className="text-red-600 hover:underline text-xs font-semibold">
+                      Delete Forever
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -282,6 +310,18 @@ export default function PdfsPage() {
               <button onClick={() => setDeleting(null)} className="flex-1 rounded-lg border border-border py-2.5 text-sm text-gray-300 hover:bg-surface2">Cancel</button>
             </div>
           </div>
+        )}
+      </Modal>
+
+      <Modal open={!!purging} title="Delete Forever" onClose={() => setPurging(null)}>
+        {purging && (
+          <PermanentDeleteModal
+            itemName={purging.title}
+            busy={purgeBusy}
+            error={purgeError}
+            onConfirm={confirmPurge}
+            onCancel={() => setPurging(null)}
+          />
         )}
       </Modal>
     </Layout>
