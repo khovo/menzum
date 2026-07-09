@@ -91,7 +91,7 @@ async def _resolve_macro(db, macro: str, arg: str) -> list[dict]:
             return [{"text": f"🎲 {doc.get('display_name', 'Discover')[:42]}", "callback_data": f"play_{doc['_id']}"}]
 
     except Exception as exc:
-        logger.warning("_resolve_macro(%s) failed: %s", exc)
+        logger.warning("_resolve_macro(%s) failed: %s", macro, exc)
     return []
 
 
@@ -223,7 +223,7 @@ async def _execute_broadcast(session, db, admin_chat_id: int, msg_id: int, marku
             else:
                 total += 1; consecutive = 0
         except Exception as exc:
-            logger.warning("Broadcast send to %s failed: %s", exc)
+            logger.warning("Broadcast send to %s failed: %s", uid, exc)
             failed += 1; consecutive += 1
 
         if (i + 1) % CHUNK_SIZE == 0: await asyncio.sleep(CHUNK_SLEEP * CHUNK_SIZE)

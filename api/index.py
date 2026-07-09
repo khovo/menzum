@@ -34,7 +34,12 @@ from config import TELEGRAM_WEBHOOK_SECRET
 from handlers import process_telegram_update
 from utils import run_async
 
-logging.basicConfig(level=logging.ERROR)
+# H4: ERROR-only silently dropped every logger.warning() in the codebase
+# (e.g. broadcast_engine.py's per-user send-failure logs) — combined with no
+# crash reporting anywhere, that made prod failures invisible. INFO surfaces
+# real diagnostic signal during the test period; revisit if log volume/cost
+# becomes an issue once usage grows.
+logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
