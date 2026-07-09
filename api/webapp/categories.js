@@ -9,6 +9,13 @@
  * (0-4) and custom ones default to appending after them unless the admin
  * panel's up/down reorder buttons have set an explicit `sort_order`.
  *
+ * Categories the admin has hidden (via the Categories page — works for BOTH
+ * fixed and custom slugs, since fixed ones can never be deleted, only
+ * hidden) are excluded entirely from this response. This does not affect
+ * which tracks exist or their genre tag — a track tagged with a hidden
+ * category stays tagged and remains reachable under the "all"/no-category
+ * view; it's only removed from the category *picker* itself.
+ *
  * RESPONSE 200:
  *   { "ok": true, "categories": [{ "slug", "display_name", "sort_order" }, ...] }
  */
@@ -41,6 +48,7 @@ module.exports = withOptionalAuth(async function handler(req, res) {
     const allSlugs = [...FIXED_SLUGS, ...customSlugs];
 
     const categories = allSlugs
+      .filter((slug) => !docMap[slug]?.hidden)
       .map((slug) => {
         const isFixed = FIXED_SLUGS.includes(slug);
         const defaultOrder = isFixed ? FIXED_SLUGS.indexOf(slug) : FIXED_SLUGS.length + customSlugs.indexOf(slug);

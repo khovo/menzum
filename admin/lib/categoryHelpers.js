@@ -50,6 +50,11 @@ async function listAllCategories(db) {
       track_count: counts[i],
       custom: !isFixed,
       sort_order: docMap[slug]?.sort_order ?? defaultOrder,
+      // Hidden from the PUBLIC api/webapp/categories listing only — the
+      // admin's own list (this function) always shows every category,
+      // hidden or not, so an admin can unhide one. Fixed categories can
+      // never be deleted (the slug is hardcoded), but can be hidden.
+      hidden: !!docMap[slug]?.hidden,
     };
   });
 
