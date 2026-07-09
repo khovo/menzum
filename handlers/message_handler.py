@@ -5,14 +5,16 @@ handle_message() — all text / audio / document message routing.
 
 Order of dispatch:
   1. Resolve admin status (root or co-admin)
-  2. Non-admin gates: banned → ignore; maintenance → notice; force-join
-  3. /start (+ deep-link playlist resume)
-  4. /list and "📂 Catalog (List)"
-  5. "🔧 Manage Channels" (admin)
-  6. playlist_builder state search
-  7. admin slash-commands  → admin_commands.handle_admin_command
-  8. admin panel / ingestion / states → admin_handlers.handle_admin_message
-  9. generic audio search
+  2. Ban check (blocks mobile login too, not just chat commands)
+  3. /start login_<nonce> (mobile login deep-link)
+  4. Non-admin gates: maintenance → notice; force-join
+  5. /start (+ deep-link playlist resume)
+  6. /list and "📂 Catalog (List)"
+  7. "🔧 Manage Channels" (admin)
+  8. playlist_builder state search
+  9. admin slash-commands  → admin_commands.handle_admin_command
+  10. admin panel / ingestion / states → admin_handlers.handle_admin_message
+  11. generic audio search
 """
 import logging
 
@@ -70,9 +72,19 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
     user_data = await track_and_get_user(db, user_id, first_name)
     state     = user_data.get("state")
 
+    admin = await is_admin(db, user_id)
+
+    # ── Ban check — ahead of EVERYTHING else non-admins can do ──────────────────
+    # Q1: a banned user must not be able to authenticate the mobile app either,
+    # so this now runs before the login deep-link below (it previously ran
+    # after, which let a banned account still complete mobile login).
+    if not admin and await is_banned(db, user_id):
+        return  # banned users are silently ignored
+
     # ── Mobile "Login with Telegram": /start login_<nonce> ──────────────────────
-    # Handled before the gates so app login is never blocked. Links the nonce to
-    # this Telegram user; the app's auth poll then issues a JWT.
+    # Still ahead of maintenance/force-join (unchanged) — only the ban check
+    # above gates this, so a channel-join requirement never blocks login.
+    # Links the nonce to this Telegram user; the app's auth poll then issues a JWT.
     if text and text.startswith("/start login_"):
         nonce = text.split("login_", 1)[1].strip()
         await delete_message(session, chat_id, msg_id)
@@ -83,12 +95,8 @@ async def handle_message(session, db, message: dict, channels: list[dict]) -> No
             await send_message(session, chat_id, "⚠️ This login link is invalid or has expired. Please start again from the app.")
         return
 
-    admin = await is_admin(db, user_id)
-
-    # ── Non-admin gates: ban, maintenance, then force-join ──────────────────────
+    # ── Non-admin gates: maintenance, then force-join ────────────────────────────
     if not admin:
-        if await is_banned(db, user_id):
-            return  # banned users are silently ignored
         if await get_maintenance(db):
             await send_message(session, chat_id, _MAINTENANCE_MSG)
             return

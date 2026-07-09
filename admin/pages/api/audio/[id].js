@@ -39,7 +39,11 @@ async function handlePut(req, res, db, id) {
   const update = {};
   if (title !== undefined && title.trim()) update.display_name = title.trim();
   if (artist !== undefined) update.artist = artist.trim() || null;
-  if (genres !== undefined) update.genre = genres;
+  // Q5: only store an actual array when there's genuinely more than one
+  // category selected. A legacy doc's genre is a plain string — saving a
+  // single-category edit as a 1-element array would silently convert it
+  // even though nothing about its category assignment changed in kind.
+  if (genres !== undefined) update.genre = genres.length > 1 ? genres : (genres[0] ?? null);
 
   if (thumbFile) {
     const thumbBuf = fs.readFileSync(thumbFile.filepath);

@@ -87,6 +87,7 @@ module.exports = async function handler(req, res) {
     const [
       totalUsers,
       totalFiles,
+      hiddenFiles,
       playsAgg,
       userGrowthRaw,
       trendingRaw,
@@ -96,8 +97,15 @@ module.exports = async function handler(req, res) {
       // 1. Total registered users
       db.collection("users").countDocuments({}),
 
-      // 2. Total audio files in the catalog
-      db.collection("files").countDocuments({}),
+      // 2. Total VISIBLE audio files in the catalog — Q2: was countDocuments({}),
+      // inconsistent with every other query in this file (and the rest of the
+      // codebase) which excludes hidden docs. hiddenFiles below is the
+      // separate soft-deleted count, so the total inventory is still visible
+      // if wanted (totalFiles + hiddenFiles).
+      db.collection("files").countDocuments({ hidden: { $ne: true } }),
+
+      // 2b. Soft-deleted (hidden) audio files — shown as its own small stat.
+      db.collection("files").countDocuments({ hidden: true }),
 
       // 3. Global plays: sum total_plays across every user doc
       db.collection("users").aggregate([
@@ -168,6 +176,7 @@ module.exports = async function handler(req, res) {
       stats: {
         totalUsers,
         totalFiles,
+        hiddenFiles,
         totalPlays:   playsAgg[0]?.total ?? 0,
         activeUsers:  activeUsersRaw,
         userGrowth,

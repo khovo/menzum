@@ -310,6 +310,7 @@ export default function AdminDashboard() {
           <StatCard label="Total Users"    value={fmt(stats?.totalUsers)}   color={D.cyan}  delay={0}   sub={`${fmt(stats?.activeUsers)} active today`} />
           <StatCard label="Total Plays"    value={fmt(stats?.totalPlays)}   color={D.gold}  delay={60}  />
           <StatCard label="Catalog Size"   value={fmt(stats?.totalFiles)}   color={D.green} delay={120} sub="audio files" />
+          <StatCard label="Hidden"         value={fmt(stats?.hiddenFiles)}  color={D.textMuted} delay={180} sub="soft-deleted" />
         </div>
 
         {/* ── Charts Row ───────────────────────────────────────────────── */}
