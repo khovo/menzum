@@ -25,6 +25,7 @@ if (!MONGO_URL) {
 // Module-level cache: reused across warm invocations on the same Vercel instance
 let cachedClient = null;
 let cachedDb     = null;
+let indexesEnsured = false;
 
 async function connectToDatabase() {
   // Return cached connection if available and still connected
@@ -44,6 +45,19 @@ async function connectToDatabase() {
 
   cachedClient = client;
   cachedDb     = db;
+
+  if (!indexesEnsured) {
+    indexesEnsured = true;
+    // H2: auth.js's action:"start" is unauthenticated and inserts a doc here
+    // on every call with no other cleanup path for one that's never polled —
+    // an unauthenticated loop grows this collection forever. This TTL index
+    // (600s matches auth.js's own NONCE_TTL_MS) makes Mongo self-clean those.
+    // Fire-and-forget: createIndex is a no-op once it exists, and failure
+    // here shouldn't block/slow the request that triggered this connection.
+    db.collection("login_sessions")
+      .createIndex({ created_at: 1 }, { expireAfterSeconds: 600 })
+      .catch((e) => console.error("_db.js: failed to ensure login_sessions TTL index:", e));
+  }
 
   return { client, db };
 }

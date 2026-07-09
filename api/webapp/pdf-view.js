@@ -19,6 +19,7 @@
  */
 const { withOptionalAuth } = require("./_auth");
 const { connectToDatabase } = require("./_db");
+const { isRateLimited, clientIp } = require("./_rateLimit");
 const { ObjectId } = require("mongodb");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -27,6 +28,12 @@ const OID_RE = /^[a-f\d]{24}$/i;
 module.exports = withOptionalAuth(async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "HEAD") {
     return res.status(405).json({ ok: false, error: "Method not allowed." });
+  }
+
+  // H2: same reasoning as play.js — anonymous-allowed, pulls real bytes
+  // through the shared BOT_TOKEN.
+  if (isRateLimited(clientIp(req), { max: 30, windowMs: 60_000 })) {
+    return res.status(429).json({ ok: false, error: "Too many requests. Please slow down." });
   }
 
   const id = (req.query.id || "").trim();
