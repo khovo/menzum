@@ -158,6 +158,7 @@ export default function AdminDashboard() {
   const [stats,     setStats]     = useState(null);
   const [loading,   setLoading]   = useState(false);
   const [lastSync,  setLastSync]  = useState(null);
+  const [err,       setErr]       = useState('');
   const refreshRef = useRef(null);
 
   // ── Fetch stats ─────────────────────────────────────────────────────────────
@@ -180,6 +181,7 @@ export default function AdminDashboard() {
       if (data.ok) {
         setStats(data.stats);
         setLastSync(new Date());
+        setErr('');
       } else if (res.status === 401) {
         setAuthed(false);
         setLoginErr('Session expired. Re-enter token.');
@@ -266,6 +268,21 @@ export default function AdminDashboard() {
       </Head>
 
       <div className="a-dashboard">
+
+        {/* ── Error banner ─────────────────────────────────────────────── */}
+        {err && (
+          <div style={{
+            padding: '10px 20px',
+            background: 'rgba(255, 80, 80, 0.1)',
+            borderBottom: '1px solid rgba(255, 80, 80, 0.3)',
+            color: '#ff8080',
+            fontSize: 12,
+            fontWeight: 600,
+            letterSpacing: 0.3,
+          }}>
+            {err}
+          </div>
+        )}
 
         {/* ── Header ───────────────────────────────────────────────────── */}
         <header className="a-header">

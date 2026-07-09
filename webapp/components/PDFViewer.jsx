@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import ErrorState from './ErrorState';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '';
 
@@ -70,6 +71,8 @@ function PdfPageItem({ pageNum, pdfDoc, scale = 2.0 }) {
 
 export default function PDFViewer({ pdf, authHeader, onClose, onFavorite, isFav }) {
   const [viewerUrl, setViewerUrl] = useState(null);
+  const [tooLargeLink, setTooLargeLink] = useState(null);
+  const [retryKey, setRetryKey] = useState(0);
   const [loading, setLoading] = useState(true);
   const [useIframeFallback, setUseIframeFallback] = useState(false);
   const [delivering, setDelivering] = useState(false);
@@ -92,11 +95,22 @@ export default function PDFViewer({ pdf, authHeader, onClose, onFavorite, isFav 
 
     async function loadPDF() {
       setLoading(true);
+      setViewerUrl(null);
+      setTooLargeLink(null);
       try {
-        fetch(`${API_BASE}/api/webapp/pdf-view?id=${pdf.id}`, { headers: authHeader() })
+        // action=url asks for the {ok,url} pointer instead of PDF bytes — used
+        // only by the iframe fallback below, so this never re-downloads the
+        // file just to discard it. For a >20MB book, pdf-view.js returns
+        // {ok:false, reason:"too_large", telegram_link} instead; branch on
+        // that explicitly rather than only checking `d.ok`. Any other failure
+        // just leaves both unset, which the render below treats as an error.
+        fetch(`${API_BASE}/api/webapp/pdf-view?id=${pdf.id}&action=url`, { headers: authHeader() })
           .then(r => r.json())
-          .then(d => { if (d.ok) setViewerUrl(d.url); })
-          .catch(e => console.warn("Failed fetching fallback URL"));
+          .then(d => {
+            if (d.ok) setViewerUrl(d.url);
+            else if (d.reason === 'too_large' && d.telegram_link) setTooLargeLink(d.telegram_link);
+          })
+          .catch(e => console.warn("Failed fetching fallback URL", e));
 
         if (!window.pdfjsLib) {
           const script = document.createElement('script');
@@ -138,7 +152,7 @@ export default function PDFViewer({ pdf, authHeader, onClose, onFavorite, isFav 
 
     loadPDF();
     return () => { cancelled = true; };
-  }, [pdf.id]);
+  }, [pdf.id, retryKey]);
 
   async function handleDeliver() {
     if (delivering || delivered) return;
@@ -241,12 +255,33 @@ export default function PDFViewer({ pdf, authHeader, onClose, onFavorite, isFav 
           </div>
         )}
 
+        {/* TOO LARGE FOR IN-APP PREVIEW — hand off to the bot instead of a blank screen */}
+        {!loading && useIframeFallback && tooLargeLink && (
+          <div className="pdf-fallback-message">
+            <div className="pdf-fallback-icon">📚</div>
+            <p>This book is too large to preview here.</p>
+            <a href={tooLargeLink} target="_blank" rel="noopener noreferrer" className="pdf-fallback-cta">
+              Open in Telegram
+            </a>
+          </div>
+        )}
+
         {/* GOOGLE DOCS IFRAME FALLBACK */}
-        {!loading && useIframeFallback && viewerUrl && (
+        {!loading && useIframeFallback && !tooLargeLink && viewerUrl && (
           <iframe
             src={`https://docs.google.com/viewer?url=${encodeURIComponent(viewerUrl)}&embedded=true`}
             className="pdf-iframe-fallback"
             title={pdf.title}
+          />
+        )}
+
+        {/* NEITHER NATIVE RENDER NOR ANY FALLBACK WORKED — show a real error, not a blank screen */}
+        {!loading && useIframeFallback && !tooLargeLink && !viewerUrl && (
+          <ErrorState
+            icon="📄"
+            title="Couldn't open this document"
+            message="Please check your connection and try again."
+            onRetry={() => setRetryKey((k) => k + 1)}
           />
         )}
       </div>

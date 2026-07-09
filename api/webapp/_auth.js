@@ -15,6 +15,7 @@
  */
 
 const crypto = require("crypto");
+const { connectToDatabase } = require("./_db");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const JWT_SECRET = (process.env.JWT_SECRET || "").trim();
@@ -105,6 +106,25 @@ function setCors(res) {
   res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges");
 }
 
+/**
+ * True if this Telegram user id is in the bot's `banned_users` collection
+ * (the same collection/shape as db.py's ban_user/is_banned — _id is the
+ * int Telegram user id). Fails OPEN on a DB error, matching this codebase's
+ * existing check_membership convention: a Mongo hiccup should never lock
+ * every user out of the app just to keep out the ones who are banned.
+ */
+async function isBanned(userId) {
+  if (userId === undefined || userId === null) return false;
+  try {
+    const { db } = await connectToDatabase();
+    const doc = await db.collection("banned_users").findOne({ _id: Number(userId) }, { projection: { _id: 1 } });
+    return !!doc;
+  } catch (err) {
+    console.error("_auth.js isBanned check failed:", err);
+    return false;
+  }
+}
+
 /** Resolve the caller from an Authorization header → { id, ... } or null. */
 function resolveUser(req) {
   const authHeader = req.headers["authorization"] || "";
@@ -134,6 +154,9 @@ function withAuth(handler) {
         error: "Missing or invalid Authorization. Use 'tma <initData>' or 'Bearer <jwt>'.",
       });
     }
+    if (await isBanned(user.id)) {
+      return res.status(403).json({ ok: false, error: "This account has been banned." });
+    }
     req.telegramUser = user;
     return handler(req, res);
   };
@@ -149,7 +172,15 @@ function withOptionalAuth(handler) {
   return async function (req, res) {
     setCors(res);
     if (req.method === "OPTIONS") return res.status(200).end();
-    req.telegramUser = resolveUser(req); // user object, or null when anonymous
+    const user = resolveUser(req);
+    // A banned user with a valid token is rejected outright rather than
+    // downgraded to "anonymous" — anonymous access is a separate, deliberate
+    // per-endpoint policy (e.g. public streaming), not a fallback a banned
+    // identity should get routed into.
+    if (user && (await isBanned(user.id))) {
+      return res.status(403).json({ ok: false, error: "This account has been banned." });
+    }
+    req.telegramUser = user; // user object, or null when anonymous
     return handler(req, res);
   };
 }
