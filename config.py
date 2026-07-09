@@ -18,6 +18,12 @@ import os
 BOT_TOKEN: str | None = os.environ.get("BOT_TOKEN")
 ADMIN_ID: str | None  = os.environ.get("ADMIN_ID")
 
+# Verified against the X-Telegram-Bot-Api-Secret-Token header on every webhook
+# POST (api/index.py) — without this, anyone who finds the webhook URL can POST
+# a forged Update claiming to be the admin. Set via Telegram's setWebhook API,
+# not just this env var; see the deploy runbook for the exact command.
+TELEGRAM_WEBHOOK_SECRET: str | None = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
+
 # ── MongoDB ───────────────────────────────────────────────────────────────────
 MONGO_URL: str | None = os.environ.get("MONGO_URL")
 DB_NAME = "MenzumaDB"
