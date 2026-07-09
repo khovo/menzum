@@ -48,6 +48,7 @@ from utils import (
     edit_message_text,
     answer_callback_query,
 )
+from .broadcast_engine import release_broadcast_lock
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +361,19 @@ async def _cmd_maintenance(session, db, message, chat_id, user_id, arg):
         await send_message(session, chat_id, "Usage: `/maintenance on`  |  `/maintenance off`")
 
 
+async def _cmd_clearbroadcastlock(session, db, message, chat_id, user_id, arg):
+    """
+    H3 escape hatch: a broadcast killed mid-send by the platform's function
+    timeout never reaches release_broadcast_lock, leaving the lock stuck until
+    it ages past BROADCAST_LOCK_TTL_SECONDS (broadcast_engine.py). This clears
+    it immediately instead of waiting. Defaults to the caller's own lock;
+    pass a user_id to clear a different admin's stuck lock.
+    """
+    target = int(arg) if _is_int(arg) else user_id
+    await release_broadcast_lock(db, target)
+    await send_message(session, chat_id, f"✅ Broadcast lock cleared for `{target}`.")
+
+
 async def _cmd_dbstats(session, db, message, chat_id, user_id, arg):
     s = await get_db_stats(db)
     if not s:
@@ -459,5 +473,6 @@ _COMMANDS = {
     "/listbanned":  _cmd_listbanned,
     "/maintenance": _cmd_maintenance,
     "/dbstats":     _cmd_dbstats,
+    "/clearbroadcastlock": _cmd_clearbroadcastlock,
     "/exportalldb": _cmd_exportalldb,
 }

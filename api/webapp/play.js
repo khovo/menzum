@@ -18,6 +18,7 @@
  */
 const { withOptionalAuth } = require("./_auth");
 const { connectToDatabase } = require("./_db");
+const { isRateLimited, clientIp } = require("./_rateLimit");
 const { ObjectId } = require("mongodb");
 const { Readable } = require("stream");
 
@@ -44,6 +45,13 @@ function audioContentType(path) {
 
 // ── GET: stream the audio bytes ───────────────────────────────────────────────
 async function streamAudio(req, res) {
+  // H2: this is anonymous-allowed and pulls real bytes through the shared
+  // BOT_TOKEN — an unthrottled scraping loop here both scrapes the catalog
+  // and burns Telegram's per-bot rate limit against the live bot.
+  if (isRateLimited(clientIp(req), { max: 30, windowMs: 60_000 })) {
+    return res.status(429).json({ ok: false, error: "Too many requests. Please slow down." });
+  }
+
   const id = (req.query.id || req.query.track_id || "").trim();
   if (!OID_RE.test(id)) return res.status(400).json({ ok: false, error: "Invalid id." });
   if (!BOT_TOKEN) return res.status(503).json({ ok: false, error: "BOT_TOKEN missing." });
