@@ -5,7 +5,7 @@
  * bucket split: audio content lives in one R2 account/bucket, PDFs in a
  * second, independently-credentialed one.
  */
-const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 
 // .trim() defensively — Vercel's dashboard env-var UI has previously
 // appended trailing whitespace/newlines to values (already hit for
@@ -77,4 +77,39 @@ async function uploadToR2(kind, key, buffer, contentType) {
   return `${publicBase.replace(/\/$/, "")}/${key}`;
 }
 
-module.exports = { audioR2, pdfR2, uploadToR2 };
+/**
+ * Recover the R2 object key from a public URL previously returned by
+ * uploadToR2() — the object key is never stored separately, only the full
+ * public URL (in files.r2_url / files.thumb_url / pdfs.r2_url), so deleting
+ * an object means reversing the exact same publicBase + "/" + key join
+ * uploadToR2() does above. Returns null if the URL doesn't start with the
+ * expected public base for `kind` (e.g. it's not actually an R2 URL, or it's
+ * from the other bucket) — callers must treat null as "can't delete this,
+ * don't guess."
+ */
+function keyFromUrl(kind, url) {
+  if (!url) return null;
+  const isPdf = kind === "pdf";
+  const publicBase = env(isPdf ? "R2_PDF_PUBLIC_URL" : "R2_PUBLIC_URL").replace(/\/$/, "");
+  if (!publicBase || !url.startsWith(`${publicBase}/`)) return null;
+  return url.slice(publicBase.length + 1);
+}
+
+/**
+ * Permanently delete an R2 object by its public URL (as stored in Mongo).
+ * Throws if the key can't be derived (see keyFromUrl) or the delete fails —
+ * callers doing a "delete forever" flow should catch this per-object so one
+ * failed R2 delete doesn't block removing the Mongo doc or the other object.
+ */
+async function deleteFromR2(kind, url) {
+  const key = keyFromUrl(kind, url);
+  if (!key) {
+    throw new Error(`Could not resolve an R2 key from URL: ${url}`);
+  }
+  const isPdf = kind === "pdf";
+  const client = isPdf ? pdfR2 : audioR2;
+  const bucket = env(isPdf ? "R2_PDF_BUCKET_NAME" : "R2_BUCKET_NAME");
+  await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+}
+
+module.exports = { audioR2, pdfR2, uploadToR2, deleteFromR2, keyFromUrl };

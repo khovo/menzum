@@ -14,6 +14,7 @@
 const { ObjectId } = require("mongodb");
 const { connectToDatabase } = require("../../../lib/db");
 const { withAdminAuth } = require("../../../lib/withAdminAuth");
+const { deleteFromR2 } = require("../../../lib/r2");
 
 const TOGGLE_FIELDS = ["hidden", "hidden_bot", "hidden_app"];
 const STATUS_VALUES = ["draft", "published"];
@@ -70,14 +71,36 @@ async function handlePatch(req, res, db, id) {
 }
 
 async function handleDelete(req, res, db, id) {
-  const result = await db.collection("pdfs").updateOne(
-    { _id: new ObjectId(id) },
-    { $set: { hidden: true, hidden_reason: "admin_panel", hidden_at: new Date() } }
-  );
-  if (result.matchedCount === 0) {
+  // ?permanent=true is the second-stage "Delete Forever" — everything else
+  // about this handler (soft-hide) is unchanged.
+  if (req.query.permanent !== "true") {
+    const result = await db.collection("pdfs").updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { hidden: true, hidden_reason: "admin_panel", hidden_at: new Date() } }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ ok: false, error: "PDF not found." });
+    }
+    return res.status(200).json({ ok: true });
+  }
+
+  const doc = await db.collection("pdfs").findOne({ _id: new ObjectId(id) });
+  if (!doc) {
     return res.status(404).json({ ok: false, error: "PDF not found." });
   }
-  return res.status(200).json({ ok: true });
+  // Never allow permanent delete on a visible item — hide first, then
+  // delete forever. This is the one hard rule for this action.
+  if (!doc.hidden) {
+    return res.status(400).json({ ok: false, error: "This PDF must be hidden first before it can be permanently deleted." });
+  }
+
+  const r2Errors = [];
+  if (doc.r2_url) {
+    try { await deleteFromR2("pdf", doc.r2_url); } catch (e) { r2Errors.push(`file: ${e.message}`); }
+  }
+
+  await db.collection("pdfs").deleteOne({ _id: new ObjectId(id) });
+  return res.status(200).json({ ok: true, permanent: true, r2_errors: r2Errors.length ? r2Errors : undefined });
 }
 
 module.exports = withAdminAuth(async function handler(req, res) {
