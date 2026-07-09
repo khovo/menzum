@@ -1,6 +1,11 @@
 __pycache__/
 *.pyc
-.env
+# H5: was just `.env` (exact match only) — .env.local/.env.production etc.
+# were never actually covered, contradicting admin/.env.example's own claim
+# that ".env* is gitignored". The negation keeps every .env.example
+# tracked regardless of which directory it's in.
+.env*
+!.env.example
 node_modules/
 .next/
 
