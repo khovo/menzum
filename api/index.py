@@ -20,6 +20,7 @@ Why api/index.py specifically?
 """
 import sys
 import os
+import hmac
 import logging
 
 # ---------------------------------------------------------------------------
@@ -29,6 +30,7 @@ import logging
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from flask import Flask, request
+from config import TELEGRAM_WEBHOOK_SECRET
 from handlers import process_telegram_update
 from utils import run_async
 
@@ -41,6 +43,18 @@ app = Flask(__name__)
 @app.route("/api/webhook", methods=["GET", "POST"])
 def telegram_webhook():
     if request.method == "POST":
+        # Telegram echoes back whatever secret_token was set via setWebhook on
+        # every update it delivers. Without this check, anyone who finds this
+        # URL can POST a hand-crafted Update — including one claiming
+        # from.id == ADMIN_ID — and it gets processed as a real admin command.
+        # Fails closed: a missing/unset secret rejects every request rather
+        # than silently skipping the check, so misconfiguration can't degrade
+        # into "no auth" the way it did before this fix.
+        provided = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if not TELEGRAM_WEBHOOK_SECRET or not hmac.compare_digest(provided, TELEGRAM_WEBHOOK_SECRET):
+            logging.warning("Webhook request rejected: missing or invalid secret token")
+            return "unauthorized", 401
+
         try:
             data = request.get_json(force=True)
             if data:
