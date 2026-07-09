@@ -55,7 +55,12 @@ async def handle_admin_message(session, db, message, chat_id, user_id, text, msg
 
             try:
                 await db.pdfs.update_one(
-                    {"title": {"$regex": re.escape(title), "$options": "i"}},
+                    # Anchored to the FULL title, not a substring match — an
+                    # unanchored regex here previously let a short/generic new
+                    # title (e.g. "Al") silently overwrite an unrelated existing
+                    # doc whose title merely contained it (e.g. "Al-Baqarah
+                    # Complete"), destroying its file_id with no warning.
+                    {"title": {"$regex": f"^{re.escape(title)}$", "$options": "i"}},
                     {"$set": {"file_id": doc["file_id"], "title": title, "download_count": 0}},
                     upsert=True,
                 )
@@ -178,7 +183,10 @@ async def handle_admin_message(session, db, message, chat_id, user_id, text, msg
             update_fields = {"file_id": f["file_id"], "display_name": name}
             if thumb_file_id: update_fields["thumb_file_id"] = thumb_file_id
             try:
-                await db.files.update_one({"display_name": {"$regex": re.escape(name), "$options": "i"}}, {"$set": update_fields}, upsert=True)
+                # Anchored to the FULL name — same fix as the PDF branch above,
+                # so a new upload can't silently overwrite an unrelated
+                # existing track whose display_name merely contains it.
+                await db.files.update_one({"display_name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}, {"$set": update_fields}, upsert=True)
                 thumb_status = " 🖼" if thumb_file_id else ""
                 await send_message(session, chat_id, f"✅ Saved: `{name}`{thumb_status}")
             except Exception as db_err:
