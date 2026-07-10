@@ -5,7 +5,7 @@
  * bucket split: audio content lives in one R2 account/bucket, PDFs in a
  * second, independently-credentialed one.
  */
-const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, DeleteObjectCommand, PutBucketCorsCommand, GetBucketCorsCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 // .trim() defensively — Vercel's dashboard env-var UI has previously
@@ -116,6 +116,53 @@ async function getPresignedUploadUrl(kind, key, contentType) {
 }
 
 /**
+ * Read/write the bucket's CORS policy via R2's S3-compatible API — used by
+ * scripts/set-r2-cors.js. Direct-to-R2 browser uploads (PutObject via a
+ * presigned URL) are a cross-origin PUT, which browsers ALWAYS preflight
+ * regardless of headers; with no CORS policy on the bucket (R2's default —
+ * there is no dashboard-visible "policy" at all until one is set), the
+ * preflight has no Access-Control-Allow-* headers to approve it, so the
+ * browser never sends the real PUT and `fetch()` rejects with a generic
+ * "Failed to fetch" — no server-side error to read, because the request
+ * never left the browser.
+ */
+async function getBucketCors(kind) {
+  const isPdf = kind === "pdf";
+  const client = isPdf ? pdfR2 : audioR2;
+  const bucket = env(isPdf ? "R2_PDF_BUCKET_NAME" : "R2_BUCKET_NAME");
+  try {
+    const result = await client.send(new GetBucketCorsCommand({ Bucket: bucket }));
+    return result.CORSRules || [];
+  } catch (err) {
+    // R2/S3 returns NoSuchCORSConfiguration when nothing has ever been set.
+    if (err.name === "NoSuchCORSConfiguration") return [];
+    throw err;
+  }
+}
+
+async function putBucketCors(kind, allowedOrigins) {
+  const isPdf = kind === "pdf";
+  const client = isPdf ? pdfR2 : audioR2;
+  const bucket = env(isPdf ? "R2_PDF_BUCKET_NAME" : "R2_BUCKET_NAME");
+  await client.send(
+    new PutBucketCorsCommand({
+      Bucket: bucket,
+      CORSConfiguration: {
+        CORSRules: [
+          {
+            AllowedOrigins: allowedOrigins,
+            AllowedMethods: ["PUT"],
+            AllowedHeaders: ["Content-Type"],
+            ExposeHeaders: ["ETag"],
+            MaxAgeSeconds: 3600,
+          },
+        ],
+      },
+    })
+  );
+}
+
+/**
  * Recover the R2 object key from a public URL previously returned by
  * uploadToR2() — the object key is never stored separately, only the full
  * public URL (in files.r2_url / files.thumb_url / pdfs.r2_url), so deleting
@@ -150,4 +197,7 @@ async function deleteFromR2(kind, url) {
   await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
 }
 
-module.exports = { audioR2, pdfR2, uploadToR2, deleteFromR2, keyFromUrl, publicUrlForKey, getPresignedUploadUrl };
+module.exports = {
+  audioR2, pdfR2, uploadToR2, deleteFromR2, keyFromUrl, publicUrlForKey, getPresignedUploadUrl,
+  getBucketCors, putBucketCors,
+};
