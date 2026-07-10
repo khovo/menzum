@@ -22,19 +22,9 @@ const { connectToDatabase } = require("../../../lib/db");
 const { withAdminAuth } = require("../../../lib/withAdminAuth");
 const { uploadToR2 } = require("../../../lib/r2");
 const { parseForm, flat, flatFile } = require("../../../lib/parseForm");
+const { ALLOWED_EXTENSIONS } = require("../../../lib/pdfTypes");
 
 const PAGE_SIZE = 20;
-
-// Extension -> canonical MIME type, used both to validate the upload and as
-// the R2 object's Content-Type (formidable's detected mimetype can be a
-// generic "application/octet-stream" for less common formats like .epub).
-const ALLOWED_EXTENSIONS = {
-  pdf: "application/pdf",
-  doc: "application/msword",
-  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  txt: "text/plain",
-  epub: "application/epub+zip",
-};
 
 async function handleGet(req, res, db) {
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);

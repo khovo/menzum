@@ -1,13 +1,14 @@
 import { useState } from "react";
+import { presignedUploadAudio } from "../lib/uploadClient";
 
 /**
  * components/BulkUploadModal.jsx
  * -------------------------------
  * Multi-file audio upload: pick several files at once, optionally tag them
- * all with one category, then upload sequentially to the existing single-file
- * POST /api/audio endpoint (no new bulk API route — reuses what already
- * works and validates one file at a time). Title defaults to the filename
- * (extension stripped) per file; per-row status shows queued/uploading/done/error.
+ * all with one category, then upload sequentially via the presigned
+ * direct-to-R2 flow (lib/uploadClient.js — the H9/Bug 2 fix), one file at a
+ * time. Title defaults to the filename (extension stripped) per file;
+ * per-row status shows queued/uploading/done/error.
  */
 const STATUS_LABEL = {
   queued: "Queued",
@@ -45,14 +46,7 @@ export default function BulkUploadModal({ categories, onDone }) {
   async function uploadOne(row, i) {
     updateRow(i, { status: "uploading" });
     try {
-      const fd = new FormData();
-      fd.append("title", row.title);
-      fd.append("artist", "");
-      fd.append("category", category);
-      fd.append("audio", row.file);
-      const res = await fetch("/api/audio", { method: "POST", body: fd });
-      const data = await res.json();
-      if (!res.ok || !data.ok) throw new Error(data.error || "Upload failed.");
+      await presignedUploadAudio({ title: row.title, artist: "", category, file: row.file });
       updateRow(i, { status: "done" });
     } catch (err) {
       updateRow(i, { status: "error", error: err.message });

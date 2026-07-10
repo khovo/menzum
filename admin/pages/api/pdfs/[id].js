@@ -14,7 +14,7 @@
 const { ObjectId } = require("mongodb");
 const { connectToDatabase } = require("../../../lib/db");
 const { withAdminAuth } = require("../../../lib/withAdminAuth");
-const { deleteFromR2 } = require("../../../lib/r2");
+const { deleteFromR2, publicUrlForKey } = require("../../../lib/r2");
 
 const TOGGLE_FIELDS = ["hidden", "hidden_bot", "hidden_app"];
 const STATUS_VALUES = ["draft", "published"];
@@ -38,6 +38,23 @@ async function handlePut(req, res, db, id) {
 
 async function handlePatch(req, res, db, id) {
   const { field, value } = req.body || {};
+
+  // Confirms a presigned direct-to-R2 upload actually completed (see
+  // pages/api/pdfs/presign.js) — resolves the doc's pending_key into a real
+  // r2_url only now, so a browser upload that fails or is abandoned never
+  // leaves the doc pointing at a file that doesn't exist.
+  if (field === "_upload_complete") {
+    const doc = await db.collection("pdfs").findOne({ _id: new ObjectId(id) });
+    if (!doc) return res.status(404).json({ ok: false, error: "PDF not found." });
+    if (!doc.pending_key) {
+      return res.status(400).json({ ok: false, error: "No pending upload for this item." });
+    }
+    const r2Url = publicUrlForKey("pdf", doc.pending_key);
+    const update = { r2_url: r2Url };
+    if (value && typeof value.size_bytes === "number") update.size_bytes = value.size_bytes;
+    await db.collection("pdfs").updateOne({ _id: new ObjectId(id) }, { $set: update, $unset: { pending_key: "" } });
+    return res.status(200).json({ ok: true, r2_url: r2Url });
+  }
 
   if (field === "status") {
     if (!STATUS_VALUES.includes(value)) {

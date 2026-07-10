@@ -5,6 +5,7 @@ import Pagination from "../../components/Pagination";
 import VisibilityToggle from "../../components/VisibilityToggle";
 import PermanentDeleteModal from "../../components/PermanentDeleteModal";
 import { requireAdmin } from "../../lib/requireAdmin";
+import { presignedUploadPdf } from "../../lib/uploadClient";
 
 export async function getServerSideProps(context) {
   const guard = requireAdmin(context);
@@ -33,13 +34,7 @@ function UploadForm({ onDone }) {
     setBusy(true);
     setError("");
     try {
-      const fd = new FormData();
-      fd.append("title", title);
-      fd.append("description", description);
-      fd.append("pdf", file);
-      const res = await fetch("/api/pdfs", { method: "POST", body: fd });
-      const data = await res.json();
-      if (!res.ok || !data.ok) throw new Error(data.error || "Upload failed.");
+      await presignedUploadPdf({ title, description, file });
       onDone();
     } catch (err) {
       setError(err.message);
