@@ -6,6 +6,7 @@ import VisibilityToggle from "../../components/VisibilityToggle";
 import BulkUploadModal from "../../components/BulkUploadModal";
 import PermanentDeleteModal from "../../components/PermanentDeleteModal";
 import { requireAdmin } from "../../lib/requireAdmin";
+import { presignedUploadAudio } from "../../lib/uploadClient";
 
 const PUBLIC_STREAM_BASE = "https://menzum.vercel.app/api/webapp/play";
 
@@ -46,16 +47,7 @@ function UploadForm({ categories, onDone }) {
     setBusy(true);
     setError("");
     try {
-      const fd = new FormData();
-      fd.append("title", title);
-      fd.append("artist", artist);
-      fd.append("category", category);
-      fd.append("audio", audioFile);
-      if (thumbFile) fd.append("thumbnail", thumbFile);
-
-      const res = await fetch("/api/audio", { method: "POST", body: fd });
-      const data = await res.json();
-      if (!res.ok || !data.ok) throw new Error(data.error || "Upload failed.");
+      await presignedUploadAudio({ title, artist, category, file: audioFile, thumbFile });
       onDone();
     } catch (err) {
       setError(err.message);

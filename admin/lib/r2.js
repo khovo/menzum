@@ -6,6 +6,7 @@
  * second, independently-credentialed one.
  */
 const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 // .trim() defensively — Vercel's dashboard env-var UI has previously
 // appended trailing whitespace/newlines to values (already hit for
@@ -78,6 +79,43 @@ async function uploadToR2(kind, key, buffer, contentType) {
 }
 
 /**
+ * The public URL a key WILL have once uploaded — same join uploadToR2()
+ * does, exposed separately so callers that only need the key→URL mapping
+ * (e.g. the presigned-upload flow below, which never touches the bytes
+ * itself) don't have to duplicate it.
+ */
+function publicUrlForKey(kind, key) {
+  const isPdf = kind === "pdf";
+  const publicBase = env(isPdf ? "R2_PDF_PUBLIC_URL" : "R2_PUBLIC_URL").replace(/\/$/, "");
+  return `${publicBase}/${key}`;
+}
+
+/**
+ * H9 fix: a presigned PUT URL the BROWSER uploads directly to R2 with, so
+ * the file bytes never pass through this Vercel function's request body at
+ * all — sidesteps Vercel's platform-level function payload limit entirely
+ * (that's the "Request Entity Too Large" bug on PDF/audio uploads; the
+ * limit is enforced before our code ever runs, so it can't be raised from
+ * application code no matter how large formidable's own maxFileSize is set).
+ * Expires in 10 minutes — long enough for a slow upload, short enough that
+ * a leaked URL isn't a standing write hole into the bucket.
+ */
+async function getPresignedUploadUrl(kind, key, contentType) {
+  const isPdf = kind === "pdf";
+  const client = isPdf ? pdfR2 : audioR2;
+  const bucket = env(isPdf ? "R2_PDF_BUCKET_NAME" : "R2_BUCKET_NAME");
+  if (!bucket) {
+    throw new Error(`R2 upload misconfigured: missing ${isPdf ? "R2_PDF_BUCKET_NAME" : "R2_BUCKET_NAME"}.`);
+  }
+  const command = new PutObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    ContentType: contentType || "application/octet-stream",
+  });
+  return getSignedUrl(client, command, { expiresIn: 600 });
+}
+
+/**
  * Recover the R2 object key from a public URL previously returned by
  * uploadToR2() — the object key is never stored separately, only the full
  * public URL (in files.r2_url / files.thumb_url / pdfs.r2_url), so deleting
@@ -112,4 +150,4 @@ async function deleteFromR2(kind, url) {
   await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
 }
 
-module.exports = { audioR2, pdfR2, uploadToR2, deleteFromR2, keyFromUrl };
+module.exports = { audioR2, pdfR2, uploadToR2, deleteFromR2, keyFromUrl, publicUrlForKey, getPresignedUploadUrl };

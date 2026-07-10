@@ -1,15 +1,19 @@
 import { useState } from "react";
-import { presignedUploadAudio } from "../lib/uploadClient";
+import { presignedUploadPdf } from "../lib/uploadClient";
 
 /**
- * components/BulkUploadModal.jsx
- * -------------------------------
- * Multi-file audio upload: pick several files at once, optionally tag them
- * all with one category, then upload sequentially via the presigned
- * direct-to-R2 flow (lib/uploadClient.js — the H9/Bug 2 fix), one file at a
- * time. Title defaults to the filename (extension stripped) per file;
- * per-row status shows queued/uploading/done/error.
+ * components/PdfBulkUploadModal.jsx
+ * -----------------------------------
+ * Bug 3: PDFs page had no bulk upload, unlike Audio. Mirrors
+ * BulkUploadModal.jsx's UX exactly (pick several files, per-row
+ * queued/uploading/done/error status, sequential not parallel) but each
+ * file goes through the presigned direct-to-R2 flow (lib/uploadClient.js)
+ * instead of a multipart POST — built on the same H9 fix as the single
+ * upload form so large batches don't hit Vercel's function body limit
+ * either.
  */
+const ACCEPTED_EXTENSIONS = ".pdf,.doc,.docx,.txt,.epub";
+
 const STATUS_LABEL = {
   queued: "Queued",
   uploading: "Uploading…",
@@ -22,9 +26,8 @@ function stripExt(filename) {
   return idx > 0 ? filename.slice(0, idx) : filename;
 }
 
-export default function BulkUploadModal({ categories, onDone }) {
+export default function PdfBulkUploadModal({ onDone }) {
   const [files, setFiles] = useState([]); // [{file, title, status, error}]
-  const [category, setCategory] = useState("");
   const [busy, setBusy] = useState(false);
 
   function pickFiles(e) {
@@ -46,7 +49,7 @@ export default function BulkUploadModal({ categories, onDone }) {
   async function uploadOne(row, i) {
     updateRow(i, { status: "uploading" });
     try {
-      await presignedUploadAudio({ title: row.title, artist: "", category, file: row.file });
+      await presignedUploadPdf({ title: row.title, description: "", file: row.file });
       updateRow(i, { status: "done" });
     } catch (err) {
       updateRow(i, { status: "error", error: err.message });
@@ -55,9 +58,8 @@ export default function BulkUploadModal({ categories, onDone }) {
 
   async function startUpload() {
     setBusy(true);
-    // Sequential, not parallel — keeps each request's R2 upload from
-    // competing for the same serverless function's bandwidth/memory and
-    // makes per-file progress legible.
+    // Sequential, not parallel — keeps per-file progress legible and
+    // matches BulkUploadModal.jsx's audio bulk upload behavior.
     for (let i = 0; i < files.length; i++) {
       if (files[i].status === "done") continue;
       // eslint-disable-next-line no-await-in-loop
@@ -72,16 +74,8 @@ export default function BulkUploadModal({ categories, onDone }) {
   return (
     <div className="space-y-4">
       <div>
-        <label className="block text-xs text-gray-400 mb-1.5">Audio files</label>
-        <input type="file" accept="audio/*" multiple onChange={pickFiles} disabled={busy} className="input" />
-      </div>
-
-      <div>
-        <label className="block text-xs text-gray-400 mb-1.5">Category (applied to all)</label>
-        <select value={category} onChange={(e) => setCategory(e.target.value)} disabled={busy} className="input">
-          <option value="">— none —</option>
-          {categories.map((c) => <option key={c.slug} value={c.slug}>{c.display_name}</option>)}
-        </select>
+        <label className="block text-xs text-gray-400 mb-1.5">Document files (PDF, DOC, DOCX, TXT, or EPUB)</label>
+        <input type="file" accept={ACCEPTED_EXTENSIONS} multiple onChange={pickFiles} disabled={busy} className="input" />
       </div>
 
       {files.length > 0 && (

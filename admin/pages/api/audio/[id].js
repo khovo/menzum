@@ -11,7 +11,7 @@ const { ObjectId } = require("mongodb");
 const fs = require("fs");
 const { connectToDatabase } = require("../../../lib/db");
 const { withAdminAuth } = require("../../../lib/withAdminAuth");
-const { uploadToR2, deleteFromR2 } = require("../../../lib/r2");
+const { uploadToR2, deleteFromR2, publicUrlForKey } = require("../../../lib/r2");
 const { parseForm, flat, flatFile, readJsonBody } = require("../../../lib/parseForm");
 const { isValidCategorySlug } = require("../../../lib/categoryHelpers");
 
@@ -69,6 +69,26 @@ async function handlePatch(req, res, db, id) {
   // a JSON PATCH request has to parse its own body instead of using req.body.
   const body = await readJsonBody(req);
   const { field, value } = body || {};
+
+  // Confirms a presigned direct-to-R2 upload actually completed (see
+  // pages/api/audio/presign.js) — see pages/api/pdfs/[id].js's identical
+  // branch for the full rationale (pending_key -> r2_url handshake).
+  if (field === "_upload_complete") {
+    const doc = await db.collection("files").findOne({ _id: new ObjectId(id) });
+    if (!doc) return res.status(404).json({ ok: false, error: "Track not found." });
+    if (!doc.pending_key) {
+      return res.status(400).json({ ok: false, error: "No pending upload for this item." });
+    }
+    const update = { r2_url: publicUrlForKey("audio", doc.pending_key) };
+    const unset = { pending_key: "" };
+    if (doc.pending_thumb_key) {
+      update.thumb_url = publicUrlForKey("audio", doc.pending_thumb_key);
+      unset.pending_thumb_key = "";
+    }
+    if (value && typeof value.size_bytes === "number") update.size_bytes = value.size_bytes;
+    await db.collection("files").updateOne({ _id: new ObjectId(id) }, { $set: update, $unset: unset });
+    return res.status(200).json({ ok: true, r2_url: update.r2_url, thumb_url: update.thumb_url || null });
+  }
 
   if (field === "status") {
     if (!STATUS_VALUES.includes(value)) {
