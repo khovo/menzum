@@ -1,28 +1,20 @@
 /**
- * GET  /api/pdfs?page=1&search=&hidden=true       — paginated list (20/page)
- *      `hidden=true` lists ONLY soft-deleted items (for the admin panel's
- *      Hidden tab — see the matching note in api/audio/index.js; the
- *      public/app-facing endpoints are untouched and keep excluding hidden
- *      docs unconditionally). Any other value (or omitted) keeps the
- *      existing default: only visible items.
- * POST /api/pdfs  (multipart: title, description, pdf)  — no size limit
+ * GET /api/pdfs?page=1&search=&hidden=true       — paginated list (20/page)
+ *     `hidden=true` lists ONLY soft-deleted items (for the admin panel's
+ *     Hidden tab — see the matching note in api/audio/index.js; the
+ *     public/app-facing endpoints are untouched and keep excluding hidden
+ *     docs unconditionally). Any other value (or omitted) keeps the
+ *     existing default: only visible items.
  *
- * Accepts documents beyond plain PDF (.doc/.docx/.txt/.epub) — this endpoint
- * was originally PDF-only in name but the "PDFs" section doubles as the
- * general document library, matching what the bot's own upload path accepts
- * for the `pdfs` collection.
- *
- * Same visibility caveat as api/audio/index.js: this creates R2-native docs
- * with no Telegram file_id, so they won't appear in the bot/Mini App's
- * existing PDF list until those read paths accept r2_url-only docs.
+ * Uploads are handled by POST /api/pdfs/presign, NOT a POST here — this
+ * route USED to accept a multipart upload directly, but that pushed the
+ * file bytes through this Vercel function's own request body, which hits
+ * Vercel's platform-level payload limit (the "Request Entity Too Large" /
+ * H9 bug). Deleted rather than left as dead code so nothing accidentally
+ * calls back into the exact path that bug came from.
  */
-const fs = require("fs");
-const path = require("path");
 const { connectToDatabase } = require("../../../lib/db");
 const { withAdminAuth } = require("../../../lib/withAdminAuth");
-const { uploadToR2 } = require("../../../lib/r2");
-const { parseForm, flat, flatFile } = require("../../../lib/parseForm");
-const { ALLOWED_EXTENSIONS } = require("../../../lib/pdfTypes");
 
 const PAGE_SIZE = 20;
 
@@ -69,69 +61,10 @@ async function handleGet(req, res, db) {
   });
 }
 
-async function handlePost(req, res, db) {
-  const { fields, files } = await parseForm(req, { maxFileSize: 1024 * 1024 * 1024 }); // no practical size limit (1GB safety cap)
-  const { title, description } = flat(fields);
-  const docFile = flatFile(files, "pdf");
-
-  if (!title || !title.trim()) {
-    return res.status(400).json({ ok: false, error: "Title is required." });
-  }
-  if (!docFile) {
-    return res.status(400).json({ ok: false, error: "A file is required." });
-  }
-
-  const ext = path.extname(docFile.originalFilename || "").slice(1).toLowerCase();
-  const canonicalMime = ALLOWED_EXTENSIONS[ext];
-  if (!canonicalMime) {
-    return res.status(400).json({
-      ok: false,
-      error: `Unsupported file type ".${ext || "?"}" — allowed: ${Object.keys(ALLOWED_EXTENSIONS).map((e) => "." + e).join(", ")}.`,
-    });
-  }
-
-  const now = new Date();
-  const insertResult = await db.collection("pdfs").insertOne({
-    title: title.trim(),
-    description: description ? description.trim() : null,
-    file_id: null, // R2-native upload — see module note above
-    mimetype: canonicalMime,
-    hidden: false,
-    hidden_bot: false,
-    hidden_app: false,
-    // New uploads start as a draft pending admin approval (content approval
-    // workflow). NOTE: api/webapp/* read paths don't filter on `status` yet
-    // — this is admin-panel-side state only until that's wired in.
-    status: "draft",
-    download_count: 0,
-    created_at: now,
-  });
-  const docId = insertResult.insertedId;
-
-  const buf = fs.readFileSync(docFile.filepath);
-  const r2Url = await uploadToR2("pdf", `pdfs/${docId}.${ext}`, buf, canonicalMime);
-
-  await db.collection("pdfs").updateOne(
-    { _id: docId },
-    { $set: { r2_url: r2Url, size_bytes: docFile.size || buf.length } }
-  );
-
-  return res.status(201).json({ ok: true, id: docId.toString() });
-}
-
 module.exports = withAdminAuth(async function handler(req, res) {
   try {
     const { db } = await connectToDatabase();
-    // IMPORTANT: these must be `await`ed, not just `return`ed. `return
-    // handlePost(...)` returns the still-pending promise without waiting on
-    // it, so this try/catch has already exited by the time a later rejection
-    // (e.g. a formidable parse error, or the R2 upload failing) happens — the
-    // rejection then propagates unhandled, and Next.js renders its default
-    // HTML error page instead of a JSON body. That's the exact cause of the
-    // "Unexpected token '<' " error the client saw parsing the response as
-    // JSON: it was actually being handed an HTML 500 page.
     if (req.method === "GET") return await handleGet(req, res, db);
-    if (req.method === "POST") return await handlePost(req, res, db);
     return res.status(405).json({ ok: false, error: "Method not allowed." });
   } catch (err) {
     console.error("api/pdfs/index.js error:", err);
@@ -140,4 +73,3 @@ module.exports = withAdminAuth(async function handler(req, res) {
 });
 
 module.exports.default = module.exports;
-module.exports.config = { api: { bodyParser: false } };

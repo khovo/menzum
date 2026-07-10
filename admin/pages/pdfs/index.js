@@ -5,6 +5,7 @@ import Pagination from "../../components/Pagination";
 import VisibilityToggle from "../../components/VisibilityToggle";
 import PermanentDeleteModal from "../../components/PermanentDeleteModal";
 import PdfBulkUploadModal from "../../components/PdfBulkUploadModal";
+import ProgressBar from "../../components/ProgressBar";
 import { requireAdmin } from "../../lib/requireAdmin";
 import { presignedUploadPdf } from "../../lib/uploadClient";
 
@@ -27,15 +28,17 @@ function UploadForm({ onDone }) {
   const [description, setDescription] = useState("");
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
 
   async function submit(e) {
     e.preventDefault();
     if (!file) return setError("Please choose a document file.");
     setBusy(true);
+    setProgress(0);
     setError("");
     try {
-      await presignedUploadPdf({ title, description, file });
+      await presignedUploadPdf({ title, description, file, onProgress: setProgress });
       onDone();
     } catch (err) {
       setError(err.message);
@@ -56,10 +59,11 @@ function UploadForm({ onDone }) {
         <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} className="input" />
       </div>
       <div>
-        <label className="block text-xs text-gray-400 mb-1.5">Document file (PDF, DOC, DOCX, TXT, or EPUB — no size limit)</label>
+        <label className="block text-xs text-gray-400 mb-1.5">Document file (PDF, DOC, DOCX, TXT, or EPUB — uploaded directly to storage, up to 5GB)</label>
         <input type="file" accept={ACCEPTED_EXTENSIONS} required onChange={(e) => setFile(e.target.files[0])} className="input" />
       </div>
-      <button disabled={busy} className="btn-gold w-full">{busy ? "Uploading…" : "Upload"}</button>
+      {busy && <ProgressBar fraction={progress} />}
+      <button disabled={busy} className="btn-gold w-full">{busy ? `Uploading… ${Math.round(progress * 100)}%` : "Upload"}</button>
     </form>
   );
 }

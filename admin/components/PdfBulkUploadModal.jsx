@@ -47,9 +47,14 @@ export default function PdfBulkUploadModal({ onDone }) {
   }
 
   async function uploadOne(row, i) {
-    updateRow(i, { status: "uploading" });
+    updateRow(i, { status: "uploading", progress: 0 });
     try {
-      await presignedUploadPdf({ title: row.title, description: "", file: row.file });
+      await presignedUploadPdf({
+        title: row.title,
+        description: "",
+        file: row.file,
+        onProgress: (fraction) => updateRow(i, { progress: fraction }),
+      });
       updateRow(i, { status: "done" });
     } catch (err) {
       updateRow(i, { status: "error", error: err.message });
@@ -100,7 +105,7 @@ export default function PdfBulkUploadModal({ onDone }) {
                 }`}
                 title={row.error || ""}
               >
-                {STATUS_LABEL[row.status]}
+                {row.status === "uploading" ? `Uploading… ${Math.round((row.progress || 0) * 100)}%` : STATUS_LABEL[row.status]}
               </span>
             </div>
           ))}
