@@ -4,9 +4,27 @@
  * Auth: Bearer <jwt> OR tma <initData>  (dual auth via withAuth)
  *
  * GET  /api/webapp/play?id=<track_id>&action=stream
- *      → STREAMS the track's audio bytes (Content-Type + Range/seek, 200/206).
- *        This is what `audio_url` in featured/search/library points to. The bot
- *        token and file_id are never exposed (we proxy the bytes). HEAD supported.
+ *      → For R2-native tracks (doc.r2_url set — true for nearly every track
+ *        after the R2 migration): 302-redirects straight to r2_url. r2_url is
+ *        already a public, tokenless Cloudflare CDN URL (same trust level as
+ *        the thumb_url the client already fetches directly), so redirecting
+ *        leaks nothing and lets the client's own HTTP stack + Range/seek
+ *        support talk to R2 directly — no Vercel function in the loop at all.
+ *      → Only tracks with NO r2_url (not yet migrated / bot-only uploads)
+ *        fall back to the old path: STREAMS the audio bytes via a
+ *        getFile+CDN-fetch round trip through Telegram (Content-Type +
+ *        Range/seek, 200/206) so the bot token / file_id are never exposed.
+ *        HEAD supported on both paths.
+ *
+ *      Previously this endpoint ALWAYS used the Telegram proxy path — never
+ *      checking r2_url — so every track playing through `audio_url` (the
+ *      field every client uses today) paid for a slow double network hop
+ *      through Telegram's API even though the file already lived on R2.
+ *      That's the fix for the "tracks stuck at 0:00 / 60s+ to start"
+ *      production bug: confirmed via a live /api/webapp/featured pull that
+ *      every sampled track already has r2_url set, and via a live
+ *      /api/webapp/play?action=stream request that consistently hung on the
+ *      Telegram round trip rather than serving bytes.
  *
  * POST /api/webapp/play   { track_id, action: "play" | "favorite" }
  *      → "play":     sendAudio into the user's Telegram chat (used by the bot/Mini App)
@@ -54,14 +72,28 @@ async function streamAudio(req, res) {
 
   const id = (req.query.id || req.query.track_id || "").trim();
   if (!OID_RE.test(id)) return res.status(400).json({ ok: false, error: "Invalid id." });
-  if (!BOT_TOKEN) return res.status(503).json({ ok: false, error: "BOT_TOKEN missing." });
 
   const { db } = await connectToDatabase();
   const doc = await db.collection("files").findOne(
     { _id: new ObjectId(id), hidden: { $ne: true } },
-    { projection: { file_id: 1 } }
+    { projection: { file_id: 1, r2_url: 1 } }
   );
-  if (!doc?.file_id) return res.status(404).json({ ok: false, error: "Track not found." });
+  if (!doc) return res.status(404).json({ ok: false, error: "Track not found." });
+
+  // Fast path: the file already lives on Cloudflare R2 — redirect straight
+  // there instead of proxying through Telegram. r2_url is a public,
+  // tokenless CDN URL (same trust level as the thumb_url clients already
+  // fetch directly), so this leaks nothing, and R2 natively supports
+  // Range/seek so playback/seeking still works with zero Vercel involvement.
+  if (doc.r2_url) {
+    res.setHeader("Cache-Control", "private, max-age=3000");
+    res.statusCode = 302;
+    res.setHeader("Location", doc.r2_url);
+    return res.end();
+  }
+
+  if (!doc.file_id) return res.status(404).json({ ok: false, error: "Track not found." });
+  if (!BOT_TOKEN) return res.status(503).json({ ok: false, error: "BOT_TOKEN missing." });
 
   const gfRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${doc.file_id}`);
   const gfData = await gfRes.json();
