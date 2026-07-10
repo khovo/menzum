@@ -1,5 +1,11 @@
 /**
- * GET  /api/audio?page=1&search=&category=          — paginated list (20/page)
+ * GET  /api/audio?page=1&search=&category=&hidden=true   — paginated list (20/page)
+ *      `hidden=true` lists ONLY soft-deleted items (for the admin panel's
+ *      Hidden tab — this route is withAdminAuth-gated, so this is never
+ *      reachable by the public app-facing endpoints in api/webapp/*.js,
+ *      which keep their own separate, unconditional hidden:{$ne:true}
+ *      filters untouched). Any other value (or omitted) keeps the existing
+ *      default: only visible items.
  * POST /api/audio  (multipart: title, artist, category, audio, thumbnail)
  *
  * `category` accepts any of the 5 fixed genre slugs (lib/categories.js) OR a
@@ -26,7 +32,7 @@ async function handleGet(req, res, db) {
   const search = (req.query.search || "").trim();
   const category = (req.query.category || "").trim();
 
-  const filter = { hidden: { $ne: true } };
+  const filter = req.query.hidden === "true" ? { hidden: true } : { hidden: { $ne: true } };
   if (search) {
     filter.display_name = { $regex: search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
   }
