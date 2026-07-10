@@ -1,5 +1,10 @@
 /**
- * GET  /api/pdfs?page=1&search=       — paginated list (20/page)
+ * GET  /api/pdfs?page=1&search=&hidden=true       — paginated list (20/page)
+ *      `hidden=true` lists ONLY soft-deleted items (for the admin panel's
+ *      Hidden tab — see the matching note in api/audio/index.js; the
+ *      public/app-facing endpoints are untouched and keep excluding hidden
+ *      docs unconditionally). Any other value (or omitted) keeps the
+ *      existing default: only visible items.
  * POST /api/pdfs  (multipart: title, description, pdf)  — no size limit
  *
  * Accepts documents beyond plain PDF (.doc/.docx/.txt/.epub) — this endpoint
@@ -35,7 +40,7 @@ async function handleGet(req, res, db) {
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const search = (req.query.search || "").trim();
 
-  const filter = { hidden: { $ne: true } };
+  const filter = req.query.hidden === "true" ? { hidden: true } : { hidden: { $ne: true } };
   if (search) {
     filter.title = { $regex: search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
   }

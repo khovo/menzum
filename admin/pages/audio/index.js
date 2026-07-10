@@ -184,10 +184,12 @@ export default function AudioPage() {
   const [purgeError, setPurgeError] = useState("");
   const [toggling, setToggling] = useState(null); // `${id}:${field}` while a PATCH is in flight
   const [previewing, setPreviewing] = useState(null); // track id currently expanded for preview
+  const [viewMode, setViewMode] = useState("visible"); // "visible" | "hidden" — which tab the table shows
 
   const load = useCallback(() => {
     setLoading(true);
     const params = new URLSearchParams({ page, search, category });
+    if (viewMode === "hidden") params.set("hidden", "true");
     fetch(`/api/audio?${params}`)
       .then((r) => r.json())
       .then((d) => {
@@ -197,9 +199,14 @@ export default function AudioPage() {
         }
       })
       .finally(() => setLoading(false));
-  }, [page, search, category]);
+  }, [page, search, category, viewMode]);
 
   useEffect(() => { load(); }, [load]);
+
+  function switchView(mode) {
+    setViewMode(mode);
+    setPage(1);
+  }
 
   async function confirmDelete() {
     const res = await fetch(`/api/audio/${deleting.id}`, { method: "DELETE" });
@@ -263,6 +270,25 @@ export default function AudioPage() {
 
   return (
     <Layout title="Audio">
+      <div className="flex items-center gap-1.5 mb-4 border-b border-border">
+        <button
+          onClick={() => switchView("visible")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            viewMode === "visible" ? "border-gold text-gold" : "border-transparent text-gray-500 hover:text-gray-300"
+          }`}
+        >
+          Visible
+        </button>
+        <button
+          onClick={() => switchView("hidden")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            viewMode === "hidden" ? "border-gold text-gold" : "border-transparent text-gray-500 hover:text-gray-300"
+          }`}
+        >
+          Hidden
+        </button>
+      </div>
+
       <div className="flex flex-wrap items-center gap-3 mb-5">
         <input
           placeholder="Search by name…"
@@ -270,14 +296,65 @@ export default function AudioPage() {
           onChange={(e) => { setPage(1); setSearch(e.target.value); }}
           className="input max-w-xs"
         />
-        <select value={category} onChange={(e) => { setPage(1); setCategory(e.target.value); }} className="input max-w-[160px]">
-          <option value="">All categories</option>
-          {categories.map((c) => <option key={c.slug} value={c.slug}>{c.display_name}</option>)}
-        </select>
-        <button onClick={() => setShowBulkUpload(true)} className="rounded-lg border border-gold/40 text-gold px-4 py-2 text-sm hover:bg-gold/10 transition-colors">⬆ Bulk Upload</button>
-        <button onClick={() => setShowUpload(true)} className="btn-gold">+ Upload Audio</button>
+        {viewMode === "visible" && (
+          <select value={category} onChange={(e) => { setPage(1); setCategory(e.target.value); }} className="input max-w-[160px]">
+            <option value="">All categories</option>
+            {categories.map((c) => <option key={c.slug} value={c.slug}>{c.display_name}</option>)}
+          </select>
+        )}
+        {viewMode === "visible" && (
+          <>
+            <button onClick={() => setShowBulkUpload(true)} className="rounded-lg border border-gold/40 text-gold px-4 py-2 text-sm hover:bg-gold/10 transition-colors">⬆ Bulk Upload</button>
+            <button onClick={() => setShowUpload(true)} className="btn-gold">+ Upload Audio</button>
+          </>
+        )}
       </div>
 
+      {viewMode === "hidden" && (
+        <div className="bg-surface border border-border rounded-xl overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-gray-500 border-b border-border">
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Category</th>
+                <th className="px-4 py-3">Storage</th>
+                <th className="px-4 py-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((t) => (
+                <tr key={t.id} className="border-b border-border last:border-0 text-gray-500 opacity-60">
+                  <td className="px-4 py-3 max-w-[240px] truncate">{t.display_name}</td>
+                  <td className="px-4 py-3">
+                    {Array.isArray(t.genre) ? (t.genre.join(", ") || "—") : (t.genre || "—")}
+                  </td>
+                  <td className="px-4 py-3">
+                    {t.has_r2 ? <Badge color="green">R2</Badge> : <Badge color="gray">none</Badge>}
+                    {t.has_telegram && <Badge color="blue">Telegram</Badge>}
+                  </td>
+                  <td className="px-4 py-3 space-x-2 whitespace-nowrap">
+                    <button
+                      onClick={() => toggleField(t, "hidden")}
+                      disabled={toggling === `${t.id}:hidden`}
+                      className="text-gold hover:underline text-xs font-medium disabled:opacity-50"
+                    >
+                      {toggling === `${t.id}:hidden` ? "Restoring…" : "Restore"}
+                    </button>
+                    <button onClick={() => { setPurgeError(""); setPurging(t); }} className="text-red-600 hover:underline text-xs font-semibold">
+                      Delete Forever
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!loading && items.length === 0 && (
+                <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No hidden tracks.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {viewMode === "visible" && (
       <div className="bg-surface border border-border rounded-xl overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -381,6 +458,7 @@ export default function AudioPage() {
           </tbody>
         </table>
       </div>
+      )}
 
       <Pagination page={page} totalPages={totalPages} onChange={setPage} />
 

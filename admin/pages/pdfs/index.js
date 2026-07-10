@@ -123,19 +123,26 @@ export default function PdfsPage() {
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [purgeError, setPurgeError] = useState("");
   const [toggling, setToggling] = useState(null); // `${id}:${field}` while a PATCH is in flight
+  const [viewMode, setViewMode] = useState("visible"); // "visible" | "hidden" — which tab the table shows
 
   const load = useCallback(() => {
     setLoading(true);
     const params = new URLSearchParams({ page, search });
+    if (viewMode === "hidden") params.set("hidden", "true");
     fetch(`/api/pdfs?${params}`)
       .then((r) => r.json())
       .then((d) => {
         if (d.ok) { setItems(d.items); setTotalPages(d.totalPages); }
       })
       .finally(() => setLoading(false));
-  }, [page, search]);
+  }, [page, search, viewMode]);
 
   useEffect(() => { load(); }, [load]);
+
+  function switchView(mode) {
+    setViewMode(mode);
+    setPage(1);
+  }
 
   async function confirmDelete() {
     const res = await fetch(`/api/pdfs/${deleting.id}`, { method: "DELETE" });
@@ -199,6 +206,25 @@ export default function PdfsPage() {
 
   return (
     <Layout title="PDFs">
+      <div className="flex items-center gap-1.5 mb-4 border-b border-border">
+        <button
+          onClick={() => switchView("visible")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            viewMode === "visible" ? "border-gold text-gold" : "border-transparent text-gray-500 hover:text-gray-300"
+          }`}
+        >
+          Visible
+        </button>
+        <button
+          onClick={() => switchView("hidden")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            viewMode === "hidden" ? "border-gold text-gold" : "border-transparent text-gray-500 hover:text-gray-300"
+          }`}
+        >
+          Hidden
+        </button>
+      </div>
+
       <div className="flex flex-wrap items-center gap-3 mb-5">
         <input
           placeholder="Search by title…"
@@ -206,9 +232,54 @@ export default function PdfsPage() {
           onChange={(e) => { setPage(1); setSearch(e.target.value); }}
           className="input max-w-xs"
         />
-        <button onClick={() => setShowUpload(true)} className="btn-gold ml-auto">+ Upload Document</button>
+        {viewMode === "visible" && (
+          <button onClick={() => setShowUpload(true)} className="btn-gold ml-auto">+ Upload Document</button>
+        )}
       </div>
 
+      {viewMode === "hidden" && (
+        <div className="bg-surface border border-border rounded-xl overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-gray-500 border-b border-border">
+                <th className="px-4 py-3">Title</th>
+                <th className="px-4 py-3">Size</th>
+                <th className="px-4 py-3">Storage</th>
+                <th className="px-4 py-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((p) => (
+                <tr key={p.id} className="border-b border-border last:border-0 text-gray-500 opacity-60">
+                  <td className="px-4 py-3 max-w-[280px] truncate">{p.title}</td>
+                  <td className="px-4 py-3">{formatBytes(p.size_bytes)}</td>
+                  <td className="px-4 py-3">
+                    {p.has_r2 ? <Badge color="green">R2</Badge> : <Badge color="gray">none</Badge>}
+                    {p.has_telegram && <Badge color="blue">Telegram</Badge>}
+                  </td>
+                  <td className="px-4 py-3 space-x-2 whitespace-nowrap">
+                    <button
+                      onClick={() => toggleField(p, "hidden")}
+                      disabled={toggling === `${p.id}:hidden`}
+                      className="text-gold hover:underline text-xs font-medium disabled:opacity-50"
+                    >
+                      {toggling === `${p.id}:hidden` ? "Restoring…" : "Restore"}
+                    </button>
+                    <button onClick={() => { setPurgeError(""); setPurging(p); }} className="text-red-600 hover:underline text-xs font-semibold">
+                      Delete Forever
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!loading && items.length === 0 && (
+                <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No hidden PDFs.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {viewMode === "visible" && (
       <div className="bg-surface border border-border rounded-xl overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -287,6 +358,7 @@ export default function PdfsPage() {
           </tbody>
         </table>
       </div>
+      )}
 
       <Pagination page={page} totalPages={totalPages} onChange={setPage} />
 
