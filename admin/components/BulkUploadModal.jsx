@@ -44,9 +44,15 @@ export default function BulkUploadModal({ categories, onDone }) {
   }
 
   async function uploadOne(row, i) {
-    updateRow(i, { status: "uploading" });
+    updateRow(i, { status: "uploading", progress: 0 });
     try {
-      await presignedUploadAudio({ title: row.title, artist: "", category, file: row.file });
+      await presignedUploadAudio({
+        title: row.title,
+        artist: "",
+        category,
+        file: row.file,
+        onProgress: (fraction) => updateRow(i, { progress: fraction }),
+      });
       updateRow(i, { status: "done" });
     } catch (err) {
       updateRow(i, { status: "error", error: err.message });
@@ -106,7 +112,7 @@ export default function BulkUploadModal({ categories, onDone }) {
                 }`}
                 title={row.error || ""}
               >
-                {STATUS_LABEL[row.status]}
+                {row.status === "uploading" ? `Uploading… ${Math.round((row.progress || 0) * 100)}%` : STATUS_LABEL[row.status]}
               </span>
             </div>
           ))}

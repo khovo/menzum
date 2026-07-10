@@ -5,6 +5,7 @@ import Pagination from "../../components/Pagination";
 import VisibilityToggle from "../../components/VisibilityToggle";
 import BulkUploadModal from "../../components/BulkUploadModal";
 import PermanentDeleteModal from "../../components/PermanentDeleteModal";
+import ProgressBar from "../../components/ProgressBar";
 import { requireAdmin } from "../../lib/requireAdmin";
 import { presignedUploadAudio } from "../../lib/uploadClient";
 
@@ -39,15 +40,17 @@ function UploadForm({ categories, onDone }) {
   const [audioFile, setAudioFile] = useState(null);
   const [thumbFile, setThumbFile] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
 
   async function submit(e) {
     e.preventDefault();
     if (!audioFile) return setError("Please choose an audio file.");
     setBusy(true);
+    setProgress(0);
     setError("");
     try {
-      await presignedUploadAudio({ title, artist, category, file: audioFile, thumbFile });
+      await presignedUploadAudio({ title, artist, category, file: audioFile, thumbFile, onProgress: setProgress });
       onDone();
     } catch (err) {
       setError(err.message);
@@ -77,7 +80,8 @@ function UploadForm({ categories, onDone }) {
       <Field label="Thumbnail (optional)">
         <input type="file" accept="image/*" onChange={(e) => setThumbFile(e.target.files[0])} className="input" />
       </Field>
-      <button disabled={busy} className="btn-gold w-full">{busy ? "Uploading…" : "Upload"}</button>
+      {busy && <ProgressBar fraction={progress} />}
+      <button disabled={busy} className="btn-gold w-full">{busy ? `Uploading… ${Math.round(progress * 100)}%` : "Upload"}</button>
     </form>
   );
 }
