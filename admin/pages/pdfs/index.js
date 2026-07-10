@@ -4,6 +4,7 @@ import Modal from "../../components/Modal";
 import Pagination from "../../components/Pagination";
 import VisibilityToggle from "../../components/VisibilityToggle";
 import PermanentDeleteModal from "../../components/PermanentDeleteModal";
+import PdfBulkUploadModal from "../../components/PdfBulkUploadModal";
 import { requireAdmin } from "../../lib/requireAdmin";
 import { presignedUploadPdf } from "../../lib/uploadClient";
 
@@ -112,6 +113,7 @@ export default function PdfsPage() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
+  const [showBulkUpload, setShowBulkUpload] = useState(false);
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
   const [purging, setPurging] = useState(null); // item pending "Delete Forever" — only shown for already-hidden items
@@ -228,7 +230,10 @@ export default function PdfsPage() {
           className="input max-w-xs"
         />
         {viewMode === "visible" && (
-          <button onClick={() => setShowUpload(true)} className="btn-gold ml-auto">+ Upload Document</button>
+          <div className="ml-auto flex gap-3">
+            <button onClick={() => setShowBulkUpload(true)} className="rounded-lg border border-gold/40 text-gold px-4 py-2 text-sm hover:bg-gold/10 transition-colors">⬆ Bulk Upload</button>
+            <button onClick={() => setShowUpload(true)} className="btn-gold">+ Upload Document</button>
+          </div>
         )}
       </div>
 
@@ -359,6 +364,10 @@ export default function PdfsPage() {
 
       <Modal open={showUpload} title="Upload Document" onClose={() => setShowUpload(false)}>
         <UploadForm onDone={() => { setShowUpload(false); load(); }} />
+      </Modal>
+
+      <Modal open={showBulkUpload} title="Bulk Upload Documents" onClose={() => setShowBulkUpload(false)}>
+        <PdfBulkUploadModal onDone={() => { setShowBulkUpload(false); load(); }} />
       </Modal>
 
       <Modal open={!!editing} title="Edit PDF" onClose={() => setEditing(null)}>
